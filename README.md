@@ -22,8 +22,11 @@
 LauncherEntry, запреты сна logind, XDG autostart. Решение и словарь — в
 репозитории устройства: `docs/adr/0001-three-layers.md`, `CONTEXT.md`.
 
-Сборка C-частей: `sh build.sh` в контейнере `b8000h-build:3.24` (кросс-сборка
-armv7 musl; результат в `/opt/b8000h/tools` и `/opt/b8000h/out`). Установка:
+Установка: пакет Alpine `b8k-shell` (armv7) из выпусков GitHub, подписан
+ключом проекта ([b8k-ci](https://github.com/trudenboy/b8k-ci)); его собирает
+CI по тегу `vX.Y.Z` родным компилятором в Alpine armv7
+(`tools/native-build.sh`). Вручную: `sh build.sh` (кросс-сборка в контейнере
+`b8000h-build:3.24`, результат в `/opt/b8000h/tools` и `/opt/b8000h/out`) и
 `sh install.sh [ROOT]`; пути — `/usr/local/{bin,sbin,share/b8k}`. Как
 запускается сеанс и какой композитор — дело устройства (`phoc -C
 /usr/local/share/b8k/phoc.ini -E b8k-launcher`).
