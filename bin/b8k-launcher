@@ -83,4 +83,4 @@ fi
 if [ -n "$panel" ]; then
 	exec waybar -c "$run"/b8k/waybar.json -s "$run"/b8k/style.css
 fi
-exec waybar
+exec waybar -c /usr/local/share/b8k/waybar/config -s /usr/local/share/b8k/waybar/style.css

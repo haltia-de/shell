@@ -32,8 +32,9 @@ Written to $XDG_RUNTIME_DIR/b8k/:
   apps.conf    every program, with "signal" set from its place on the
                panel; b8k-launch, b8k-focus, b8k-ask and b8k-splash read
                this one when it is there
-  waybar.json  the panel: /etc/xdg/waybar/config with these buttons
-  style.css    /etc/xdg/waybar/style.css and each program's icon
+  waybar.json  the panel: /usr/local/share/b8k/waybar/config with these
+               buttons
+  style.css    /usr/local/share/b8k/waybar/style.css and each program's icon
   slots        the waybar signal of each slot, one per line (b8k-focus)
   aliases      "old new" per line: old shell ids taken over by .desktop
                programs (b8k-launch maps them)
@@ -50,8 +51,9 @@ SYSTEM = "/usr/local/share/b8k/apps.conf"
 SYSTEM_PANEL = "/usr/local/share/b8k/panel"
 USER_APPS = os.path.expanduser("~/.config/b8k/apps.conf")
 USER_PANEL = os.path.expanduser("~/.config/b8k/panel")
-WAYBAR_CONFIG = "/etc/xdg/waybar/config"
-WAYBAR_STYLE = "/etc/xdg/waybar/style.css"
+# The shell's panel, in its own folder: /etc/xdg/waybar belongs to waybar.
+WAYBAR_CONFIG = "/usr/local/share/b8k/waybar/config"
+WAYBAR_STYLE = "/usr/local/share/b8k/waybar/style.css"
 # The XDG data folders, one's own first: programs installed with a prefix of
 # /usr/local (install.sh) or /usr (a package) are found alike.
 DATA_DIRS = [os.environ.get("XDG_DATA_HOME") or os.path.expanduser("~/.local/share")] + \

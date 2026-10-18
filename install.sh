@@ -40,9 +40,10 @@ install -m 644 "$here"/share/icons/* "$share/"
 # (programs bring .desktop files), the web-app windows' icon.
 rm -rf "$share/python" "$share/site.svg"
 rmdir "$share/apps.d" 2>/dev/null || true
-install -d -m 755 "$root/etc/xdg/waybar"
-install -m 644 "$here/waybar/config" "$root/etc/xdg/waybar/config"
-install -m 644 "$here/waybar/style.css" "$root/etc/xdg/waybar/style.css"
+# The panel's configuration in the shell's folder (/etc/xdg/waybar is the
+# waybar package's own).
+install -D -m 644 "$here/waybar/config" "$share/waybar/config"
+install -D -m 644 "$here/waybar/style.css" "$share/waybar/style.css"
 for t in "$here"/themes/*; do
 	install -D -m 644 "$t/gtk-3.0/gtk.css" "$root/usr/share/themes/${t##*/}/gtk-3.0/gtk.css"
 done
