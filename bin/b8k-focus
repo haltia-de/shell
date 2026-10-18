@@ -20,19 +20,15 @@ ACTIVATED, MINIMIZED = 2, 1
 APPS = os.path.join(os.environ.get("XDG_RUNTIME_DIR", "/nonexistent"), "b8k", "apps.conf")
 if not os.path.exists(APPS):
     APPS = "/usr/local/share/b8k/apps.conf"
-# The same invisible mark is written by b8k-webapp.js onto web-app windows.
-WEBAPP_MARK = "\u2060"
 
 
 def load_apps():
-    """(BUTTONS, WEBAPPS) from apps.conf.
-
-    BUTTONS holds (id, signal, app_ids). Waybar adds the signal to SIGRTMIN;
-    0 is tracked for taps but never sent, as SIGRTMIN itself would stop the
-    bar. A web app is told by its window title: the mark, then its label."""
+    """BUTTONS from apps.conf: (id, signal, app_ids). Waybar adds the signal
+    to SIGRTMIN; 0 is tracked for taps but never sent, as SIGRTMIN itself
+    would stop the bar."""
     conf = configparser.ConfigParser(interpolation=None)
     conf.read(APPS, encoding="utf-8")
-    buttons, webapps = [], {}
+    buttons = []
     for bid in conf.sections():
         sec = conf[bid]
         try:
@@ -40,9 +36,7 @@ def load_apps():
         except ValueError:
             sig = 0
         buttons.append((bid, sig, tuple(sec.get("app_ids", "").split())))
-        if sec.get("url"):
-            webapps[bid] = WEBAPP_MARK + sec.get("label", bid)
-    return tuple(buttons), webapps
+    return tuple(buttons)
 
 
 def load_slots():
@@ -56,7 +50,7 @@ def load_slots():
 
 
 # Read once: after a change to apps.conf, restart "b8k-focus watch".
-BUTTONS, WEBAPPS = load_apps()
+BUTTONS = load_apps()
 SLOTS = load_slots()
 
 
@@ -218,21 +212,8 @@ def live_windows(found):
     return [w for w in found.values() if not w.get("closed") and w["app_id"]]
 
 
-def is_webapp(win):
-    return win.get("title", "").startswith(WEBAPP_MARK)
-
-
 def matches_button(bid, names, win):
-    if win.get("closed"):
-        return False
-    prefix = WEBAPPS.get(bid)
-    if prefix:
-        return win.get("title", "").startswith(prefix)
-    if win["app_id"] not in names:
-        return False
-    if bid == "firefox" and is_webapp(win):
-        return False
-    return True
+    return not win.get("closed") and win["app_id"] in names
 
 
 def button_classes(found):
@@ -406,9 +387,6 @@ def run():
         "activate",
         "close",
         "watch",
-        "front-webapp",
-        "raise-webapp",
-        "close-webapp",
     ):
         sys.stderr.write(
             "usage: b8k-focus list|dump|has|activate|close|watch [app_id...]\n"
@@ -436,33 +414,9 @@ def run():
             for win in windows:
                 sys.stdout.write("%s\t%s\n" % (win["app_id"], win["title"]))
             return 0
-        if cmd in ("front-webapp", "raise-webapp", "close-webapp"):
-            prefix = WEBAPPS.get(sys.argv[2] if len(sys.argv) > 2 else "")
-            if not prefix:
-                return 1
-            web = [w for w in windows if w.get("title", "").startswith(prefix)]
-            if cmd == "front-webapp":
-                return 0 if any(w.get("activated") for w in web) else 1
-            if cmd == "close-webapp":
-                if not web:
-                    return 1
-                for win in web:
-                    conn.send(win["handle"], REQ_CLOSE, b"")
-                for obj, opcode, body in roundtrip(conn):
-                    display_error(obj, opcode, body)
-                return 0
-            if not web or seat is None:
-                return 1
-            pending = [w for w in web if not w["activated"]]
-            target = pending[0] if pending else web[0]
-            conn.send(target["handle"], REQ_ACTIVATE, struct.pack("<I", seat))
-            for obj, opcode, body in roundtrip(conn):
-                display_error(obj, opcode, body)
-            return 0
         matched = [w for w in windows if w["app_id"] in wanted]
         if cmd == "has":
             return 0 if matched else 1
-        matched = [w for w in matched if not is_webapp(w)]
         if cmd == "close":
             if not matched:
                 return 1

@@ -72,7 +72,6 @@ slot_id() {
 
 label_of() { field "$1" label; }
 # A web app opens the site in its own Firefox window, without tabs or an address bar.
-url_of() { field "$1" url; }
 bin_of() { field "$1" exec; }
 aliases_of() { field "$1" app_ids; }
 
@@ -165,9 +164,7 @@ tap-slot)
 	;;
 start)
 	id=${2:-}
-	if ! url_of "$id" >/dev/null 2>&1; then
-		aliases_of "$id" >/dev/null || exit 1
-	fi
+	aliases_of "$id" >/dev/null || exit 1
 	setsid "$0" open "$id" </dev/null >"$run"/b8k-launch-"$id".log 2>&1 &
 	exit 0
 	;;
@@ -179,14 +176,6 @@ tap)
 	if [ -e "$run/b8k-home.raised" ]; then
 		/usr/local/bin/b8k-home hide
 		exec "$0" start "$id"
-	fi
-	if url_of "$id" >/dev/null 2>&1; then
-		if /usr/local/bin/b8k-focus front-webapp "$id" >/dev/null 2>&1; then
-			setsid /usr/local/bin/b8k-ask close-webapp "$id" </dev/null >"$run"/b8k-ask.log 2>&1 &
-			exit 0
-		fi
-		setsid "$0" open "$id" </dev/null >"$run"/b8k-launch-"$id".log 2>&1 &
-		exit 0
 	fi
 	aliases_of "$id" >/dev/null || exit 1
 	class=idle
@@ -255,41 +244,6 @@ open)
 	id=${2:-}
 	exec 9>"$dir/$id.lock"
 	if ! flock -n 9; then
-		exit 0
-	fi
-	url=$(url_of "$id" 2>/dev/null || true)
-	if [ -n "$url" ]; then
-		names=$(aliases_of firefox)
-		splash_pid=
-		stop_splash() {
-			if [ -n "$splash_pid" ]; then
-				kill "$splash_pid" 2>/dev/null || true
-				splash_pid=
-			fi
-		}
-		trap stop_splash EXIT
-		if /usr/local/bin/b8k-focus raise-webapp "$id" >/dev/null 2>&1; then
-			exit 0
-		fi
-		mkdir -p "$run"/b8k-webapp.d
-		printf '%s\n' "$url" > "$run"/b8k-webapp.d/"$id"
-		if ! /usr/local/bin/b8k-focus has $names >/dev/null 2>&1; then
-			if [ -x /usr/local/bin/b8k-splash ]; then
-				/usr/local/bin/b8k-splash "$id" >"$run"/b8k-splash.log 2>&1 9>&- &
-				splash_pid=$!
-			fi
-		fi
-		if ! alive firefox; then
-			firefox >"$run"/b8k-app-"$id".log 2>&1 9>&- &
-		fi
-		i=0
-		while [ "$i" -lt 40 ]; do
-			if /usr/local/bin/b8k-focus raise-webapp "$id" >/dev/null 2>&1; then
-				exit 0
-			fi
-			i=$((i + 1))
-			sleep 0.5
-		done
 		exit 0
 	fi
 	names=$(aliases_of "$id") || exit 0

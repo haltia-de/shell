@@ -36,7 +36,10 @@ for f in apps.conf panel fuzzel-ask.ini foot.ini phoc.ini mako.conf; do
 	install -m 644 "$here/share/$f" "$share/$f"
 done
 install -m 644 "$here"/share/icons/* "$share/"
-install -D -m 644 "$here/share/python/b8k_ui.py" "$share/python/b8k_ui.py"
+# Gone with ADR 0001 step 5: b8k_ui (programs use b8k-compat), apps.d
+# (programs bring .desktop files), the web-app windows' icon.
+rm -rf "$share/python" "$share/site.svg"
+rmdir "$share/apps.d" 2>/dev/null || true
 install -d -m 755 "$root/etc/xdg/waybar"
 install -m 644 "$here/waybar/config" "$root/etc/xdg/waybar/config"
 install -m 644 "$here/waybar/style.css" "$root/etc/xdg/waybar/style.css"

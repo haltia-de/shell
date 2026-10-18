@@ -10,23 +10,85 @@ signal (what GNOME's Dash to Dock, KDE's task manager and Plank read):
         {"count": <int64 4>, "count-visible": <true>})
 
 b8k-badges (started by b8k-launcher) hears it on the session bus and hands
-the number to the shell's badge (b8k_ui.badge: $XDG_RUNTIME_DIR/b8k-badge/
-<id>, then the panel button is told). The program is found in the session's
+the number to the panel: $XDG_RUNTIME_DIR/b8k-badge/<id>, which
+b8k-launch status shows on the button, then the button is told (badge()). The program is found in the session's
 apps.conf by its id, or by an app_ids word, which is how a program still
 under its old shell id (max, with app_ids b8k.Max) is found. A count that
 is not visible, or a program leaving the bus, clears the number.
 """
 import configparser
 import os
-import sys
+import signal
 
 import gi
 
 gi.require_version("Gio", "2.0")
 from gi.repository import Gio, GLib  # noqa: E402
 
-sys.path.insert(0, "/usr/local/share/b8k/python")
-import b8k_ui  # noqa: E402
+SHARE = "/usr/local/share/b8k"
+WAYBAR = "/usr/bin/waybar"
+
+
+def apps_conf():
+    """The session's apps.conf (b8k-apps), else the built-in one."""
+    run = os.environ.get("XDG_RUNTIME_DIR", "")
+    session = os.path.join(run, "b8k", "apps.conf")
+    return session if run and os.path.exists(session) else os.path.join(SHARE, "apps.conf")
+
+
+def panel_signal(app_id):
+    """The program's waybar signal (b8k-apps numbers the buttons by their
+    place on the panel); 0 when it has no button."""
+    try:
+        with open(apps_conf(), encoding="utf-8") as fh:
+            inside = False
+            for line in fh:
+                line = line.strip()
+                if line.startswith("["):
+                    inside = line == "[%s]" % app_id
+                elif inside and line.replace(" ", "").startswith("signal="):
+                    return int(line.split("=", 1)[1])
+    except (OSError, ValueError):
+        pass
+    return 0
+
+
+def badge(app_id, count):
+    """Write the number b8k-launch shows on the program's button, then tell
+    waybar to redraw it. An uncaught real-time signal would kill the bar,
+    and the whole session with it, so only a waybar that catches it gets
+    one."""
+    run = os.environ.get("XDG_RUNTIME_DIR")
+    if not run:
+        return
+    folder = os.path.join(run, "b8k-badge")
+    try:
+        os.makedirs(folder, mode=0o700, exist_ok=True)
+        path = os.path.join(folder, app_id)
+        with open(path + ".new", "w") as fh:
+            fh.write("%d\n" % count)
+        os.replace(path + ".new", path)
+    except OSError:
+        return
+    sig = panel_signal(app_id)
+    if sig <= 0:
+        return
+    signum = signal.SIGRTMIN + sig
+    for pid in os.listdir("/proc"):
+        if not pid.isdigit():
+            continue
+        try:
+            if os.readlink("/proc/%s/exe" % pid) != WAYBAR:
+                continue
+            if os.stat("/proc/" + pid).st_uid != os.getuid():
+                continue
+            with open("/proc/%s/status" % pid) as fh:
+                caught = next((int(l.split()[1], 16) for l in fh if l.startswith("SigCgt:")), 0)
+            if caught >> (signum - 1) & 1:
+                os.kill(int(pid), signum)
+        except (OSError, ValueError):
+            continue
+
 
 shown = {}  # bus name -> the ids it set a count for
 
@@ -35,7 +97,7 @@ def program_of(desktop_id):
     """The apps.conf section for a .desktop id, or None."""
     conf = configparser.ConfigParser(interpolation=None)
     try:
-        conf.read(b8k_ui.apps_conf(), encoding="utf-8")
+        conf.read(apps_conf(), encoding="utf-8")
     except configparser.Error:
         return None
     if conf.has_section(desktop_id):
@@ -64,7 +126,7 @@ def on_update(_bus, sender, _path, _iface, _signal, params, _data):
         count = max(0, min(int(count), 9999))
     except (TypeError, ValueError):
         count = 0
-    b8k_ui.badge(app, count)
+    badge(app, count)
     shown.setdefault(sender, set()).add(app)
 
 
@@ -73,7 +135,7 @@ def on_owner(_bus, _sender, _path, _iface, _signal, params, _data):
     if new or name not in shown:
         return
     for app in shown.pop(name):  # the program left the bus: no count from it now
-        b8k_ui.badge(app, 0)
+        badge(app, 0)
 
 
 def main():

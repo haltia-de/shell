@@ -18,9 +18,6 @@ A program holds the screen on, or the system awake, as on any desktop:
 with a logind inhibitor in "block" mode — "idle" keeps the idle timer from
 turning the lamp off (a video), "sleep" keeps the system from sleeping
 while the lamp is off (music); b8k-compat's Awake takes "sleep:idle".
-The shell's older way still counts: a file in $XDG_RUNTIME_DIR/b8k-awake/
-named after the program's pid, <pid>.screen or <pid>.suspend; a file
-whose process is gone counts for nothing.
 """
 import ctypes
 import errno
@@ -314,19 +311,8 @@ def inhibited(what):
 
 def awake_held(kind):
     """True while a program keeps the screen on ("screen") or the system up
-    ("suspend"): a logind block inhibitor, or a live <pid>.<kind> file."""
-    if inhibited("idle" if kind == "screen" else "sleep"):
-        return True
-    try:
-        uid = pwd.getpwnam(session_user()).pw_uid
-        names = os.listdir("/run/user/%d/b8k-awake" % uid)
-    except (OSError, KeyError):
-        return False
-    for name in names:
-        pid, _dot, what = name.partition(".")
-        if what == kind and pid.isdigit() and os.path.exists("/proc/" + pid):
-            return True
-    return False
+    ("suspend") with a logind block inhibitor."""
+    return inhibited("idle" if kind == "screen" else "sleep")
 
 
 def session_env():
