@@ -1,0 +1,542 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0
+# The touch filter's settings (b8k-touchguard), for whoever looks after the
+# tablet: every value of /etc/b8k/touchguard.conf as a large slider, a
+# field to try touches in, and the filter's own word on each touch (taken,
+# dropped as a brush, a repeat, a palm), which it writes to
+# /run/b8k-touchguard.events while this window is open.
+#
+# A change goes to the filter at once (b8k-touchguard-conf through doas,
+# which keeps the values where a finger still works, and a reload that
+# keeps the screen grabbed). Unless «Оставить» is tapped within 15 s, the
+# values go back to what was kept: a filter that no longer takes the
+# finger undoes itself. Closing the window undoes what was not kept, too.
+import fcntl
+import os
+import re
+import signal
+import subprocess
+import sys
+
+import gi
+
+gi.require_version("Gtk", "3.0")
+gi.require_version("Gdk", "3.0")
+from gi.repository import Gdk, GLib, Gtk  # noqa: E402
+
+CONF = "/etc/b8k/touchguard.conf"
+DEFAULTS = "/usr/local/share/b8k/touchguard.conf"
+HELPER = "/usr/local/sbin/b8k-touchguard-conf"
+EVENTS = "/run/b8k-touchguard.events"
+CONFIRM_S = 15
+APPLY_MS = 600  # a slider dragged is sent once it rests this long
+LOG_RENEW_S = 10 * 60  # the filter logs for 15 minutes per request
+PX_PER_UNIT = 86 / 150  # the screen's units against pixels (Synaptics Blade10)
+
+# key, title, hint, unit. The ranges come from the helper, which enforces
+# them as root.
+GROUPS = [
+    ("Касание", [
+        ("hold_ms", "Время касания",
+         "Касание короче засчитывается как случайное (вскользь). Палец "
+         "нажимает 75–120 мс", "ms"),
+        ("tap_radius", "Сдвиг пальца",
+         "Палец, ушедший дальше, листает или тянет и не вибрирует", "units"),
+        ("long_ms", "Долгое нажатие",
+         "Палец, лежащий столько на месте, вибрирует ещё раз", "ms"),
+    ]),
+    ("Дрожание руки", [
+        ("repeat_ms", "Повтор: время",
+         "Новое касание раньше этого после прошлого и рядом с ним — "
+         "второй удар дрожащей руки, отбрасывается. 0 — не отбрасывать", "ms"),
+        ("repeat_radius", "Повтор: расстояние",
+         "Насколько близко к прошлому касанию повтор отбрасывается", "units"),
+    ]),
+    ("Ладонь", [
+        ("palm_major", "Ладонь: размер пятна",
+         "Пятно такого размера и больше — ладонь. Из 15; палец — около 5, "
+         "ладонь — 12–15", "of15"),
+        ("palm_pressure", "Ладонь: давление",
+         "Такое давление и сильнее — ладонь. Из 255; палец — около 48, "
+         "ладонь — 120–143", "of255"),
+        ("palm_contacts", "Ладонь: касаний сразу",
+         "Столько касаний одновременно — ладонь", "count"),
+        ("palm_grace_ms", "Пауза после ладони",
+         "Столько экран не отвечает, когда ладонь поднята", "ms"),
+    ]),
+    ("Вибрация", [
+        ("buzz_ms", "Длина вибрации",
+         "Отклик на каждое нажатие. 0 — без вибрации; короче 50 мс не "
+         "ощущается", "ms"),
+    ]),
+]
+STEPS = {"ms": 10, "units": 10, "of15": 1, "of255": 5, "count": 1}
+LABELS = {k: t for _g, rows in GROUPS for k, t, _h, _u in rows}
+
+CSS = b"""
+.page { background-color: #e6e6e4; }
+.group { color: #2e3436; font-size: 26px; font-weight: bold; }
+.title { color: #2e3436; font-size: 24px; }
+.hint { color: #77767b; font-size: 18px; }
+.value { color: #2e3436; font-size: 26px; font-weight: bold; }
+.row {
+  background-color: #f2f2f0;
+  border: 1px solid #c0bfbc;
+  border-radius: 12px;
+}
+button.step {
+  color: #2e3436;
+  font-size: 34px;
+  min-width: 72px;
+  min-height: 72px;
+  border-radius: 12px;
+}
+button.action { font-size: 24px; min-height: 72px; border-radius: 12px; padding: 0 24px; }
+button.keep { background: #3584e4; color: #ffffff; border-color: #1c71d8; }
+scale trough { min-height: 20px; border-radius: 10px; }
+scale highlight { background-color: #3584e4; border-radius: 10px; }
+scale slider { min-width: 56px; min-height: 56px; border-radius: 28px; }
+.banner {
+  background-color: #c4dcf7;
+  border-radius: 12px;
+}
+.banner label { color: #2e3436; font-size: 22px; }
+.field {
+  background-color: #f2f2f0;
+  border: 2px dashed #c0bfbc;
+  border-radius: 12px;
+}
+.feed label { font-size: 20px; color: #2e3436; }
+.feed .ok { color: #26a269; }
+.feed .drop { color: #c64600; }
+.feed .palm { color: #c01c28; }
+.feed .quiet { color: #77767b; }
+"""
+
+
+def read_conf(path):
+    values = {}
+    try:
+        with open(path) as fh:
+            for line in fh:
+                m = re.match(r"\s*([a-z_]+)\s*=\s*(-?\d+)", line)
+                if m and not line.lstrip().startswith("#"):
+                    values[m.group(1)] = int(m.group(2))
+    except OSError:
+        pass
+    return values
+
+
+def read_ranges():
+    ranges = {}
+    try:
+        out = subprocess.run([HELPER, "ranges"], capture_output=True, text=True,
+                             timeout=5).stdout
+    except (OSError, subprocess.SubprocessError):
+        return ranges
+    for line in out.splitlines():
+        parts = line.split()
+        if len(parts) == 3:
+            ranges[parts[0]] = (int(parts[1]), int(parts[2]))
+    return ranges
+
+
+def helper(*args):
+    """Runs the root helper; returns its error text, or None."""
+    try:
+        res = subprocess.run(["doas", "-n", HELPER] + list(args), capture_output=True,
+                             text=True, timeout=10)
+    except (OSError, subprocess.SubprocessError) as exc:
+        return str(exc)
+    if res.returncode:
+        return res.stderr.strip() or "ошибка %d" % res.returncode
+    return None
+
+
+def show_value(key, unit, v):
+    if unit == "ms":
+        if key == "buzz_ms" and v == 0:
+            return "нет"
+        if key == "repeat_ms" and v == 0:
+            return "выкл."
+        return "%d мс" % v
+    if unit == "units":
+        return "%d px" % round(v * PX_PER_UNIT)
+    if unit == "of15":
+        return "%d из 15" % v
+    if unit == "of255":
+        return "%d из 255" % v
+    return str(v)
+
+
+# The filter's log lines, as the feed shows them: (pattern, text, class).
+FEED = [
+    (r"touch \d+ at \d+,\d+ size (\d+) pressure (\d+)",
+     "Касание засчитано · пятно {0}, давление {1}", "ok"),
+    (r"lift \d+ after (\d+) ms, moved", "Поднят через {0} мс, сдвинулся: листание", "quiet"),
+    (r"lift \d+ after (\d+) ms", "Поднят через {0} мс", "quiet"),
+    (r"long press", "Долгое нажатие", "ok"),
+    (r"drop \d+: (\d+) ms, a brush", "Отброшено: вскользь, {0} мс", "drop"),
+    (r"drop \d+ at \d+,\d+: repeat after (\d+) ms, (\d+) units away",
+     "Отброшено: повтор через {0} мс, в {1} px", "drop"),
+    (r"drop \d+ at \d+,\d+: after a palm", "Отброшено: пауза после ладони", "drop"),
+    (r"drop \d+ at \d+,\d+: second finger", "Отброшено: второй палец", "drop"),
+    (r"palm \((\d+) contacts, size (\d+), pressure (\d+)\)",
+     "Ладонь: касаний {0}, пятно {1}, давление {2}", "palm"),
+    (r"hold \d+ ms, repeat", "Настройки применены", "quiet"),
+]
+
+
+class Setup:
+    def __init__(self):
+        self.ranges = read_ranges()
+        self.defaults = read_conf(DEFAULTS)
+        current = read_conf(CONF)
+        self.kept = {}
+        for key in LABELS:
+            lo, hi = self.ranges.get(key, (0, 0))
+            v = current.get(key, self.defaults.get(key, lo))
+            self.kept[key] = min(max(v, lo), hi)
+        self.applied = dict(self.kept)
+        self.scales = {}
+        self.values = {}
+        self.pending = None
+        self.countdown = None
+        self.left = 0
+        self.log = None
+        self.taps = []  # (x, y, alpha) of what reached the window
+        self.build()
+        self.open_log()
+        GLib.timeout_add_seconds(LOG_RENEW_S, self.renew_log)
+
+    # The window.
+
+    def build(self):
+        provider = Gtk.CssProvider()
+        provider.load_from_data(CSS)
+        Gtk.StyleContext.add_provider_for_screen(
+            Gdk.Screen.get_default(), provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+
+        win = self.win = Gtk.Window(title="Касания")
+        header = Gtk.HeaderBar(title="Касания")
+        win.set_titlebar(header)
+        win.connect("delete-event", self.on_close)
+
+        page = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=20)
+        page.get_style_context().add_class("page")
+        for side in ("start", "end", "top", "bottom"):
+            getattr(page, "set_margin_" + side)(16)
+        win.add(page)
+
+        # Left: the settings.
+        left = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=16)
+        page.pack_start(left, True, True, 0)
+        if not self.ranges:
+            note = Gtk.Label(label="Нет b8k-touchguard-conf: менять нечего", xalign=0)
+            note.get_style_context().add_class("title")
+            left.pack_start(note, False, False, 0)
+
+        self.banner = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=16)
+        self.banner.get_style_context().add_class("banner")
+        self.banner_text = Gtk.Label(xalign=0, wrap=True)
+        self.banner_text.set_margin_start(20)
+        self.banner.pack_start(self.banner_text, True, True, 0)
+        undo = Gtk.Button(label="Вернуть")
+        undo.get_style_context().add_class("action")
+        undo.connect("clicked", lambda _b: self.revert())
+        keep = Gtk.Button(label="Оставить")
+        for cls in ("action", "keep"):
+            keep.get_style_context().add_class(cls)
+        keep.connect("clicked", lambda _b: self.keep())
+        for b in (undo, keep):
+            b.set_margin_top(10)
+            b.set_margin_bottom(10)
+        keep.set_margin_end(10)
+        self.banner.pack_end(keep, False, False, 0)
+        self.banner.pack_end(undo, False, False, 0)
+        self.banner.set_no_show_all(True)
+        left.pack_start(self.banner, False, False, 0)
+
+        scroll = Gtk.ScrolledWindow()
+        scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        scroll.set_kinetic_scrolling(True)
+        left.pack_start(scroll, True, True, 0)
+        rows = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=14)
+        rows.set_margin_end(16)
+        scroll.add(rows)
+        for group, params in GROUPS:
+            g = Gtk.Label(label=group, xalign=0)
+            g.get_style_context().add_class("group")
+            g.set_margin_top(10)
+            rows.pack_start(g, False, False, 0)
+            for key, title, hint, unit in params:
+                if key in self.ranges:
+                    rows.pack_start(self.row(key, title, hint, unit), False, False, 0)
+
+        actions = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=16)
+        reset = Gtk.Button(label="Как при установке")
+        reset.get_style_context().add_class("action")
+        reset.connect("clicked", lambda _b: self.set_all(self.defaults))
+        reset.set_sensitive(bool(self.defaults))
+        actions.pack_start(reset, False, False, 0)
+        left.pack_start(actions, False, False, 0)
+
+        # Right: the field to try touches in, and what the filter said.
+        right = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=16)
+        right.set_size_request(420, -1)
+        page.pack_start(right, False, False, 0)
+        t = Gtk.Label(label="Проверка", xalign=0)
+        t.get_style_context().add_class("group")
+        right.pack_start(t, False, False, 0)
+        h = Gtk.Label(label="Касайтесь здесь: засчитанное касание оставляет "
+                      "синий круг", xalign=0, wrap=True, max_width_chars=30)
+        h.get_style_context().add_class("hint")
+        right.pack_start(h, False, False, 0)
+        field = self.field = Gtk.DrawingArea()
+        field.get_style_context().add_class("field")
+        field.set_size_request(-1, 300)
+        field.add_events(Gdk.EventMask.BUTTON_PRESS_MASK | Gdk.EventMask.BUTTON_RELEASE_MASK)
+        field.connect("draw", self.draw_field)
+        field.connect("button-press-event", self.on_tap)
+        right.pack_start(field, False, False, 0)
+        self.feed = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        self.feed.get_style_context().add_class("feed")
+        right.pack_start(self.feed, True, True, 0)
+
+        win.show_all()
+
+    def row(self, key, title, hint, unit):
+        lo, hi = self.ranges[key]
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        box.get_style_context().add_class("row")
+        inner = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        for side in ("start", "end", "top", "bottom"):
+            getattr(inner, "set_margin_" + side)(16)
+        box.pack_start(inner, True, True, 0)
+
+        top = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
+        t = Gtk.Label(label=title, xalign=0)
+        t.get_style_context().add_class("title")
+        top.pack_start(t, True, True, 0)
+        value = self.values[key] = Gtk.Label(xalign=1)
+        value.get_style_context().add_class("value")
+        top.pack_end(value, False, False, 0)
+        inner.pack_start(top, False, False, 0)
+
+        h = Gtk.Label(label=hint, xalign=0, wrap=True)
+        h.get_style_context().add_class("hint")
+        inner.pack_start(h, False, False, 0)
+
+        line = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
+        step = STEPS[unit]
+        scale = self.scales[key] = Gtk.Scale.new_with_range(
+            Gtk.Orientation.HORIZONTAL, lo, hi, step)
+        scale.set_draw_value(False)
+        scale.set_value(self.kept[key])
+        scale.connect("value-changed", self.on_change, key, unit)
+        scale.connect("scroll-event", lambda *_a: True)  # the page scrolls, not it
+        minus = Gtk.Button(label="−")
+        plus = Gtk.Button(label="+")
+        for b, d in ((minus, -step), (plus, step)):
+            b.get_style_context().add_class("step")
+            b.connect("clicked", lambda _b, d=d: scale.set_value(scale.get_value() + d))
+        line.pack_start(minus, False, False, 0)
+        line.pack_start(scale, True, True, 0)
+        line.pack_start(plus, False, False, 0)
+        inner.pack_start(line, False, False, 0)
+        value.set_text(show_value(key, unit, self.kept[key]))
+        return box
+
+    # Changes.
+
+    def current(self):
+        return {k: int(round(s.get_value())) for k, s in self.scales.items()}
+
+    def on_change(self, scale, key, unit):
+        step = STEPS[unit]
+        v = int(round(scale.get_value()))
+        lo = self.ranges[key][0]
+        snapped = lo + round((v - lo) / step) * step
+        if snapped != v and snapped <= self.ranges[key][1]:
+            scale.set_value(snapped)  # comes back here with the snapped value
+            return
+        self.values[key].set_text(show_value(key, unit, v))
+        if self.pending is not None:
+            GLib.source_remove(self.pending)
+        self.pending = GLib.timeout_add(APPLY_MS, self.apply)
+
+    def apply(self):
+        self.pending = None
+        want = self.current()
+        diff = ["%s=%d" % (k, v) for k, v in want.items() if self.applied.get(k) != v]
+        if diff:
+            err = helper("set", *diff)
+            if err:
+                self.say("Не применено: " + err, "palm")
+            else:
+                self.applied.update(want)
+        if self.applied != self.kept:
+            self.left = CONFIRM_S
+            if self.countdown is None:
+                self.countdown = GLib.timeout_add_seconds(1, self.tick)
+            self.show_banner()
+        else:
+            self.hide_banner()
+        return False
+
+    def set_all(self, values):
+        for key, scale in self.scales.items():
+            if key in values:
+                scale.set_value(values[key])
+
+    def keep(self):
+        if self.pending is not None:
+            GLib.source_remove(self.pending)
+            self.apply()
+        self.kept = dict(self.applied)
+        self.hide_banner()
+        self.say("Настройки сохранены", "ok")
+
+    def revert(self):
+        self.set_all(self.kept)
+        if self.pending is not None:
+            GLib.source_remove(self.pending)
+        self.apply()  # nothing differs from what is kept now: no countdown
+
+    def tick(self):
+        self.left -= 1
+        if self.left <= 0:
+            self.countdown = None
+            self.revert()
+            self.say("Изменения отменены: «Оставить» не нажали", "drop")
+            return False
+        self.show_banner()
+        return True
+
+    def show_banner(self):
+        self.banner_text.set_text(
+            "Попробуйте касания справа. Через %d с вернётся как было" % self.left)
+        self.banner.set_no_show_all(False)
+        self.banner.show_all()
+
+    def hide_banner(self):
+        if self.countdown is not None:
+            GLib.source_remove(self.countdown)
+            self.countdown = None
+        self.banner.hide()
+
+    def on_close(self, *_args):
+        if self.pending is not None:
+            GLib.source_remove(self.pending)
+            self.pending = None
+        if self.applied != self.kept:
+            helper("set", *("%s=%d" % kv for kv in self.kept.items()))
+        if self.log is not None:
+            helper("log", "off")
+        Gtk.main_quit()
+        return False
+
+    # The field and the feed.
+
+    def on_tap(self, _w, event):
+        self.taps.append([event.x, event.y, 1.0])
+        self.taps = self.taps[-12:]
+        if len(self.taps) == 1:
+            GLib.timeout_add(50, self.fade)
+        self.field.queue_draw()
+        return True
+
+    def fade(self):
+        for t in self.taps:
+            t[2] -= 0.02
+        self.taps = [t for t in self.taps if t[2] > 0]
+        self.field.queue_draw()
+        return bool(self.taps)
+
+    def draw_field(self, w, cr):
+        alloc = w.get_allocation()
+        Gtk.render_background(w.get_style_context(), cr, 0, 0, alloc.width, alloc.height)
+        Gtk.render_frame(w.get_style_context(), cr, 0, 0, alloc.width, alloc.height)
+        r = self.current().get("tap_radius", 80) * PX_PER_UNIT
+        for x, y, a in self.taps:
+            # The tap, and how far the finger may slide and still tap.
+            cr.set_source_rgba(0x35 / 255, 0x84 / 255, 0xe4 / 255, 0.25 * a)
+            cr.arc(x, y, r, 0, 6.2832)
+            cr.fill()
+            cr.set_source_rgba(0x35 / 255, 0x84 / 255, 0xe4 / 255, a)
+            cr.arc(x, y, 22, 0, 6.2832)
+            cr.fill()
+        return False
+
+    def say(self, text, cls):
+        label = Gtk.Label(label=text, xalign=0, wrap=True, max_width_chars=30)
+        label.get_style_context().add_class(cls)
+        self.feed.pack_start(label, False, False, 0)
+        self.feed.reorder_child(label, 0)
+        label.show()
+        children = self.feed.get_children()
+        for old in children[10:]:
+            old.destroy()
+
+    def open_log(self):
+        err = helper("log", "on")
+        try:
+            self.log = open(EVENTS, errors="replace")
+            self.log.seek(0, os.SEEK_END)
+        except OSError as exc:
+            self.log = None
+            self.say("Фильтр не пишет решений (%s): старая версия?" % exc.strerror, "quiet")
+            return
+        if err:
+            self.say("Фильтр не ответил: " + err, "palm")
+        GLib.timeout_add(200, self.read_log)
+
+    def renew_log(self):
+        helper("log", "on")
+        return True
+
+    def read_log(self):
+        try:
+            if os.fstat(self.log.fileno()).st_size < self.log.tell():
+                self.log.seek(0)  # the log was rotated or truncated
+            lines = self.log.readlines()
+        except OSError:
+            return True
+        for line in lines:
+            line = line.strip()
+            if not line.startswith("b8k-touchguard: "):
+                continue
+            line = line[len("b8k-touchguard: "):]
+            for pattern, text, cls in FEED:
+                m = re.match(pattern, line)
+                if m:
+                    args = list(m.groups())
+                    if "units away" in pattern:
+                        args[1] = round(int(args[1]) * PX_PER_UNIT)
+                    self.say(text.format(*args), cls)
+                    break
+        return True
+
+
+def main():
+    GLib.set_prgname("b8k-touchguard-setup")
+    run = os.environ.get("XDG_RUNTIME_DIR") or os.path.expanduser("~/.cache")
+    lock = open(os.path.join(run, "b8k-touchguard-setup.lock"), "a")
+    try:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        return 0  # already open
+    setup = Setup()
+    # Stopped from outside, it undoes what was not kept as well.
+    try:
+        gi.require_version("GLibUnix", "2.0")
+        from gi.repository import GLibUnix
+        GLibUnix.signal_add(GLib.PRIORITY_DEFAULT, signal.SIGTERM, setup.on_close)
+    except (ImportError, ValueError):
+        GLib.unix_signal_add(GLib.PRIORITY_DEFAULT, signal.SIGTERM, setup.on_close)
+    Gtk.main()
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

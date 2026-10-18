@@ -20,7 +20,7 @@
  *  - repeat_ms / repeat_radius: a new touch this soon after the last one
  *    (from its lift to the new landing), this near to it, is a tremor's
  *    second strike and is dropped (Ignore Repeat); a quick double tap is
- *    one tap. 400 ms and 150 units (some 86 px) by default.
+ *    one tap. 300 ms and 140 units (some 80 px) by default.
  *  - a second finger while one is down is ignored: one finger at a time.
  *  - buzz_ms: a tap buzzes the motor (the regulator-haptic input device)
  *    this long, 70 ms by default, 0 for none: the shell's tap feedback for
@@ -29,6 +29,13 @@
  *    finger that moves farther scrolls or drags, and does not buzz. A
  *    finger held still for long_ms buzzes once then (a long press, as
  *    its menu opens) and not again on the lift.
+ *
+ * SIGHUP reads the settings again (b8k-touchguard-setup changes them while
+ * one tries them). SIGUSR1 logs every decision for the next 15 minutes,
+ * as B8K_TOUCHGUARD_DEBUG=1 does for good, to the log and to
+ * /run/b8k-touchguard.events when that exists (b8k-touchguard-conf makes
+ * it, readable by the session user only: it holds where each touch
+ * landed); SIGUSR2 stops that. The setup tool shows that file while open.
  *
  * Measured on the B8000-H: a finger is size 5 of 15, pressure ~48, 75-120
  * ms; a palm is 12-15, 120-143, with 3-6 contacts and ghost contacts of
@@ -65,16 +72,22 @@ struct slot {
 	int fresh; /* new this frame: its position events set where it landed */
 };
 
-static struct {
+struct config {
 	int hold_ms, repeat_ms, repeat_radius, palm_major, palm_pressure, palm_contacts;
 	int palm_grace_ms, buzz_ms, tap_radius, long_ms;
-} cfg = { 60, 400, 150, 11, 100, 3, 300, 70, 80, 600 };
+};
+static const struct config defaults = { 50, 300, 140, 11, 100, 3, 300, 70, 80, 600 };
+static struct config cfg;
 static int haptic_fd = -1, haptic_effect = -1;
 /* The touch handed to the session: when it went down, whether it moved
  * past tap_radius (a scroll: no buzz), whether it has buzzed (long press). */
 static long long touch_start;
 static int touch_down, touch_moved, touch_buzzed;
 static int debug; /* B8K_TOUCHGUARD_DEBUG=1: every decision to stderr */
+static long long debug_until; /* ms: SIGUSR1 logs them for a while */
+#define DEBUG_MS (15 * 60 * 1000)
+#define EVENTS "/run/b8k-touchguard.events"
+static FILE *events; /* the decisions for the setup tool, while logging */
 
 static struct slot slots[SLOTS];
 static int cur_slot, primary = -1, out_id = 1, in_fd = -1, out_fd = -1;
@@ -82,7 +95,7 @@ static int palm_block;          /* a palm is (or was just) on the glass */
 static long long palm_until;    /* ms: the grace after the palm left */
 static long long last_up = -1000000;
 static int last_x, last_y;
-static volatile sig_atomic_t running = 1;
+static volatile sig_atomic_t running = 1, reload, log_on, log_off;
 
 static long long now_ms(void)
 {
@@ -101,13 +114,28 @@ static void logf_(const char *fmt, ...)
 	vfprintf(stderr, fmt, ap);
 	fputc('\n', stderr);
 	va_end(ap);
+	if (events) {
+		va_start(ap, fmt);
+		fputs("b8k-touchguard: ", events);
+		vfprintf(events, fmt, ap);
+		fputc('\n', events);
+		fflush(events);
+		va_end(ap);
+	}
 }
 
+static int debugging(void)
+{
+	return debug || now_ms() < debug_until;
+}
+
+/* What the file does not name keeps its default. */
 static void read_config(const char *path)
 {
 	char line[256];
 	FILE *f = fopen(path, "r");
 
+	cfg = defaults;
 	if (!f)
 		return;
 	while (fgets(line, sizeof(line), f)) {
@@ -278,9 +306,20 @@ static void haptic_open(void)
 			haptic_effect = effect.id;
 		} else {
 			close(haptic_fd);
-			haptic_fd = -1;
+			haptic_fd = haptic_effect = -1;
 		}
 	}
+}
+
+/* Forget the motor: its effect is uploaded again, with the new buzz_ms. */
+static void haptic_close(void)
+{
+	if (haptic_fd < 0)
+		return;
+	if (haptic_effect >= 0)
+		ioctl(haptic_fd, EVIOCRMFF, haptic_effect);
+	close(haptic_fd);
+	haptic_fd = haptic_effect = -1;
 }
 
 static void buzz(void)
@@ -294,10 +333,8 @@ static void buzz(void)
 	play.type = EV_FF;
 	play.code = (unsigned short)haptic_effect;
 	play.value = 1;
-	if (write(haptic_fd, &play, sizeof(play)) != (ssize_t)sizeof(play)) {
-		close(haptic_fd);
-		haptic_fd = -1;
-	}
+	if (write(haptic_fd, &play, sizeof(play)) != (ssize_t)sizeof(play))
+		haptic_close();
 }
 
 static void out_down(struct slot *s)
@@ -358,9 +395,20 @@ static void out_up(int as_palm)
 static void check_long(long long t)
 {
 	if (touch_down && !touch_moved && !touch_buzzed && t - touch_start >= cfg.long_ms) {
+		if (debugging())
+			logf_("long press");
 		touch_buzzed = 1;
 		buzz();
 	}
+}
+
+static int isqrt(int v)
+{
+	int r = 0;
+
+	while ((r + 1) * (r + 1) <= v)
+		r++;
+	return r;
 }
 
 static int is_palm(const struct slot *s)
@@ -377,8 +425,9 @@ static void check_hold(long long t)
 		return;
 	p = &slots[primary];
 	if (p->state == PENDING && t - p->start >= cfg.hold_ms) {
-		if (debug)
-			logf_("touch %d at %d,%d", p->id, p->x0, p->y0);
+		if (debugging())
+			logf_("touch %d at %d,%d size %d pressure %d", p->id, p->x0, p->y0, p->major,
+			      p->pressure);
 		p->state = LIVE;
 		out_down(p);
 	}
@@ -387,7 +436,7 @@ static void check_hold(long long t)
 /* One frame of the screen (up to SYN_REPORT) has been read. */
 static void frame(long long t)
 {
-	int active = 0, palm = 0;
+	int active = 0, palm = 0, major = 0, pressure = 0;
 
 	for (int i = 0; i < SLOTS; i++) {
 		if (slots[i].id < 0)
@@ -395,12 +444,16 @@ static void frame(long long t)
 		active++;
 		if (is_palm(&slots[i]))
 			palm = 1;
+		if (slots[i].major > major)
+			major = slots[i].major;
+		if (slots[i].pressure > pressure)
+			pressure = slots[i].pressure;
 	}
 	if (active >= cfg.palm_contacts)
 		palm = 1;
 	if (palm && !palm_block) {
-		if (debug)
-			logf_("palm (%d contacts)", active);
+		if (debugging())
+			logf_("palm (%d contacts, size %d, pressure %d)", active, major, pressure);
 		palm_block = 1;
 		if (primary >= 0 && slots[primary].state == LIVE)
 			out_up(1);
@@ -427,9 +480,12 @@ static void frame(long long t)
 			     dx * dx + dy * dy < cfg.repeat_radius * cfg.repeat_radius;
 
 		if (t < palm_until || repeat || primary >= 0) {
-			if (debug)
+			if (debugging() && repeat && t >= palm_until && primary < 0)
+				logf_("drop %d at %d,%d: repeat after %lld ms, %d units away", s->id,
+				      s->x0, s->y0, t - last_up, isqrt(dx * dx + dy * dy));
+			else if (debugging())
 				logf_("drop %d at %d,%d: %s", s->id, s->x0, s->y0,
-				      t < palm_until ? "after a palm" : repeat ? "repeat" : "second finger");
+				      t < palm_until ? "after a palm" : "second finger");
 			s->state = DEAD;
 			continue;
 		}
@@ -451,9 +507,10 @@ static void lifted(int i, long long t)
 			last_up = t;
 			last_x = s->x;
 			last_y = s->y;
-			if (debug)
-				logf_("lift %d after %lld ms", s->id, t - s->start);
-		} else if (debug) {
+			if (debugging())
+				logf_("lift %d after %lld ms%s", s->id, t - s->start,
+				      touch_moved ? ", moved" : "");
+		} else if (debugging()) {
 			/* A pending one was too short: a brush, dropped. */
 			logf_("drop %d: %lld ms, a brush", s->id, t - s->start);
 		}
@@ -465,19 +522,37 @@ static void lifted(int i, long long t)
 
 static void on_signal(int sig)
 {
-	(void)sig;
-	running = 0;
+	if (sig == SIGHUP)
+		reload = 1;
+	else if (sig == SIGUSR1)
+		log_on = 1;
+	else if (sig == SIGUSR2)
+		log_off = 1;
+	else
+		running = 0;
+}
+
+static void log_config(void)
+{
+	logf_("hold %d ms, repeat %d ms / %d, palm size %d pressure %d contacts %d grace %d ms, "
+	      "buzz %d ms, tap %d, long %d ms",
+	      cfg.hold_ms, cfg.repeat_ms, cfg.repeat_radius, cfg.palm_major, cfg.palm_pressure,
+	      cfg.palm_contacts, cfg.palm_grace_ms, cfg.buzz_ms, cfg.tap_radius, cfg.long_ms);
 }
 
 int main(int argc, char **argv)
 {
 	struct input_event evs[64];
+	const char *config = argc > 1 ? argv[1] : "/etc/b8k/touchguard.conf";
 
-	read_config(argc > 1 ? argv[1] : "/etc/b8k/touchguard.conf");
+	read_config(config);
 	haptic_open(); /* found now, not on the first touch */
 	debug = getenv("B8K_TOUCHGUARD_DEBUG") != NULL;
 	signal(SIGTERM, on_signal);
 	signal(SIGINT, on_signal);
+	signal(SIGHUP, on_signal);
+	signal(SIGUSR1, on_signal);
+	signal(SIGUSR2, on_signal);
 	for (int i = 0; i < SLOTS; i++)
 		slots[i].id = -1;
 	in_fd = open_screen();
@@ -495,13 +570,38 @@ int main(int argc, char **argv)
 		logf_("grab: %s", strerror(errno));
 		return 1;
 	}
-	logf_("hold %d ms, repeat %d ms / %d, palm size %d pressure %d contacts %d",
-	      cfg.hold_ms, cfg.repeat_ms, cfg.repeat_radius, cfg.palm_major, cfg.palm_pressure,
-	      cfg.palm_contacts);
+	log_config();
 
 	while (running) {
 		struct pollfd pf = { in_fd, POLLIN, 0 };
 		int timeout = -1;
+
+		if (reload) {
+			reload = 0;
+			read_config(config);
+			haptic_close();
+			haptic_open();
+			log_config();
+		}
+		if (log_on) {
+			/* Only a file made for it: never one created here, as root. */
+			int fd = open(EVENTS, O_WRONLY | O_APPEND | O_CLOEXEC | O_NOFOLLOW);
+
+			log_on = 0;
+			if (events)
+				fclose(events);
+			events = fd >= 0 ? fdopen(fd, "a") : NULL;
+			debug_until = now_ms() + DEBUG_MS;
+			logf_("logging decisions for %d minutes", DEBUG_MS / 60000);
+		}
+		if (log_off || (debug_until && now_ms() >= debug_until)) {
+			log_off = 0;
+			debug_until = 0;
+			logf_("logging off");
+			if (events)
+				fclose(events);
+			events = NULL;
+		}
 
 		check_long(now_ms()); /* a still finger keeps sending events too */
 

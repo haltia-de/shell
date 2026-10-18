@@ -81,6 +81,8 @@ if [ -x "$TOOLS/b8k-touchguard" ]; then
 	install -D -m 755 "$here/etc/b8k-touchguard.initd" "$root/etc/init.d/b8k-touchguard"
 	[ -e "$root/etc/b8k/touchguard.conf" ] ||
 		install -m 644 "$here/etc/touchguard.conf" "$root/etc/b8k/touchguard.conf"
+	# The values as shipped, for b8k-touchguard-setup's «Как при установке».
+	install -m 644 "$here/etc/touchguard.conf" "$share/touchguard.conf"
 	install -d -m 755 "$root/etc/runlevels/default"
 	ln -sf /etc/init.d/b8k-touchguard "$root/etc/runlevels/default/b8k-touchguard"
 else
@@ -106,11 +108,13 @@ printf '[Login]\nHandlePowerKey=ignore\nHandlePowerKeyLongPress=ignore\n' \
 install -d -m 755 "$root/etc/NetworkManager/dispatcher.d"
 install -m 755 "$here/etc/nm-dispatcher-b8k-panel" "$root/etc/NetworkManager/dispatcher.d/90-b8k-panel"
 
-# The session user's commands without a password: the power menu and the
-# root terminal (z- sorts after wheel.conf; doas uses the last matching rule).
+# The session user's commands without a password: the power menu, the
+# root terminal and the touch settings (b8k-touchguard-conf checks every
+# value itself) (z- sorts after wheel.conf; doas uses the last matching rule).
 install -d -m 755 "$root/etc/doas.d"
 cat >"$root/etc/doas.d/z-b8k-shell.conf" <<'EOF'
 permit nopass user cmd /usr/local/sbin/b8k-poweroff args off
 permit nopass user cmd /usr/local/sbin/b8k-poweroff args reboot
 permit nopass user cmd /usr/local/sbin/b8k-rootsh
+permit nopass user cmd /usr/local/sbin/b8k-touchguard-conf
 EOF

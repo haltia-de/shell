@@ -74,7 +74,7 @@ MAX_BUTTONS = 10
 FULL_SIZE = 5
 # At least this many slots for open programs, even with a long panel.
 MIN_SLOTS = 2
-FIELDS = ("label", "icon", "app_ids", "exec", "env")
+FIELDS = ("label", "icon", "app_ids", "exec", "env", "home")
 ALIASES = {}  # old shell id -> the .desktop program that replaced it (build())
 
 
