@@ -1,6 +1,6 @@
 # Maintainer: Mikhail Nevskiy <rensomail@gmail.com>
 pkgname=b8k-shell
-pkgver=1.3.0
+pkgver=1.4.0
 pkgrel=0
 _wvkbd=bbecd996aae5a4dc4bc32bd643d37cefa9f63752
 pkgdesc="A tablet shell for an older person: panel, home screen, close button, touch filter, keyboard"

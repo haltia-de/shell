@@ -10,7 +10,8 @@
 #
 # Scenarios: tap, pinch (apart), zoom (together), slowpinch, join (the
 # second finger 15 ms after the first), scroll (two fingers up), palm,
-# three (three small fingers), drag (one finger up), link, wait.
+# three (three small fingers), drag (one finger up), link, wait, and
+# at=X,Y (a tap there, in screen units: 2230 × 1250 for 1280 × 800 px).
 import fcntl
 import glob
 import os
@@ -136,7 +137,14 @@ def pinch(spread_from, spread_to, gap_ms=80, steps=15):
 
 
 def scenario(name):
-    if name == "drag":  # one finger up the settings list
+    if name.startswith("at="):  # a tap at screen units: at=X,Y
+        x, y = (int(v) for v in name[3:].split(","))
+        down(0, x, y)
+        syn()
+        ms(100)
+        up(0)
+        syn()
+    elif name == "drag":  # one finger up the settings list
         down(0, 819, 1000)
         syn()
         for k in range(1, 26):

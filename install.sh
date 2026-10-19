@@ -47,6 +47,13 @@ install -D -m 644 "$here/waybar/style.css" "$share/waybar/style.css"
 for t in "$here"/themes/*; do
 	install -D -m 644 "$t/gtk-3.0/gtk.css" "$root/usr/share/themes/${t##*/}/gtk-3.0/gtk.css"
 done
+# GTK's file chooser as the shell wants it (folders first, no size or
+# type column, the folder the program names).
+install -D -m 644 "$here/share/b8k-shell.gschema.override" \
+	"$root/usr/share/glib-2.0/schemas/91-b8k-shell.gschema.override"
+if command -v glib-compile-schemas >/dev/null && [ -z "$root" ]; then
+	glib-compile-schemas /usr/share/glib-2.0/schemas
+fi
 install -D -m 644 "$here/share/galculator.conf" "$root/etc/skel/.config/galculator/galculator.conf"
 if [ -d "$root/home/user" ] && [ ! -e "$root/home/user/.config/galculator/galculator.conf" ]; then
 	install -d -m 755 -o 1000 -g 1000 "$root/home/user/.config/galculator"

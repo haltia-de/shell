@@ -165,7 +165,7 @@
     "return-type": "json",
     "format": "{text}",
     "exec-on-event": false,
-    "on-click-release": "/usr/local/bin/b8k-press hide 0; /usr/local/bin/b8k-ask hide",
+    "on-click-release": "/usr/local/bin/b8k-press hide 0; /usr/local/bin/b8k-tab",
     "tooltip": false
   }
 }

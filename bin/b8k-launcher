@@ -33,6 +33,26 @@ fi
 if [ -x /usr/local/bin/b8k-close ]; then
 	setsid /usr/local/bin/b8k-close >"$run"/b8k-close.log 2>&1 &
 fi
+# The file chooser's places (MAX's «Сохранить как», Firefox): the usual
+# folders that exist, added once each; one's own bookmarks stay.
+marks="$HOME/.config/gtk-3.0/bookmarks"
+mkdir -p "${marks%/*}"
+for d in Загрузки Downloads Документы Изображения Музыка Видео Раскраски; do
+	[ -d "$HOME/$d" ] || continue
+	uri="file://$HOME/$d"
+	awk -v u="$uri" '$1 == u { f = 1 } END { exit !f }' "$marks" 2>/dev/null ||
+		printf '%s %s\n' "$uri" "$d" >>"$marks"
+done
+# The chooser writes all its settings to dconf whenever it closes, so the
+# shell's defaults (91-b8k-shell.gschema.override) reach one who used it
+# before only through a reset: once, then one's own choices stay.
+if [ ! -e "$HOME/.config/b8k/filechooser-1" ] && command -v gsettings >/dev/null; then
+	for k in startup-mode sort-directories-first show-size-column show-type-column \
+		sidebar-width window-size window-position; do
+		gsettings reset org.gtk.Settings.FileChooser "$k" 2>/dev/null
+	done
+	mkdir -p "$HOME/.config/b8k" && : >"$HOME/.config/b8k/filechooser-1"
+fi
 # The brightness chosen last time (b8k-brightness keeps it).
 /usr/local/bin/b8k-brightness --restore >"$run"/b8k-brightness.log 2>&1
 # Settings starts through D-Bus activation and takes the bus environment.

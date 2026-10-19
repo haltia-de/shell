@@ -164,7 +164,14 @@ tap-slot)
 	;;
 start)
 	id=${2:-}
-	aliases_of "$id" >/dev/null || exit 1
+	if ! aliases_of "$id" >/dev/null; then
+		# An entry with no windows of its own («Служебные»: a menu) is
+		# run as it is, without a curtain to wait under.
+		bin=$(bin_of "$id") || exit 1
+		# shellcheck disable=SC2086 # exec is split on spaces (apps.conf)
+		setsid $bin </dev/null >"$run"/b8k-launch-"$id".log 2>&1 &
+		exit 0
+	fi
 	setsid "$0" open "$id" </dev/null >"$run"/b8k-launch-"$id".log 2>&1 &
 	exit 0
 	;;
@@ -177,7 +184,7 @@ tap)
 		/usr/local/bin/b8k-home hide
 		exec "$0" start "$id"
 	fi
-	aliases_of "$id" >/dev/null || exit 1
+	aliases_of "$id" >/dev/null || exec "$0" start "$id"
 	class=idle
 	if [ -f "$dir/state" ]; then
 		found=$(awk -v id="$id" '$1 == id { print $2; exit }' "$dir/state" 2>/dev/null || true)

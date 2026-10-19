@@ -11,7 +11,8 @@
  * It lives on the background layer right of the panel, so it is what one
  * sees with no window open. The panel's home button raises it to the top
  * layer over the windows; a tap on a tile starts or brings up that program
- * (b8k-launch start) and lowers it again. A long press asks whether to put
+ * (b8k-launch start) and lowers it again (not for a menu: an entry without
+ * app_ids, «Служебные»). A long press asks whether to put
  * the program on the panel or take it off (b8k-ask pin). While it is up,
  * $XDG_RUNTIME_DIR/b8k-home.raised exists (b8k-launch lowers it before a
  * panel tap, b8k-meter lights the home button) and the panel's home button
@@ -74,6 +75,7 @@ struct app {
 	char icon_path[512];
 	cairo_surface_t *icon;
 	char badge[16];
+	int windows; /* it has app_ids: no app_ids is a menu («Служебные») */
 };
 
 static struct app apps[MAX_APPS];
@@ -302,6 +304,8 @@ static void read_apps(void)
 			snprintf(cur.icon_path, sizeof(cur.icon_path), "%s", val);
 		else if (!strcmp(key, "exec") || !strcmp(key, "url"))
 			runnable = 1;
+		else if (!strcmp(key, "app_ids") && *val)
+			cur.windows = 1;
 		else if (!strcmp(key, "home") && !strcmp(val, "no"))
 			skip = 1;
 	}
@@ -811,7 +815,10 @@ static void press_up(void)
 	} else if (press >= 0 && !moved && !held) {
 		spawn("/usr/local/bin/b8k-press", apps[press].id, NULL);
 		spawn("/usr/local/bin/b8k-launch", "start", apps[press].id);
-		set_raised(0);
+		/* A menu opens over the home screen, which stays under it: what
+		 * is chosen there lowers it (b8k-launch tap), Отмена keeps it. */
+		if (apps[press].windows)
+			set_raised(0);
 	}
 	press = -1;
 	dirty = 1;

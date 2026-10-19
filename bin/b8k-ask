@@ -6,8 +6,8 @@
 #   b8k-ask close <id>
 #   b8k-ask close-front       (the "✕" of b8k-close: the window in front)
 #   b8k-ask pin <id>          (a long press on a home screen tile)
-#   b8k-ask hide              (the panel's "‹": hiding it is asked first, as
-#                             a hidden panel is easily lost by accident)
+#   b8k-ask service           (the «Служебные» tile: Settings, the touch
+#                             settings, brightness, the terminal)
 #
 # The question is a fuzzel menu (C, Wayland only) on the overlay layer: it
 # shows in about 0.3 s, where the GTK version in Python took 2.3 s, and it
@@ -96,10 +96,31 @@ close-front)
 	chosen
 	/usr/local/bin/b8k-focus close "$app"
 	;;
-hide)
-	[ "$(ask "Спрятать панель? Вернуть — касанием «›» внизу слева" "Спрятать" "Отмена")" = 0 ] || exit 0
+service)
+	# What the person rarely needs, in one place: each opens over the home
+	# screen like a tile does (b8k-launch tap lowers it).
+	set -- settings touch brightness term
+	labels=
+	for id in "$@"; do
+		case $id in
+		brightness) l=Яркость ;;
+		*) l=$(conf "$id" label) ;;
+		esac
+		labels="$labels${labels:+
+}${l:-$id}"
+	done
+	IFS='
+'
+	# shellcheck disable=SC2086 # one label per line
+	n=$(ask "Служебные" $labels "Отмена")
+	unset IFS
+	[ -n "$n" ] && [ "$n" -lt $# ] || exit 0
+	shift "$n"
 	chosen
-	exec /usr/local/bin/b8k-tab
+	case $1 in
+	brightness) /usr/local/bin/b8k-brightness 9>&- & ;;
+	*) /usr/local/bin/b8k-launch tap "$1" 9>&- ;;
+	esac
 	;;
 pin)
 	id=${2:-}
@@ -116,7 +137,7 @@ pin)
 	/usr/local/bin/b8k-apps "$verb" "$id" >/dev/null
 	;;
 *)
-	echo "usage: b8k-ask power | hide | b8k-ask close|pin <id>" >&2
+	echo "usage: b8k-ask power | service | b8k-ask close|pin <id>" >&2
 	exit 2
 	;;
 esac
