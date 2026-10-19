@@ -76,7 +76,7 @@ struct config {
 	int hold_ms, repeat_ms, repeat_radius, palm_major, palm_pressure, palm_contacts;
 	int palm_grace_ms, buzz_ms, tap_radius, long_ms;
 };
-static const struct config defaults = { 50, 300, 140, 11, 100, 3, 300, 70, 80, 600 };
+static const struct config defaults = { 40, 300, 140, 11, 100, 3, 300, 70, 80, 600 };
 static struct config cfg;
 static int haptic_fd = -1, haptic_effect = -1;
 /* The touch handed to the session: when it went down, whether it moved
