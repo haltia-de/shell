@@ -7,7 +7,7 @@
  *
  * It grabs the touchscreen (the device with a direct multitouch surface,
  * "Synaptics Blade10" here) and hands the session a filtered copy through
- * uinput, "b8k-touchguard touchscreen", with one finger at a time:
+ * uinput, "b8k-touchguard touchscreen", with as many slots as the screen:
  *
  *  - hold_ms: a touch counts only once it has lasted this long; a brush of
  *    the glass shorter than it is dropped (iOS Hold Duration). The finger
@@ -21,7 +21,13 @@
  *    (from its lift to the new landing), this near to it, is a tremor's
  *    second strike and is dropped (Ignore Repeat); a quick double tap is
  *    one tap. 300 ms and 140 units (some 80 px) by default.
- *  - a second finger while one is down is ignored: one finger at a time.
+ *  - multitouch (on by default): a second finger that lands while the first
+ *    is down starts a gesture (a pinch, a two-finger scroll), and every
+ *    finger then goes through live, in its own slot, at once: no hold, no
+ *    landing point kept, no buzz. One that lands while the first is still
+ *    held waits with it and goes down with it. A palm still cancels them
+ *    all. multitouch = 0: a second finger while one is down is ignored,
+ *    one finger at a time, for a hand that trembles.
  *  - buzz_ms: a tap buzzes the motor (the regulator-haptic input device)
  *    this long, 70 ms by default, 0 for none: the shell's tap feedback for
  *    every program alike (ADR 0001), so programs need no buzzing of their
@@ -74,15 +80,19 @@ struct slot {
 
 struct config {
 	int hold_ms, repeat_ms, repeat_radius, palm_major, palm_pressure, palm_contacts;
-	int palm_grace_ms, buzz_ms, tap_radius, long_ms;
+	int palm_grace_ms, buzz_ms, tap_radius, long_ms, multitouch;
 };
-static const struct config defaults = { 40, 300, 140, 11, 100, 3, 300, 70, 80, 600 };
+static const struct config defaults = { 40, 300, 140, 11, 100, 3, 300, 70, 80, 600, 1 };
 static struct config cfg;
 static int haptic_fd = -1, haptic_effect = -1;
 /* The touch handed to the session: when it went down, whether it moved
- * past tap_radius (a scroll: no buzz), whether it has buzzed (long press). */
+ * past tap_radius (a scroll: no buzz), whether it has buzzed (long press,
+ * or a gesture of several fingers, which never buzzes). */
 static long long touch_start;
 static int touch_down, touch_moved, touch_buzzed;
+static int nslots = 1; /* the screen's slots, and so ours */
+static int nlive;      /* fingers handed to the session now */
+static int multi;      /* they are a gesture of several fingers */
 static int debug; /* B8K_TOUCHGUARD_DEBUG=1: every decision to stderr */
 static long long debug_until; /* ms: SIGUSR1 logs them for a while */
 #define DEBUG_MS (15 * 60 * 1000)
@@ -165,17 +175,29 @@ static void read_config(const char *path)
 			cfg.tap_radius = v;
 		else if (!strcmp(key, "long_ms"))
 			cfg.long_ms = v;
+		else if (!strcmp(key, "multitouch"))
+			cfg.multitouch = v != 0;
 	}
 	fclose(f);
 }
 
-/* The first direct multitouch device that is not our own. */
+/* The first direct multitouch device that is not our own, or the one
+ * B8K_TOUCHGUARD_SCREEN names (a test feeds a made-up screen so). */
 static int open_screen(void)
 {
+	const char *only = getenv("B8K_TOUCHGUARD_SCREEN");
 	DIR *d = opendir("/dev/input");
 	struct dirent *e;
 	int fd = -1;
 
+	if (only) {
+		fd = open(only, O_RDONLY | O_NONBLOCK | O_CLOEXEC);
+		if (fd >= 0)
+			logf_("screen %s", only);
+		if (d)
+			closedir(d);
+		return fd;
+	}
 	if (!d)
 		return -1;
 	while ((e = readdir(d))) {
@@ -233,14 +255,22 @@ static int create_output(void)
 	ioctl(out_fd, UI_SET_KEYBIT, BTN_TOUCH);
 	ioctl(out_fd, UI_SET_EVBIT, EV_ABS);
 	ioctl(out_fd, UI_SET_PROPBIT, INPUT_PROP_DIRECT);
+	unsigned long has[BITS(ABS_MAX + 1)] = { 0 };
+
+	ioctl(in_fd, EVIOCGBIT(EV_ABS, sizeof(has)), has);
 	for (unsigned i = 0; i < sizeof(copy) / sizeof(copy[0]); i++) {
-		if (ioctl(in_fd, EVIOCGABS(copy[i]), &ai) < 0)
+		/* Only the screen's own axes: libinput refuses min == max. */
+		if (!TEST(copy[i], has) || ioctl(in_fd, EVIOCGABS(copy[i]), &ai) < 0)
 			continue;
 		ioctl(out_fd, UI_SET_ABSBIT, copy[i]);
 		setup_abs(copy[i], 0, 0, &ai);
 	}
+	/* The screen's slots, our slot i for its slot i, whether multitouch
+	 * is on or not (a reload cannot change the device). */
+	if (ioctl(in_fd, EVIOCGABS(ABS_MT_SLOT), &ai) == 0 && ai.maximum >= 0)
+		nslots = ai.maximum + 1 < SLOTS ? ai.maximum + 1 : SLOTS;
 	ioctl(out_fd, UI_SET_ABSBIT, ABS_MT_SLOT);
-	setup_abs(ABS_MT_SLOT, 0, 0, NULL); /* one finger: slot 0 only */
+	setup_abs(ABS_MT_SLOT, 0, nslots - 1, NULL);
 	ioctl(out_fd, UI_SET_ABSBIT, ABS_MT_TRACKING_ID);
 	setup_abs(ABS_MT_TRACKING_ID, 0, 65535, NULL);
 	ioctl(out_fd, UI_SET_ABSBIT, ABS_MT_TOOL_TYPE);
@@ -337,58 +367,105 @@ static void buzz(void)
 		haptic_close();
 }
 
-static void out_down(struct slot *s)
+/* Finger i goes down at x, y: where the first finger first landed, where
+ * a gesture's finger is now. */
+static void out_down(int i, int x, int y)
 {
-	emit(EV_ABS, ABS_MT_SLOT, 0);
+	struct slot *s = &slots[i];
+
+	emit(EV_ABS, ABS_MT_SLOT, i);
 	emit(EV_ABS, ABS_MT_TRACKING_ID, out_id++ & 0xffff);
 	emit(EV_ABS, ABS_MT_TOOL_TYPE, MT_TOOL_FINGER);
-	/* Where the finger first landed. */
-	emit(EV_ABS, ABS_MT_POSITION_X, s->x0);
-	emit(EV_ABS, ABS_MT_POSITION_Y, s->y0);
+	emit(EV_ABS, ABS_MT_POSITION_X, x);
+	emit(EV_ABS, ABS_MT_POSITION_Y, y);
 	emit(EV_ABS, ABS_MT_TOUCH_MAJOR, s->major);
 	emit(EV_ABS, ABS_MT_PRESSURE, s->pressure);
-	emit(EV_KEY, BTN_TOUCH, 1);
-	emit(EV_ABS, ABS_X, s->x0);
-	emit(EV_ABS, ABS_Y, s->y0);
-	emit(EV_ABS, ABS_PRESSURE, s->pressure);
+	if (!nlive) {
+		emit(EV_KEY, BTN_TOUCH, 1);
+		touch_down = 1;
+		touch_start = now_ms();
+		touch_moved = touch_buzzed = 0;
+	}
+	if (i == primary) {
+		emit(EV_ABS, ABS_X, x);
+		emit(EV_ABS, ABS_Y, y);
+		emit(EV_ABS, ABS_PRESSURE, s->pressure);
+	}
 	sync_out();
-	touch_down = 1;
-	touch_start = now_ms();
-	touch_moved = touch_buzzed = 0;
+	nlive++;
 }
 
-static void out_move(struct slot *s)
+/* Where every finger handed out is now. */
+static void out_move(void)
 {
-	long long dx = s->x - s->x0, dy = s->y - s->y0;
+	for (int i = 0; i < nslots; i++) {
+		struct slot *s = &slots[i];
 
-	if (dx * dx + dy * dy > (long long)cfg.tap_radius * cfg.tap_radius)
-		touch_moved = 1; /* a scroll or a drag: no buzz */
-	emit(EV_ABS, ABS_MT_SLOT, 0);
-	emit(EV_ABS, ABS_MT_POSITION_X, s->x);
-	emit(EV_ABS, ABS_MT_POSITION_Y, s->y);
-	emit(EV_ABS, ABS_MT_TOUCH_MAJOR, s->major);
-	emit(EV_ABS, ABS_MT_PRESSURE, s->pressure);
-	emit(EV_ABS, ABS_X, s->x);
-	emit(EV_ABS, ABS_Y, s->y);
-	emit(EV_ABS, ABS_PRESSURE, s->pressure);
+		if (s->state != LIVE)
+			continue;
+		if (i == primary) {
+			long long dx = s->x - s->x0, dy = s->y - s->y0;
+
+			if (dx * dx + dy * dy > (long long)cfg.tap_radius * cfg.tap_radius)
+				touch_moved = 1; /* a scroll or a drag: no buzz */
+		}
+		emit(EV_ABS, ABS_MT_SLOT, i);
+		emit(EV_ABS, ABS_MT_POSITION_X, s->x);
+		emit(EV_ABS, ABS_MT_POSITION_Y, s->y);
+		emit(EV_ABS, ABS_MT_TOUCH_MAJOR, s->major);
+		emit(EV_ABS, ABS_MT_PRESSURE, s->pressure);
+		if (i == primary) {
+			emit(EV_ABS, ABS_X, s->x);
+			emit(EV_ABS, ABS_Y, s->y);
+			emit(EV_ABS, ABS_PRESSURE, s->pressure);
+		}
+	}
 	sync_out();
 }
 
-static void out_up(int as_palm)
+/* Finger i lifts, or ends as a palm. The last one ends the touch. */
+static void out_up(int i, int as_palm)
 {
-	emit(EV_ABS, ABS_MT_SLOT, 0);
+	emit(EV_ABS, ABS_MT_SLOT, i);
 	if (as_palm) {
 		/* libinput cancels a touch whose tool turns into a palm. */
 		emit(EV_ABS, ABS_MT_TOOL_TYPE, MT_TOOL_PALM);
 		sync_out();
 	}
 	emit(EV_ABS, ABS_MT_TRACKING_ID, -1);
-	emit(EV_KEY, BTN_TOUCH, 0);
-	emit(EV_ABS, ABS_PRESSURE, 0);
+	if (nlive > 0)
+		nlive--;
+	if (!nlive) {
+		emit(EV_KEY, BTN_TOUCH, 0);
+		emit(EV_ABS, ABS_PRESSURE, 0);
+	}
 	sync_out();
+	if (nlive)
+		return;
 	if (touch_down && !as_palm && !touch_moved && !touch_buzzed)
 		buzz(); /* a tap, felt as it is lifted (when it is taken) */
 	touch_down = 0;
+	multi = 0;
+}
+
+/* A palm or lost events: every finger handed out ends as a palm. */
+static void cancel_all(void)
+{
+	for (int i = 0; i < nslots; i++)
+		if (slots[i].state == LIVE) {
+			out_up(i, 1);
+			slots[i].state = DEAD;
+		}
+	primary = -1;
+}
+
+/* A second finger: a gesture, which never buzzes. */
+static void start_multi(void)
+{
+	if (!multi && debugging())
+		logf_("gesture");
+	multi = 1;
+	touch_buzzed = 1;
 }
 
 /* A finger held still this long: the long press buzzes now, once. */
@@ -429,7 +506,14 @@ static void check_hold(long long t)
 			logf_("touch %d at %d,%d size %d pressure %d", p->id, p->x0, p->y0, p->major,
 			      p->pressure);
 		p->state = LIVE;
-		out_down(p);
+		out_down(primary, p->x0, p->y0);
+		/* Fingers that landed while it was held go down with it. */
+		for (int i = 0; i < nslots; i++)
+			if (slots[i].state == PENDING) {
+				start_multi();
+				slots[i].state = LIVE;
+				out_down(i, slots[i].x, slots[i].y);
+			}
 	}
 }
 
@@ -455,9 +539,7 @@ static void frame(long long t)
 		if (debugging())
 			logf_("palm (%d contacts, size %d, pressure %d)", active, major, pressure);
 		palm_block = 1;
-		if (primary >= 0 && slots[primary].state == LIVE)
-			out_up(1);
-		primary = -1;
+		cancel_all();
 	}
 	if (palm_block) {
 		for (int i = 0; i < SLOTS; i++)
@@ -474,13 +556,27 @@ static void frame(long long t)
 
 		if (s->id < 0 || s->state != FREE)
 			continue;
+		if ((nlive || primary >= 0) && cfg.multitouch && i < nslots) {
+			/* A finger more: a gesture. It waits for a first finger
+			 * still held, and goes through at once otherwise. */
+			if (primary >= 0 && slots[primary].state == PENDING) {
+				s->state = PENDING;
+				continue;
+			}
+			start_multi();
+			if (debugging())
+				logf_("finger %d at %d,%d", s->id, s->x, s->y);
+			s->state = LIVE;
+			out_down(i, s->x, s->y);
+			continue;
+		}
 		/* A new contact. */
 		int dx = s->x0 - last_x, dy = s->y0 - last_y;
 		int repeat = t - last_up < cfg.repeat_ms &&
 			     dx * dx + dy * dy < cfg.repeat_radius * cfg.repeat_radius;
 
-		if (t < palm_until || repeat || primary >= 0) {
-			if (debugging() && repeat && t >= palm_until && primary < 0)
+		if (t < palm_until || repeat || primary >= 0 || nlive) {
+			if (debugging() && repeat && t >= palm_until && primary < 0 && !nlive)
 				logf_("drop %d at %d,%d: repeat after %lld ms, %d units away", s->id,
 				      s->x0, s->y0, t - last_up, isqrt(dx * dx + dy * dy));
 			else if (debugging())
@@ -492,30 +588,40 @@ static void frame(long long t)
 		s->state = PENDING;
 		primary = i;
 	}
-	if (primary >= 0 && slots[primary].state == LIVE)
-		out_move(&slots[primary]);
+	if (nlive)
+		out_move();
 	check_hold(t);
 }
 
 static void lifted(int i, long long t)
 {
 	struct slot *s = &slots[i];
+	int gesture = multi;
 
-	if (i == primary) {
-		if (s->state == LIVE) {
-			out_up(0);
+	if (s->state == LIVE) {
+		int moved = touch_moved;
+
+		out_up(i, 0);
+		/* A tremor's second strike follows a tap, not a gesture. */
+		if (i == primary && !gesture) {
 			last_up = t;
 			last_x = s->x;
 			last_y = s->y;
-			if (debugging())
-				logf_("lift %d after %lld ms%s", s->id, t - s->start,
-				      touch_moved ? ", moved" : "");
-		} else if (debugging()) {
-			/* A pending one was too short: a brush, dropped. */
-			logf_("drop %d: %lld ms, a brush", s->id, t - s->start);
 		}
-		primary = -1;
+		if (debugging())
+			logf_("lift %d after %lld ms%s", s->id, t - s->start,
+			      gesture ? ", gesture" : moved ? ", moved" : "");
+	} else if (i == primary && s->state == PENDING) {
+		/* A pending one was too short: a brush, dropped, and the
+		 * fingers waiting with it too. */
+		if (debugging())
+			logf_("drop %d: %lld ms, a brush", s->id, t - s->start);
+		for (int j = 0; j < SLOTS; j++)
+			if (j != i && slots[j].state == PENDING)
+				slots[j].state = DEAD;
 	}
+	if (i == primary)
+		primary = -1;
 	s->state = FREE;
 	s->id = -1;
 }
@@ -535,9 +641,10 @@ static void on_signal(int sig)
 static void log_config(void)
 {
 	logf_("hold %d ms, repeat %d ms / %d, palm size %d pressure %d contacts %d grace %d ms, "
-	      "buzz %d ms, tap %d, long %d ms",
+	      "buzz %d ms, tap %d, long %d ms, multitouch %d (%d slots)",
 	      cfg.hold_ms, cfg.repeat_ms, cfg.repeat_radius, cfg.palm_major, cfg.palm_pressure,
-	      cfg.palm_contacts, cfg.palm_grace_ms, cfg.buzz_ms, cfg.tap_radius, cfg.long_ms);
+	      cfg.palm_contacts, cfg.palm_grace_ms, cfg.buzz_ms, cfg.tap_radius, cfg.long_ms,
+	      cfg.multitouch, nslots);
 }
 
 int main(int argc, char **argv)
@@ -680,9 +787,7 @@ int main(int argc, char **argv)
 					slots[i].fresh = 0;
 			} else if (ev->type == EV_SYN && ev->code == SYN_DROPPED) {
 				/* Lost events: start clean. */
-				if (primary >= 0 && slots[primary].state == LIVE)
-					out_up(1);
-				primary = -1;
+				cancel_all();
 				for (int i = 0; i < SLOTS; i++) {
 					slots[i].id = -1;
 					slots[i].state = FREE;
@@ -690,8 +795,7 @@ int main(int argc, char **argv)
 			}
 		}
 	}
-	if (primary >= 0 && slots[primary].state == LIVE)
-		out_up(1);
+	cancel_all();
 	ioctl(in_fd, EVIOCGRAB, 0);
 	ioctl(out_fd, UI_DEV_DESTROY);
 	return 0;

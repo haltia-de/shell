@@ -45,6 +45,12 @@ GROUPS = [
         ("long_ms", "Долгое нажатие",
          "Палец, лежащий столько на месте, вибрирует ещё раз", "ms"),
     ]),
+    ("Несколько пальцев", [
+        ("multitouch", "Жесты двумя пальцами",
+         "Второй палец, пока лежит первый, — жест: щипок для масштаба, "
+         "прокрутка двумя пальцами. Выключите, если рука дрожит: тогда "
+         "работает только один палец", "bool"),
+    ]),
     ("Дрожание руки", [
         ("repeat_ms", "Повтор: время",
          "Новое касание раньше этого после прошлого и рядом с ним — "
@@ -70,7 +76,7 @@ GROUPS = [
          "ощущается", "ms"),
     ]),
 ]
-STEPS = {"ms": 10, "units": 10, "of15": 1, "of255": 5, "count": 1}
+STEPS = {"ms": 10, "units": 10, "of15": 1, "of255": 5, "count": 1, "bool": 1}
 LABELS = {k: t for _g, rows in GROUPS for k, t, _h, _u in rows}
 
 CSS = b"""
@@ -96,6 +102,9 @@ button.keep { background: #3584e4; color: #ffffff; border-color: #1c71d8; }
 scale trough { min-height: 20px; border-radius: 10px; }
 scale highlight { background-color: #3584e4; border-radius: 10px; }
 scale slider { min-width: 56px; min-height: 56px; border-radius: 28px; }
+switch { min-width: 140px; min-height: 64px; border-radius: 32px; }
+switch:checked { background-color: #3584e4; }
+switch slider { min-width: 60px; min-height: 60px; border-radius: 30px; }
 .banner {
   background-color: #c4dcf7;
   border-radius: 12px;
@@ -153,7 +162,19 @@ def helper(*args):
     return None
 
 
+class Toggle(Gtk.Switch):
+    """A switch that reads and sets like a slider, 0 or 1."""
+
+    def get_value(self):
+        return 1 if self.get_active() else 0
+
+    def set_value(self, v):
+        self.set_active(bool(round(v)))
+
+
 def show_value(key, unit, v):
+    if unit == "bool":
+        return "вкл." if v else "выкл."
     if unit == "ms":
         if key == "buzz_ms" and v == 0:
             return "нет"
@@ -173,6 +194,8 @@ def show_value(key, unit, v):
 FEED = [
     (r"touch \d+ at \d+,\d+ size (\d+) pressure (\d+)",
      "Касание засчитано · пятно {0}, давление {1}", "ok"),
+    (r"gesture", "Второй палец: жест", "ok"),
+    (r"lift \d+ after (\d+) ms, gesture", "Поднят через {0} мс (жест)", "quiet"),
     (r"lift \d+ after (\d+) ms, moved", "Поднят через {0} мс, сдвинулся: листание", "quiet"),
     (r"lift \d+ after (\d+) ms", "Поднят через {0} мс", "quiet"),
     (r"long press", "Долгое нажатие", "ok"),
@@ -328,6 +351,14 @@ class Setup:
         inner.pack_start(h, False, False, 0)
 
         line = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
+        value.set_text(show_value(key, unit, self.kept[key]))
+        if unit == "bool":
+            toggle = self.scales[key] = Toggle()
+            toggle.set_value(self.kept[key])
+            toggle.connect("notify::active", lambda w, _p: self.on_change(w, key, unit))
+            line.pack_start(toggle, False, False, 0)
+            inner.pack_start(line, False, False, 0)
+            return box
         step = STEPS[unit]
         scale = self.scales[key] = Gtk.Scale.new_with_range(
             Gtk.Orientation.HORIZONTAL, lo, hi, step)
@@ -344,7 +375,6 @@ class Setup:
         line.pack_start(scale, True, True, 0)
         line.pack_start(plus, False, False, 0)
         inner.pack_start(line, False, False, 0)
-        value.set_text(show_value(key, unit, self.kept[key]))
         return box
 
     # Changes.

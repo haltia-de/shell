@@ -26,7 +26,8 @@ palm_contacts 2 10
 palm_grace_ms 0 2000
 buzz_ms 0 500
 tap_radius 20 400
-long_ms 300 2000'
+long_ms 300 2000
+multitouch 0 1'
 
 signal() {
 	pid=$(cat "$PIDFILE" 2>/dev/null) || {
