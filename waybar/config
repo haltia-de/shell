@@ -9,7 +9,7 @@
     "custom/max"
   ],
   "modules-right": [
-    "group/system",
+    "group/status",
     "custom/battery",
     "custom/clock",
     "custom/hide"
@@ -86,39 +86,12 @@
     "on-click-release": "/usr/local/bin/b8k-press cards 3; /usr/local/bin/b8k-launch tap cards",
     "tooltip": false
   },
-  "group/system": {
-    "orientation": "vertical",
-    "drawer": {
-      "click-to-reveal": true,
-      "transition-duration": 250,
-      "transition-left-to-right": true,
-      "children-class": "drawer-child"
-    },
+  "group/status": {
+    "orientation": "horizontal",
     "modules": [
-      "custom/system",
-      "custom/brightness",
-      "custom/volume",
-      "custom/wifi3"
+      "custom/wifi3",
+      "custom/volume"
     ]
-  },
-  "custom/system": {
-    "exec": "/usr/local/bin/b8k-meter system",
-    "return-type": "json",
-    "format": "{text}",
-    "signal": 10,
-    "interval": 30,
-    "exec-on-event": false,
-    "on-click-release": "/usr/local/bin/b8k-meter toggle; /usr/local/bin/b8k-press system 10",
-    "tooltip": false
-  },
-  "custom/brightness": {
-    "exec": "/usr/local/bin/b8k-meter brightness",
-    "return-type": "json",
-    "format": "{text}",
-    "signal": 9,
-    "exec-on-event": false,
-    "on-click-release": "/usr/local/bin/b8k-press brightness 9; /usr/local/bin/b8k-brightness",
-    "tooltip": false
   },
   "custom/volume": {
     "exec": "/usr/local/bin/b8k-meter volume",

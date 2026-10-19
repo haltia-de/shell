@@ -4,8 +4,8 @@
 * { font-family: "DejaVu Sans", sans-serif; font-size: 15px; }
 window#waybar { background: #242424; color: #ffffff; }
 /* The home button, five buttons, the line above the open programs, the
-   open drawer, the battery, the two-line clock and the hide button fit the
-   800 px column; more buttons get shorter (b8k-apps). */
+   Wi-Fi and speaker row, the battery, the two-line clock and the hide
+   button fit the 800 px column; more buttons get shorter (b8k-apps). */
 .app {
   min-height: 24px;
   margin: 2px 4px;
@@ -68,45 +68,19 @@ window#waybar { background: #242424; color: #ffffff; }
   background-color: #3584e4;
   border-color: #3584e4;
 }
-/* The handle of the brightness and Wi-Fi drawer (group/system): an arrow
-   up while closed, down while open: the drawer opens above it (b8k-meter). */
-#custom-system {
-  min-height: 26px;
-  margin: 2px 4px;
-  padding: 0;
-  background-color: #242424;
-  background-repeat: no-repeat;
-  background-position: center;
-  background-size: 48px 24px;
-  background-image: url("/usr/local/share/b8k/drawer-closed.svg");
-}
-#custom-system.open { background-image: url("/usr/local/share/b8k/drawer-open.svg"); }
-#custom-system.muted {
-  background-size: 28px 30px;
-  background-image: url("/usr/local/share/b8k/vol-0.svg");
-}
-#custom-system.w0,
-#custom-system.wx { background-size: 40px 30px; }
-#custom-system.w0 { background-image: url("/usr/local/share/b8k/wifi-p0.svg"); }
-#custom-system.wx { background-image: url("/usr/local/share/b8k/wifi-x.svg"); }
-#custom-brightness {
-  min-height: 36px;
-  margin: 2px 4px;
-  padding: 0;
-  background-color: #242424;
-  background-repeat: no-repeat;
-  background-position: center;
-  background-size: 34px 34px;
-  background-image: url("/usr/local/share/b8k/brightness.svg");
-}
+/* Wi-Fi and the speaker side by side over the battery (group/status):
+   always in sight, no drawer to open. Wi-Fi opens Settings, the speaker
+   mutes; brightness is in «Служебные». */
 #custom-volume {
-  min-height: 36px;
-  margin: 2px 4px;
+  min-height: 48px;
+  min-width: 52px;
+  margin: 2px 4px 2px 0;
   padding: 0;
+  border-radius: 12px;
   background-color: #242424;
   background-repeat: no-repeat;
   background-position: center;
-  background-size: 37px 40px;
+  background-size: 30px 32px;
 }
 #custom-volume.v0 { background-image: url("/usr/local/share/b8k/vol-0.svg"); }
 #custom-volume.v1 { background-image: url("/usr/local/share/b8k/vol-1.svg"); }
@@ -122,7 +96,13 @@ window#waybar { background: #242424; color: #ffffff; }
   background-repeat: no-repeat;
   background-position: center;
 }
-#custom-wifi3 { min-height: 36px; background-size: 45px 34px; }
+#custom-wifi3 {
+  min-height: 48px;
+  min-width: 52px;
+  margin: 2px 0 2px 4px;
+  border-radius: 12px;
+  background-size: 40px 30px;
+}
 #custom-battery { background-size: 83px 34px; }
 #custom-wifi3.w0 { background-image: url("/usr/local/share/b8k/wifi-p0.svg"); }
 #custom-wifi3.w1 { background-image: url("/usr/local/share/b8k/wifi-p1.svg"); }
@@ -164,8 +144,6 @@ window#waybar { background: #242424; color: #ffffff; }
   color: #ffffff;
 }
 #custom-home.pressed,
-#custom-system.pressed,
-#custom-brightness.pressed,
 #custom-volume.pressed,
 #custom-wifi3.pressed {
   background-color: #3a3a3a;

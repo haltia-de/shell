@@ -65,8 +65,8 @@ ICON_DIRS = tuple(os.path.join(d, "icons/hicolor", size, "apps") for d in DATA_D
     ("/usr/share/pixmaps",)
 # Programs without an icon of their own: tiles.
 APP_ICON = "/usr/local/share/b8k/app.svg"
-# waybar signals of the system modules (home, brightness, Wi-Fi and drawer,
-# battery); program buttons and slots get 1-7, then 12 up.
+# waybar signals of the system modules (home 8, 9 once brightness, Wi-Fi
+# and volume 10, battery 11); program buttons and slots get 1-7, then 12 up.
 RESERVED = range(8, 12)
 # Pinned buttons and slots together. Five fit at full size under the home
 # button; more get shorter (write_style).
@@ -369,9 +369,9 @@ def write_style(path, apps, order, panel, slots):
     if buttons > FULL_SIZE:
         # More buttons than fit at full size: shorter ones, smaller icons.
         # The rest of the 800 px column (home button, the line above the
-        # slots, open drawer, battery, two-line clock, hide button:
-        # style.css) leaves 406 px; 4 px are margins and 18 px the label.
-        top = 406 // buttons - 4 - 18
+        # slots, Wi-Fi and speaker row, battery, two-line clock, hide button:
+        # style.css) leaves 500 px; 4 px are margins and 18 px the label.
+        top = 500 // buttons - 4 - 18
         extra.append(".app { padding-top: %dpx; background-size: %dpx %dpx; min-height: 18px; }"
                      % (top, top - 4, top - 4))
     with open(path + ".new", "w", encoding="utf-8") as fh:
@@ -381,11 +381,6 @@ def write_style(path, apps, order, panel, slots):
 
 def reload_session(uid):
     """Apply the files: waybar rereads its config, b8k-focus starts again."""
-    # The new panel starts with its drawer closed; so does the handle.
-    try:
-        os.unlink(os.path.join(os.environ.get("XDG_RUNTIME_DIR", "/tmp"), "b8k-drawer-open"))
-    except OSError:
-        pass
     for pid in os.listdir("/proc"):
         if not pid.isdigit():
             continue

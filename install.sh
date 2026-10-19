@@ -39,6 +39,8 @@ install -m 644 "$here"/share/icons/* "$share/"
 # Gone with ADR 0001 step 5: b8k_ui (programs use b8k-compat), apps.d
 # (programs bring .desktop files), the web-app windows' icon.
 rm -rf "$share/python" "$share/site.svg"
+# Gone with the panel's drawer (1.5.0): its handle and the sun.
+rm -f "$share/drawer-open.svg" "$share/drawer-closed.svg" "$share/brightness.svg"
 rmdir "$share/apps.d" 2>/dev/null || true
 # The panel's configuration in the shell's folder (/etc/xdg/waybar is the
 # waybar package's own).
