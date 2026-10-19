@@ -36,7 +36,7 @@
 
 #include "wlr-layer-shell-unstable-v1-client-protocol.h"
 
-#define APPS "/usr/local/share/b8k/apps.conf"
+#define APPS "/usr/share/b8k/apps.conf"
 #define BAR 120        /* the panel on the left edge */
 #define ICON 160       /* icon size, px */
 #define DOTS 10

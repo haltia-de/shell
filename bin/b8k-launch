@@ -13,7 +13,7 @@ mkdir -p "$dir"
 # Every program and its fields live in apps.conf: the copy b8k-apps writes
 # for this session (one's own programs and the panel included), else the
 # built-in one.
-APPS=/usr/local/share/b8k/apps.conf
+APPS=/usr/share/b8k/apps.conf
 [ -f "$run/b8k/apps.conf" ] && APPS="$run/b8k/apps.conf"
 
 # field ID KEY prints that key of the program, or fails when it has none.
@@ -194,7 +194,7 @@ tap)
 	# Over the home screen a tap means "go to it": lower the home screen,
 	# never ask to close.
 	if [ -e "$run/b8k-home.raised" ]; then
-		/usr/local/bin/b8k-home hide
+		/usr/bin/b8k-home hide
 		exec "$0" start "$id"
 	fi
 	aliases_of "$id" >/dev/null || exec "$0" start "$id"
@@ -209,7 +209,7 @@ tap)
 	# (b8k-close) for every program alike. One that plays or is paused
 	# offers pause and stop instead (waybar has no long press).
 	if [ "$class" = active ]; then
-		[ -f "$run/b8k-play/$id" ] && exec /usr/local/bin/b8k-ask media "$id"
+		[ -f "$run/b8k-play/$id" ] && exec /usr/bin/b8k-ask media "$id"
 		exit 0
 	fi
 	exec "$0" start "$id"
@@ -232,7 +232,7 @@ url)
 	last="$dir/last-url"
 	if [ -f "$last" ] && [ "$(cat "$last")" = "$url" ] &&
 		[ $(($(date +%s) - $(stat -c %Y "$last"))) -lt 15 ]; then
-		/usr/local/bin/b8k-focus activate $names >/dev/null 2>&1
+		/usr/bin/b8k-focus activate $names >/dev/null 2>&1
 		exit 0
 	fi
 	printf '%s\n' "$url" >"$last"
@@ -241,22 +241,22 @@ url)
 		i=0
 		while [ "$i" -lt 10 ]; do
 			sleep 0.5
-			/usr/local/bin/b8k-focus activate $names >/dev/null 2>&1 && exit 0
+			/usr/bin/b8k-focus activate $names >/dev/null 2>&1 && exit 0
 			i=$((i + 1))
 		done
 		exit 0
 	fi
 	install_firefox_chrome
 	splash_pid=
-	if [ -x /usr/local/bin/b8k-splash ]; then
-		/usr/local/bin/b8k-splash firefox >"$run"/b8k-splash.log 2>&1 9>&- &
+	if [ -x /usr/bin/b8k-splash ]; then
+		/usr/bin/b8k-splash firefox >"$run"/b8k-splash.log 2>&1 9>&- &
 		splash_pid=$!
 	fi
 	trap '[ -n "$splash_pid" ] && kill "$splash_pid" 2>/dev/null' EXIT
 	firefox "$url" >"$run"/b8k-app-firefox.log 2>&1 9>&- &
 	i=0
 	while [ "$i" -lt 80 ]; do
-		if /usr/local/bin/b8k-focus has $names >/dev/null 2>&1; then
+		if /usr/bin/b8k-focus has $names >/dev/null 2>&1; then
 			exit 0
 		fi
 		i=$((i + 1))
@@ -271,7 +271,7 @@ open)
 		exit 0
 	fi
 	names=$(aliases_of "$id") || exit 0
-	if /usr/local/bin/b8k-focus activate $names >/dev/null 2>&1; then
+	if /usr/bin/b8k-focus activate $names >/dev/null 2>&1; then
 		exit 0
 	fi
 	bin=$(bin_of "$id") || exit 0
@@ -288,11 +288,11 @@ open)
 		fi
 		# No longer starting: the close button (b8k-close) looks again.
 		rm -f "$dir/starting"
-		/usr/local/bin/b8k-close update 2>/dev/null || true
+		/usr/bin/b8k-close update 2>/dev/null || true
 	}
 	trap stop_splash EXIT
-	if [ -x /usr/local/bin/b8k-splash ]; then
-		/usr/local/bin/b8k-splash "$id" >"$run"/b8k-splash.log 2>&1 9>&- &
+	if [ -x /usr/bin/b8k-splash ]; then
+		/usr/bin/b8k-splash "$id" >"$run"/b8k-splash.log 2>&1 9>&- &
 		splash_pid=$!
 	fi
 	env=$(field "$id" env || true)
@@ -306,10 +306,10 @@ open)
 	# the pid and the curtain, and removes this file) and the home button
 	# takes the curtain away (b8k-home).
 	echo "$id $! ${splash_pid:-0}" >"$dir/starting"
-	/usr/local/bin/b8k-close update 2>/dev/null || true
+	/usr/bin/b8k-close update 2>/dev/null || true
 	i=0
 	while [ "$i" -lt 40 ] && [ -e "$dir/starting" ]; do
-		if /usr/local/bin/b8k-focus has $names >/dev/null 2>&1; then
+		if /usr/bin/b8k-focus has $names >/dev/null 2>&1; then
 			exit 0
 		fi
 		i=$((i + 1))

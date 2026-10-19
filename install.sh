@@ -9,21 +9,36 @@
 # panel tab, the shell's own questions (fuzzel), the touch filter with its
 # buzz, the on-screen keyboard (wvkbd), notifications (mako) and the GTK
 # theme b8k. It knows programs through their .desktop files (ADR 0001 in
-# lenovo-b8000h-linux). Its paths are /usr/local/{bin,sbin,share/b8k}: the
-# scripts name them.
+# lenovo-b8000h-linux). Its paths are /usr/{bin,sbin,share/b8k}: the
+# scripts name them. /usr/local is the person's; until shell 2.0 it holds
+# a symlink at each old path (/usr/local/{bin,sbin,share/b8k}), so that an
+# older session start, doas rule or program still finds the shell.
 #
-# The C parts come prebuilt from build.sh: TOOLS (/opt/b8000h/tools) and
-# WVKBD (/opt/b8000h/out/wvkbd-b8k); a part not built is left out with a
-# warning. The compositor and how the session starts are the device's.
+# The C parts come prebuilt from build.sh: TOOLS ($WORK/tools) and WVKBD
+# ($WORK/out/wvkbd-b8k), WORK being the build's work folder (/opt/b8000h
+# by default); a part not built is left out with a warning. The compositor
+# and how the session starts are the device's.
+#
+# B8K_DOAS chooses the doas rules written to /etc/doas.d/z-b8k-shell.conf:
+# all (the default: the power menu, the touch settings and a root terminal
+# without a password), shell (the same without the root terminal, which
+# then asks for the password) or none (no file: the device's package
+# decides; the power menu then goes through logind).
 set -eu
 root=${1:-}
 root=${root%/}
 here=$(cd "$(dirname "$0")" && pwd)
-TOOLS=${TOOLS:-/opt/b8000h/tools}
-WVKBD=${WVKBD:-/opt/b8000h/out/wvkbd-b8k}
-bin=$root/usr/local/bin
-sbin=$root/usr/local/sbin
-share=$root/usr/local/share/b8k
+WORK=${WORK:-/opt/b8000h}
+TOOLS=${TOOLS:-$WORK/tools}
+WVKBD=${WVKBD:-$WORK/out/wvkbd-b8k}
+B8K_DOAS=${B8K_DOAS:-all}
+case $B8K_DOAS in
+all | shell | none) ;;
+*) echo "b8k-shell: B8K_DOAS must be all, shell or none" >&2; exit 2 ;;
+esac
+bin=$root/usr/bin
+sbin=$root/usr/sbin
+share=$root/usr/share/b8k
 install -d -m 755 "$bin" "$sbin" "$share" "$root/etc/b8k" "$root/etc/local.d"
 
 for f in "$here"/bin/*; do
@@ -38,10 +53,12 @@ done
 install -m 644 "$here"/share/icons/* "$share/"
 # Gone with ADR 0001 step 5: b8k_ui (programs use b8k-compat), apps.d
 # (programs bring .desktop files), the web-app windows' icon.
-rm -rf "$share/python" "$share/site.svg"
+rm -rf "$root/usr/local/share/b8k/python" "$root/usr/local/share/b8k/site.svg"
 # Gone with the panel's drawer (1.5.0): its handle and the sun.
-rm -f "$share/drawer-open.svg" "$share/drawer-closed.svg" "$share/brightness.svg"
-rmdir "$share/apps.d" 2>/dev/null || true
+for f in drawer-open.svg drawer-closed.svg brightness.svg; do
+	rm -f "$share/$f" "$root/usr/local/share/b8k/$f"
+done
+rmdir "$root/usr/local/share/b8k/apps.d" 2>/dev/null || true
 # The panel's configuration in the shell's folder (/etc/xdg/waybar is the
 # waybar package's own).
 install -D -m 644 "$here/waybar/config" "$share/waybar/config"
@@ -99,12 +116,12 @@ else
 fi
 
 # The power key: the screen off and on, the power menu, sleep after 30 s
-# with the screen off (b8k-sleep.py runs the device's b8k-suspend).
-# elogind's default would power the tablet off.
+# with the screen off (b8k-sleep.py runs the device's suspend hook, if
+# any). elogind's default would power the tablet off.
 cat >"$root/etc/local.d/b8k-sleep.start" <<'EOF'
 #!/bin/sh
 start-stop-daemon --start --background \
-	--exec /usr/local/sbin/b8k-sleep-loop \
+	--exec /usr/sbin/b8k-sleep-loop \
 	--pidfile /run/b8k-sleep.pid --make-pidfile \
 	--stdout /var/log/b8k-sleep.log --stderr /var/log/b8k-sleep.log
 EOF
@@ -117,13 +134,52 @@ printf '[Login]\nHandlePowerKey=ignore\nHandlePowerKeyLongPress=ignore\n' \
 install -d -m 755 "$root/etc/NetworkManager/dispatcher.d"
 install -m 755 "$here/etc/nm-dispatcher-b8k-panel" "$root/etc/NetworkManager/dispatcher.d/90-b8k-panel"
 
-# The session user's commands without a password: the power menu, the
-# root terminal and the touch settings (b8k-touchguard-conf checks every
-# value itself) (z- sorts after wheel.conf; doas uses the last matching rule).
+# The session user's commands without a password (B8K_DOAS): the power
+# menu, the touch settings (b8k-touchguard-conf checks every value itself)
+# and, with all, the root terminal (z- sorts after wheel.conf; doas uses
+# the last matching rule). doas matches the path as written, so the old
+# /usr/local/sbin paths are allowed as well until shell 2.0.
 install -d -m 755 "$root/etc/doas.d"
-cat >"$root/etc/doas.d/z-b8k-shell.conf" <<'EOF'
-permit nopass user cmd /usr/local/sbin/b8k-poweroff args off
-permit nopass user cmd /usr/local/sbin/b8k-poweroff args reboot
-permit nopass user cmd /usr/local/sbin/b8k-rootsh
-permit nopass user cmd /usr/local/sbin/b8k-touchguard-conf
-EOF
+if [ "$B8K_DOAS" = none ]; then
+	rm -f "$root/etc/doas.d/z-b8k-shell.conf"
+else
+	for d in /usr/sbin /usr/local/sbin; do
+		echo "permit nopass user cmd $d/b8k-poweroff args off"
+		echo "permit nopass user cmd $d/b8k-poweroff args reboot"
+		echo "permit nopass user cmd $d/b8k-touchguard-conf"
+		if [ "$B8K_DOAS" = all ]; then
+			echo "permit nopass user cmd $d/b8k-rootsh"
+		fi
+	done >"$root/etc/doas.d/z-b8k-shell.conf"
+fi
+
+# The old paths (shell 1.6 and older) as symlinks to the new ones, file by
+# file, not the folders: programs' install.sh still remove their own old
+# files from /usr/local/share/b8k. Removed in shell 2.0 (ADR 0004, step 4).
+compat() { # new-folder old-folder
+	install -d -m 755 "$root$2"
+	for f in "$root$1"/*; do
+		[ -f "$f" ] && [ ! -L "$f" ] || continue
+		rm -rf "$root$2/${f##*/}"
+		ln -s "$1/${f##*/}" "$root$2/${f##*/}"
+	done
+}
+# Only the shell's own files in /usr/bin and /usr/sbin.
+compat_names() { # new-folder old-folder name...
+	new=$1 old=$2
+	shift 2
+	install -d -m 755 "$root$old"
+	for n in "$@"; do
+		[ -f "$root$new/$n" ] || continue
+		rm -f "$root$old/$n"
+		ln -s "$new/$n" "$root$old/$n"
+	done
+}
+names() { for f in "$@"; do printf '%s\n' "${f##*/}"; done; }
+# shellcheck disable=SC2046 # one name per word
+compat_names /usr/bin /usr/local/bin $(names "$here"/bin/*) \
+	b8k-press b8k-splash b8k-close b8k-home b8k-tab b8k-session wvkbd-b8k
+# shellcheck disable=SC2046
+compat_names /usr/sbin /usr/local/sbin $(names "$here"/sbin/*) b8k-touchguard
+compat /usr/share/b8k /usr/local/share/b8k
+compat /usr/share/b8k/waybar /usr/local/share/b8k/waybar

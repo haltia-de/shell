@@ -1,10 +1,10 @@
 # Maintainer: Mikhail Nevskiy <rensomail@gmail.com>
 pkgname=b8k-shell
-pkgver=1.6.0
+pkgver=1.7.0
 pkgrel=0
 _wvkbd=bbecd996aae5a4dc4bc32bd643d37cefa9f63752
 pkgdesc="A tablet shell for an older person: panel, home screen, close button, touch filter, keyboard"
-url="https://github.com/trudenboy/b8k-shell"
+url="https://github.com/haltia-de/shell"
 arch="all"
 license="GPL-2.0-only"
 depends="python3 py3-gobject3 gtk+3.0 gtk-layer-shell waybar fuzzel foot mako
@@ -12,13 +12,18 @@ depends="python3 py3-gobject3 gtk+3.0 gtk-layer-shell waybar fuzzel foot mako
 makedepends="wayland-dev wayland-protocols pango-dev cairo-dev libxkbcommon-dev
 	linux-pam-dev linux-headers pkgconf"
 options="!check !fhs"
-source="$pkgname-$pkgver.tar.gz::https://github.com/trudenboy/b8k-shell/archive/v$pkgver.tar.gz
+source="$pkgname-$pkgver.tar.gz::https://github.com/haltia-de/shell/archive/v$pkgver.tar.gz
 	wvkbd-$_wvkbd.tar.gz::https://github.com/jjsullivan5196/wvkbd/archive/$_wvkbd.tar.gz"
+
+# The repository is haltia-de/shell: its archive unpacks to shell-<version>.
+builddir="$srcdir/shell-$pkgver"
 
 build() {
 	sh tools/native-build.sh "$srcdir/wvkbd-$_wvkbd" "$builddir/out"
 }
 
+# The files go to /usr; the symlinks install.sh leaves at the old
+# /usr/local paths (bin, sbin, share/b8k) are removed in 2.0 (ADR 0004).
 package() {
 	TOOLS="$builddir/out" WVKBD="$builddir/out/wvkbd-b8k" sh ./install.sh "$pkgdir"
 }

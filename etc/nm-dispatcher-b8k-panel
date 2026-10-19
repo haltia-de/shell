@@ -4,7 +4,7 @@
 # their next 30 s poll; after a sleep the network is back in about 4 s.
 case "$1:$2" in
 wlan0:up|wlan0:down|wlan0:dhcp4-change|*:connectivity-change)
-	/usr/local/sbin/b8k-panel-signal 10
+	/usr/sbin/b8k-panel-signal 10
 	;;
 esac
 exit 0

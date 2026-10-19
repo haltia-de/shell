@@ -11,7 +11,7 @@
                         (b8k-launcher, once per session)
 
 Four sources, later ones winning:
-  /usr/local/share/b8k/apps.conf  the system programs the shell shows
+  /usr/share/b8k/apps.conf  the system programs the shell shows
                                   (Firefox, the calculator, ...)
   ~/.config/b8k/apps.conf         one's own programs, or changes to the
                                   built-in ones (same fields)
@@ -24,7 +24,7 @@ Four sources, later ones winning:
                                   for /usr/share/applications/gimp.desktop,
                                   when pinned by that id
 and the pinned buttons from top to bottom, one id per line:
-~/.config/b8k/panel, or else /usr/local/share/b8k/panel. Every program is
+~/.config/b8k/panel, or else /usr/share/b8k/panel. Every program is
 on the home screen (b8k-home) anyway; under the pinned ones the panel has
 slots for programs that are open but not pinned (b8k-launch slot N).
 
@@ -32,9 +32,9 @@ Written to $XDG_RUNTIME_DIR/b8k/:
   apps.conf    every program, with "signal" set from its place on the
                panel; b8k-launch, b8k-focus, b8k-ask and b8k-splash read
                this one when it is there
-  waybar.json  the panel: /usr/local/share/b8k/waybar/config with these
+  waybar.json  the panel: /usr/share/b8k/waybar/config with these
                buttons
-  style.css    /usr/local/share/b8k/waybar/style.css and each program's icon
+  style.css    /usr/share/b8k/waybar/style.css and each program's icon
   slots        the waybar signal of each slot, one per line (b8k-focus)
   aliases      "old new" per line: old shell ids taken over by .desktop
                programs (b8k-launch maps them)
@@ -47,13 +47,13 @@ import signal
 import subprocess
 import sys
 
-SYSTEM = "/usr/local/share/b8k/apps.conf"
-SYSTEM_PANEL = "/usr/local/share/b8k/panel"
+SYSTEM = "/usr/share/b8k/apps.conf"
+SYSTEM_PANEL = "/usr/share/b8k/panel"
 USER_APPS = os.path.expanduser("~/.config/b8k/apps.conf")
 USER_PANEL = os.path.expanduser("~/.config/b8k/panel")
 # The shell's panel, in its own folder: /etc/xdg/waybar belongs to waybar.
-WAYBAR_CONFIG = "/usr/local/share/b8k/waybar/config"
-WAYBAR_STYLE = "/usr/local/share/b8k/waybar/style.css"
+WAYBAR_CONFIG = "/usr/share/b8k/waybar/config"
+WAYBAR_STYLE = "/usr/share/b8k/waybar/style.css"
 # The XDG data folders, one's own first: programs installed with a prefix of
 # /usr/local (install.sh) or /usr (a package) are found alike.
 DATA_DIRS = [os.environ.get("XDG_DATA_HOME") or os.path.expanduser("~/.local/share")] + \
@@ -64,7 +64,7 @@ ICON_DIRS = tuple(os.path.join(d, "icons/hicolor", size, "apps") for d in DATA_D
                   for size in ("scalable", "256x256", "128x128", "96x96", "64x64", "48x48")) + \
     ("/usr/share/pixmaps",)
 # Programs without an icon of their own: tiles.
-APP_ICON = "/usr/local/share/b8k/app.svg"
+APP_ICON = "/usr/share/b8k/app.svg"
 # waybar signals of the system modules (home 8, 9 once brightness, Wi-Fi
 # and volume 10, battery 11); program buttons and slots get 1-7, then 12 up.
 RESERVED = range(8, 12)
@@ -319,7 +319,7 @@ def write_waybar(path, apps, panel, slots):
                             + ["custom/slot%d" % (n + 1) for n in range(len(slots))])
     # The line above the slots shares the first slot's signal.
     conf["custom/sep"] = {
-        "exec": "/usr/local/bin/b8k-launch sep",
+        "exec": "/usr/bin/b8k-launch sep",
         "return-type": "json",
         "format": "{text}",
         "signal": slots[0],
@@ -328,24 +328,24 @@ def write_waybar(path, apps, panel, slots):
     }
     for n, sig in enumerate(slots, 1):
         conf["custom/slot%d" % n] = {
-            "exec": "/usr/local/bin/b8k-launch slot %d" % n,
+            "exec": "/usr/bin/b8k-launch slot %d" % n,
             "return-type": "json",
             "format": "{text}",
             "signal": sig,
             "exec-on-event": False,
-            "on-click-release": "/usr/local/bin/b8k-press slot%d %d; /usr/local/bin/b8k-launch tap-slot %d"
+            "on-click-release": "/usr/bin/b8k-press slot%d %d; /usr/bin/b8k-launch tap-slot %d"
                         % (n, sig, n),
             "tooltip": False,
         }
     for app_id in panel:
         sig = apps[app_id]["signal"]
         conf["custom/" + app_id] = {
-            "exec": "/usr/local/bin/b8k-launch status " + app_id,
+            "exec": "/usr/bin/b8k-launch status " + app_id,
             "return-type": "json",
             "format": "{text}",
             "signal": int(sig),
             "exec-on-event": False,
-            "on-click-release": "/usr/local/bin/b8k-press %s %s; /usr/local/bin/b8k-launch tap %s"
+            "on-click-release": "/usr/bin/b8k-press %s %s; /usr/bin/b8k-launch tap %s"
                         % (app_id, sig, app_id),
             "tooltip": False,
         }
@@ -397,7 +397,7 @@ def reload_session(uid):
             os.kill(int(pid), signal.SIGTERM)
     run = os.environ.get("XDG_RUNTIME_DIR", "")
     log = open(os.path.join(run, "b8k-focus-watch.log"), "a") if run else subprocess.DEVNULL
-    subprocess.Popen(["/usr/local/bin/b8k-focus", "watch"], stdout=log, stderr=log,
+    subprocess.Popen(["/usr/bin/b8k-focus", "watch"], stdout=log, stderr=log,
                      start_new_session=True)
 
 

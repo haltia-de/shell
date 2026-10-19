@@ -18,18 +18,18 @@ fi
 # config and style. Without them, the built-in ones.
 panel=
 rm -f "$run"/b8k/apps.conf
-if [ -x /usr/local/bin/b8k-apps ] && /usr/local/bin/b8k-apps >"$run"/b8k-apps.log 2>&1 &&
+if [ -x /usr/bin/b8k-apps ] && /usr/bin/b8k-apps >"$run"/b8k-apps.log 2>&1 &&
 	[ -s "$run"/b8k/waybar.json ] && [ -s "$run"/b8k/style.css ]; then
 	panel=yes
 fi
 # The home screen: every program as a tile, on the background layer right
 # of the panel; the panel's home button raises it over the windows.
-if [ -x /usr/local/bin/b8k-home ]; then
-	setsid /usr/local/bin/b8k-home >"$run"/b8k-home.log 2>&1 &
+if [ -x /usr/bin/b8k-home ]; then
+	setsid /usr/bin/b8k-home >"$run"/b8k-home.log 2>&1 &
 fi
 # The "✕" in the top right corner that closes the program in front.
-if [ -x /usr/local/bin/b8k-close ]; then
-	setsid /usr/local/bin/b8k-close >"$run"/b8k-close.log 2>&1 &
+if [ -x /usr/bin/b8k-close ]; then
+	setsid /usr/bin/b8k-close >"$run"/b8k-close.log 2>&1 &
 fi
 # The file chooser's places (MAX's «Сохранить как», Firefox): the usual
 # folders that exist, added once each; one's own bookmarks stay.
@@ -52,25 +52,25 @@ if [ ! -e "$HOME/.config/b8k/filechooser-1" ] && command -v gsettings >/dev/null
 	mkdir -p "$HOME/.config/b8k" && : >"$HOME/.config/b8k/filechooser-1"
 fi
 # The brightness chosen last time (b8k-brightness keeps it).
-/usr/local/bin/b8k-brightness --restore >"$run"/b8k-brightness.log 2>&1
+/usr/bin/b8k-brightness --restore >"$run"/b8k-brightness.log 2>&1
 # Settings starts through D-Bus activation and takes the bus environment.
 dbus-update-activation-environment NO_AT_BRIDGE GTK_A11Y ${GTK_THEME:+GTK_THEME} 2>/dev/null
 # Volume keys. Without this nothing handles them, and a muted sink at 0%
 # has no way back.
-if [ -x /usr/local/bin/b8k-volume ]; then
-	setsid /usr/local/bin/b8k-volume >"$run"/b8k-volume.log 2>&1 &
+if [ -x /usr/bin/b8k-volume ]; then
+	setsid /usr/bin/b8k-volume >"$run"/b8k-volume.log 2>&1 &
 fi
-if [ -x /usr/local/bin/b8k-focus ]; then
-	setsid /usr/local/bin/b8k-focus watch >"$run"/b8k-focus-watch.log 2>&1 &
+if [ -x /usr/bin/b8k-focus ]; then
+	setsid /usr/bin/b8k-focus watch >"$run"/b8k-focus-watch.log 2>&1 &
 fi
 # Notifications (org.freedesktop.Notifications): large cards at the top
 # that buzz once; a tap opens what they are about.
 if command -v mako >/dev/null && ! pgrep -x -u "$(id -u)" mako >/dev/null; then
-	setsid mako -c /usr/local/share/b8k/mako.conf >"$run"/mako.log 2>&1 &
+	setsid mako -c /usr/share/b8k/mako.conf >"$run"/mako.log 2>&1 &
 fi
 # Counts on buttons from programs' Unity LauncherEntry signals.
-if [ -x /usr/local/bin/b8k-badges ]; then
-	setsid /usr/local/bin/b8k-badges >"$run"/b8k-badges.log 2>&1 &
+if [ -x /usr/bin/b8k-badges ]; then
+	setsid /usr/bin/b8k-badges >"$run"/b8k-badges.log 2>&1 &
 fi
 # Wi-Fi passwords: NetworkManager asks a secret agent, which GNOME keeps
 # in its shell. Without one, a tap on a protected network in Settings
@@ -80,18 +80,20 @@ if command -v nm-applet >/dev/null && ! pgrep -x -u "$(id -u)" nm-applet >/dev/n
 fi
 # MAX lives in the background: messages buzz and the button counts them
 # with no window open. (Until MAX brings an XDG autostart file of its own.)
-if [ -x /usr/local/bin/b8k-max ] && [ -s "$HOME/.local/share/b8k-max/web.db" ] &&
+max=/usr/bin/b8k-max
+[ -x "$max" ] || max=/usr/local/bin/b8k-max
+if [ -x "$max" ] && [ -s "$HOME/.local/share/b8k-max/web.db" ] &&
 	[ ! -e /etc/xdg/autostart/io.github.trudenboy.Max.desktop ]; then
-	setsid /usr/local/bin/b8k-max --background >"$run"/b8k-max.log 2>&1 &
+	setsid "$max" --background >"$run"/b8k-max.log 2>&1 &
 fi
 # Programs started in the background the standard way: XDG autostart
 # entries marked X-B8K-Autostart=true, and one's own ~/.config/autostart.
-if [ -x /usr/local/bin/b8k-apps ]; then
-	/usr/local/bin/b8k-apps autostart >"$run"/b8k-autostart.log 2>&1
+if [ -x /usr/bin/b8k-apps ]; then
+	/usr/bin/b8k-apps autostart >"$run"/b8k-autostart.log 2>&1
 fi
-if [ -x /usr/local/bin/b8k-keyboard ]; then
+if [ -x /usr/bin/b8k-keyboard ]; then
 	pidof wvkbd-b8k >/dev/null 2>&1 || \
-		/usr/local/bin/b8k-keyboard >"$run"/b8k-keyboard.log 2>&1 &
+		/usr/bin/b8k-keyboard >"$run"/b8k-keyboard.log 2>&1 &
 elif [ -x /usr/bin/squeekboard ]; then
 	squeekboard >"$run"/squeekboard.log 2>&1 &
 fi
@@ -101,4 +103,4 @@ fi
 if [ -n "$panel" ]; then
 	exec waybar -c "$run"/b8k/waybar.json -s "$run"/b8k/style.css
 fi
-exec waybar -c /usr/local/share/b8k/waybar/config -s /usr/local/share/b8k/waybar/style.css
+exec waybar -c /usr/share/b8k/waybar/config -s /usr/share/b8k/waybar/style.css

@@ -6,6 +6,7 @@ Phosh used to handle the keys; phoc alone ignores them, so the sound could
 be muted at 0% with no way back. Runs in the session as the user, who is
 in the input group. The keypad is only read, not grabbed.
 """
+import ctypes
 import os
 import signal
 import struct
@@ -16,7 +17,8 @@ import time
 KEY_VOLUMEDOWN = 114
 KEY_VOLUMEUP = 115
 EV_KEY = 1
-EVENT = struct.Struct("llHHi")  # struct input_event on 32-bit ARM
+EVENT = struct.Struct("llHHi")  # struct input_event (a timeval of two longs)
+LONG_BITS = ctypes.sizeof(ctypes.c_long) * 8
 STEP = 5  # percent; up stops at 100, past which PulseAudio would overdrive
 
 
@@ -32,7 +34,7 @@ def find_keypad():
         # A hex bitmap of key codes, lowest word last, one long per word.
         bits = 0
         for i, word in enumerate(reversed(words)):
-            bits |= int(word, 16) << (32 * i)
+            bits |= int(word, 16) << (LONG_BITS * i)
         if bits >> KEY_VOLUMEUP & 1 and bits >> KEY_VOLUMEDOWN & 1:
             return "/dev/input/" + node
     return None
@@ -78,7 +80,11 @@ def main():
     path = find_keypad()
     if not path:
         sys.exit("b8k-volume: no device with volume keys")
-    with open(path, "rb", buffering=0) as dev:
+    try:
+        dev = open(path, "rb", buffering=0)
+    except OSError as exc:
+        sys.exit("b8k-volume: %s: %s" % (path, exc.strerror))
+    with dev:
         while True:
             data = dev.read(EVENT.size)
             if len(data) < EVENT.size:

@@ -1,0 +1,27 @@
+# The shell's session on a machine that is not the B8000-H (ADR 0004 in
+# haltia-de/device-lenovo-b8000h): headless phoc with pixman on x86_64
+# Alpine starts the panel and the home screen, and the screenshot is kept
+# as an artifact. A tie to the B8000-H breaks this, not the next tablet.
+name: session
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  headless:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Session under headless phoc
+        run: |
+          mkdir -p out
+          docker run --rm -v "$PWD":/src:ro -v "$PWD/out":/out alpine:3.24 \
+            sh /src/ci/headless-session.sh /out
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: session
+          path: out/

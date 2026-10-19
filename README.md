@@ -1,7 +1,7 @@
 # b8k-shell
 
 Оболочка планшета без рабочего стола — для Lenovo YOGA Tablet 10 (B8000-H)
-с [lenovo-b8000h-linux](https://github.com/trudenboy/lenovo-b8000h-linux), но
+с [lenovo-b8000h-linux](https://github.com/haltia-de/device-lenovo-b8000h), но
 не привязанная к нему: она запускает программы и показывает их крупно для
 пожилого человека.
 
@@ -25,12 +25,21 @@ LauncherEntry, запреты сна logind, XDG autostart. Решение и с
 репозитории устройства: `docs/adr/0001-three-layers.md`, `CONTEXT.md`.
 
 Установка: пакет Alpine `b8k-shell` (armv7) из выпусков GitHub, подписан
-ключом проекта ([b8k-ci](https://github.com/trudenboy/b8k-ci)); его собирает
+ключом проекта ([haltia-de/ci](https://github.com/haltia-de/ci)); его собирает
 CI по тегу `vX.Y.Z` родным компилятором в Alpine armv7
 (`tools/native-build.sh`). Вручную: `sh build.sh` (кросс-сборка в контейнере
-`b8000h-build:3.24`, результат в `/opt/b8000h/tools` и `/opt/b8000h/out`) и
-`sh install.sh [ROOT]`; пути — `/usr/local/{bin,sbin,share/b8k}`. Как
-запускается сеанс и какой композитор — дело устройства (`phoc -C
-/usr/local/share/b8k/phoc.ini -E b8k-launcher`).
+`b8000h-build:3.24`, результат в `$WORK/tools` и `$WORK/out`, `WORK` по
+умолчанию `/opt/b8000h`) и `sh install.sh [ROOT]`; пути —
+`/usr/{bin,sbin,share/b8k}`, `/usr/local` остаётся человеку (до 2.0 там
+ссылки на старые пути). Как запускается сеанс и какой композитор — дело
+устройства (`phoc -C /usr/share/b8k/phoc.ini -E b8k-launcher`).
+
+Устройство подключается без кода в оболочке: подсветка — `backlight=` в
+`/etc/haltia/device.conf` или первая в `/sys/class/backlight`; кнопка
+питания — `power_key=` там же или первое устройство с `KEY_POWER`; сон —
+хук `/usr/lib/haltia/hooks/suspend` или `freeze`; пороги касаний — доли от
+осей сенсора; правила doas — `B8K_DOAS` (`all`, `shell`, `none`). CI
+(`session`) поднимает сеанс под headless phoc на x86_64 и сохраняет снимок
+экрана (`ci/headless-session.sh`).
 
 Лицензия — GPL-2.0.

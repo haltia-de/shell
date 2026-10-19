@@ -5,7 +5,7 @@
 # /etc/b8k/touchguard.conf; reload reads them again without letting go of
 # the screen (b8k-touchguard-setup changes them so).
 description="Filter for accidental touches"
-command=/usr/local/sbin/b8k-touchguard
+command=/usr/sbin/b8k-touchguard
 command_background=yes
 pidfile=/run/b8k-touchguard.pid
 output_log=/var/log/b8k-touchguard.log

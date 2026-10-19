@@ -18,10 +18,10 @@ window#waybar { background: #242424; color: #ffffff; }
 }
 #custom-firefox { background-image: url("/usr/share/icons/hicolor/64x64/apps/firefox.png"); }
 #custom-calc { background-image: url("/usr/share/icons/hicolor/scalable/apps/galculator.svg"); }
-#custom-weather { background-image: url("/usr/local/share/b8k/weather.svg"); }
-#custom-news { background-image: url("/usr/local/share/b8k/news.svg"); }
-#custom-max { background-image: url("/usr/local/share/b8k/max.png"); }
-#custom-paint { background-image: url("/usr/local/share/b8k/paint.svg"); }
+#custom-weather { background-image: url("/usr/share/b8k/weather.svg"); }
+#custom-news { background-image: url("/usr/share/b8k/news.svg"); }
+#custom-max { background-image: url("/usr/share/b8k/max.png"); }
+#custom-paint { background-image: url("/usr/share/b8k/paint.svg"); }
 #custom-cards { background-image: url("/usr/share/icons/hicolor/256x256/apps/gnome-aisleriot.png"); }
 .app.running {
   background-color: #3a3a3a;
@@ -46,7 +46,7 @@ window#waybar { background: #242424; color: #ffffff; }
   background-repeat: no-repeat;
   background-position: center;
   background-size: 50px 50px;
-  background-image: url("/usr/local/share/b8k/home.svg");
+  background-image: url("/usr/share/b8k/home.svg");
 }
 #custom-home.raised { background-color: #3584e4; }
 /* Open programs that are not pinned (b8k-launch slot N): outlined instead
@@ -82,11 +82,11 @@ window#waybar { background: #242424; color: #ffffff; }
   background-position: center;
   background-size: 30px 32px;
 }
-#custom-volume.v0 { background-image: url("/usr/local/share/b8k/vol-0.svg"); }
-#custom-volume.v1 { background-image: url("/usr/local/share/b8k/vol-1.svg"); }
-#custom-volume.v2 { background-image: url("/usr/local/share/b8k/vol-2.svg"); }
-#custom-volume.v3 { background-image: url("/usr/local/share/b8k/vol-3.svg"); }
-#custom-volume.v4 { background-image: url("/usr/local/share/b8k/vol-4.svg"); }
+#custom-volume.v0 { background-image: url("/usr/share/b8k/vol-0.svg"); }
+#custom-volume.v1 { background-image: url("/usr/share/b8k/vol-1.svg"); }
+#custom-volume.v2 { background-image: url("/usr/share/b8k/vol-2.svg"); }
+#custom-volume.v3 { background-image: url("/usr/share/b8k/vol-3.svg"); }
+#custom-volume.v4 { background-image: url("/usr/share/b8k/vol-4.svg"); }
 #custom-wifi3,
 #custom-battery {
   min-height: 40px;
@@ -104,22 +104,22 @@ window#waybar { background: #242424; color: #ffffff; }
   background-size: 40px 30px;
 }
 #custom-battery { background-size: 83px 34px; }
-#custom-wifi3.w0 { background-image: url("/usr/local/share/b8k/wifi-p0.svg"); }
-#custom-wifi3.w1 { background-image: url("/usr/local/share/b8k/wifi-p1.svg"); }
-#custom-wifi3.w2 { background-image: url("/usr/local/share/b8k/wifi-p2.svg"); }
-#custom-wifi3.w3 { background-image: url("/usr/local/share/b8k/wifi-p3.svg"); }
-#custom-wifi3.w4 { background-image: url("/usr/local/share/b8k/wifi-p4.svg"); }
-#custom-wifi3.wx { background-image: url("/usr/local/share/b8k/wifi-x.svg"); }
-#custom-battery.b0 { background-image: url("/usr/local/share/b8k/bat-b0.svg"); }
-#custom-battery.b1 { background-image: url("/usr/local/share/b8k/bat-b1.svg"); }
-#custom-battery.b2 { background-image: url("/usr/local/share/b8k/bat-b2.svg"); }
-#custom-battery.b3 { background-image: url("/usr/local/share/b8k/bat-b3.svg"); }
-#custom-battery.b4 { background-image: url("/usr/local/share/b8k/bat-b4.svg"); }
-#custom-battery.c0 { background-image: url("/usr/local/share/b8k/bat-c0.svg"); }
-#custom-battery.c1 { background-image: url("/usr/local/share/b8k/bat-c1.svg"); }
-#custom-battery.c2 { background-image: url("/usr/local/share/b8k/bat-c2.svg"); }
-#custom-battery.c3 { background-image: url("/usr/local/share/b8k/bat-c3.svg"); }
-#custom-battery.c4 { background-image: url("/usr/local/share/b8k/bat-c4.svg"); }
+#custom-wifi3.w0 { background-image: url("/usr/share/b8k/wifi-p0.svg"); }
+#custom-wifi3.w1 { background-image: url("/usr/share/b8k/wifi-p1.svg"); }
+#custom-wifi3.w2 { background-image: url("/usr/share/b8k/wifi-p2.svg"); }
+#custom-wifi3.w3 { background-image: url("/usr/share/b8k/wifi-p3.svg"); }
+#custom-wifi3.w4 { background-image: url("/usr/share/b8k/wifi-p4.svg"); }
+#custom-wifi3.wx { background-image: url("/usr/share/b8k/wifi-x.svg"); }
+#custom-battery.b0 { background-image: url("/usr/share/b8k/bat-b0.svg"); }
+#custom-battery.b1 { background-image: url("/usr/share/b8k/bat-b1.svg"); }
+#custom-battery.b2 { background-image: url("/usr/share/b8k/bat-b2.svg"); }
+#custom-battery.b3 { background-image: url("/usr/share/b8k/bat-b3.svg"); }
+#custom-battery.b4 { background-image: url("/usr/share/b8k/bat-b4.svg"); }
+#custom-battery.c0 { background-image: url("/usr/share/b8k/bat-c0.svg"); }
+#custom-battery.c1 { background-image: url("/usr/share/b8k/bat-c1.svg"); }
+#custom-battery.c2 { background-image: url("/usr/share/b8k/bat-c2.svg"); }
+#custom-battery.c3 { background-image: url("/usr/share/b8k/bat-c3.svg"); }
+#custom-battery.c4 { background-image: url("/usr/share/b8k/bat-c4.svg"); }
 /* Hides the panel; b8k-tab draws its 120x44 tab in exactly this place, so
    keep the size (40 px + 2 px margins) and the 30 px icon in step with it. */
 #custom-hide {
@@ -130,7 +130,7 @@ window#waybar { background: #242424; color: #ffffff; }
   background-repeat: no-repeat;
   background-position: center;
   background-size: 30px 30px;
-  background-image: url("/usr/local/share/b8k/hide.svg");
+  background-image: url("/usr/share/b8k/hide.svg");
 }
 #custom-clock {
   font-size: 18px;

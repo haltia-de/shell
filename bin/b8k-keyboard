@@ -6,7 +6,7 @@
 # arranged first, squeezed the panel to 440px and phoc looped on the
 # resize, so the keyboard never appeared. Windows keep out of its zone,
 # so nothing covers it.
-exec /usr/local/bin/wvkbd-b8k \
+exec /usr/bin/wvkbd-b8k \
 	--auto --hidden --no-popup --wayland-layer bottom \
 	-H 360 -L 360 -R 10 \
 	--fn "Sans 28" \

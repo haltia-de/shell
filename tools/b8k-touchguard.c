@@ -20,7 +20,7 @@
  *  - repeat_ms / repeat_radius: a new touch this soon after the last one
  *    (from its lift to the new landing), this near to it, is a tremor's
  *    second strike and is dropped (Ignore Repeat); a quick double tap is
- *    one tap. 300 ms and 140 units (some 80 px) by default.
+ *    one tap. 300 ms and 6.27% of the width (some 80 px) by default.
  *  - multitouch (on by default): a second finger that lands while the first
  *    is down starts a gesture (a pinch, a two-finger scroll), and every
  *    finger then goes through live, in its own slot, at once: no hold, no
@@ -43,8 +43,16 @@
  * it, readable by the session user only: it holds where each touch
  * landed); SIGUSR2 stops that. The setup tool shows that file while open.
  *
- * Measured on the B8000-H: a finger is size 5 of 15, pressure ~48, 75-120
- * ms; a palm is 12-15, 120-143, with 3-6 contacts and ghost contacts of
+ * palm_major, palm_pressure, repeat_radius and tap_radius are fractions of
+ * the screen's own axes, written as percent with two decimals ("73.33%"):
+ * of the largest contact size (ABS_MT_TOUCH_MAJOR) and pressure
+ * (ABS_MT_PRESSURE) it reports, and of its X extent for the two distances,
+ * so they mean the same on any screen. A plain number is the old absolute
+ * value in this screen's units, read for one version (shell 1.x) and
+ * converted. The axes go to /run/b8k-touchguard.axes for the setup tool.
+ *
+ * Measured on the B8000-H (X 0-2230, Y 0-1250, size 0-15, pressure
+ * 0-255): a finger is size 5 of 15, pressure ~48, 75-120 ms; a palm is 12-15, 120-143, with 3-6 contacts and ghost contacts of
  * 9-11 ms around it. The name contains "touch", so b8k-sleep grabs this
  * device too while the screen is off.
  */
@@ -78,12 +86,26 @@ struct slot {
 	int fresh; /* new this frame: its position events set where it landed */
 };
 
+/* repeat_radius, palm_major, palm_pressure and tap_radius in hundredths of
+ * a percent of their axis (FRAC); lim holds them in the screen's units. */
 struct config {
 	int hold_ms, repeat_ms, repeat_radius, palm_major, palm_pressure, palm_contacts;
 	int palm_grace_ms, buzz_ms, tap_radius, long_ms, multitouch;
 };
-static const struct config defaults = { 40, 300, 140, 11, 100, 3, 300, 70, 80, 600, 1 };
+#define FRAC 10000
+/* On the B8000-H: 140 and 80 of 2230 units, 11 of 15, 100 of 255. */
+static const struct config defaults = { 40, 300, 627, 7333, 3921, 3, 300, 70, 358, 600, 1 };
 static struct config cfg;
+static struct { int repeat_radius, palm_major, palm_pressure, tap_radius; } lim;
+#define AXES "/run/b8k-touchguard.axes"
+/* The screen's axes, read once it is open; max < min when it lacks one. */
+static struct axis { int code; const char *name; int min, max; } axes[] = {
+	{ ABS_MT_POSITION_X, "x", 0, -1 },
+	{ ABS_MT_POSITION_Y, "y", 0, -1 },
+	{ ABS_MT_TOUCH_MAJOR, "major", 0, -1 },
+	{ ABS_MT_PRESSURE, "pressure", 0, -1 },
+};
+enum { AX_X, AX_Y, AX_MAJOR, AX_PRESSURE };
 static int haptic_fd = -1, haptic_effect = -1;
 /* The touch handed to the session: when it went down, whether it moved
  * past tap_radius (a scroll: no buzz), whether it has buzzed (long press,
@@ -139,6 +161,55 @@ static int debugging(void)
 	return debug || now_ms() < debug_until;
 }
 
+static void read_axes(void)
+{
+	struct input_absinfo ai;
+	FILE *f;
+
+	for (unsigned i = 0; i < sizeof(axes) / sizeof(axes[0]); i++)
+		if (ioctl(in_fd, EVIOCGABS(axes[i].code), &ai) == 0 && ai.maximum > ai.minimum) {
+			axes[i].min = ai.minimum;
+			axes[i].max = ai.maximum;
+		}
+	/* The real screen's, not a test instance's. */
+	if (getenv("B8K_TOUCHGUARD_SCREEN") || !(f = fopen(AXES ".new", "w")))
+		return;
+	for (unsigned i = 0; i < sizeof(axes) / sizeof(axes[0]); i++)
+		if (axes[i].max > axes[i].min)
+			fprintf(f, "%s %d %d\n", axes[i].name, axes[i].min, axes[i].max);
+	if (fclose(f) == 0)
+		rename(AXES ".new", AXES);
+}
+
+static int span(int ax)
+{
+	return axes[ax].max - axes[ax].min;
+}
+
+/* "73.33%" in FRAC, or an old absolute value in the axis's units. */
+static int fraction(const char *key, const char *val, int ax)
+{
+	int v;
+
+	if (strchr(val, '%'))
+		v = (int)(strtod(val, NULL) * 100 + 0.5);
+	else if (span(ax) > 0) {
+		v = (int)((long long)(atoi(val) - (ax == AX_X ? 0 : axes[ax].min)) * FRAC / span(ax));
+		logf_("%s = %s: an absolute value, read as %d.%02d%%", key, val, v / 100, v % 100);
+	} else
+		return -1;
+	return v < 0 ? 0 : (v > FRAC ? FRAC : v);
+}
+
+/* A fraction of the axis in its units; a threshold (base) counts from the
+ * axis's minimum. An axis the screen lacks never reaches it. */
+static int resolve(int frac, int ax, int base)
+{
+	if (span(ax) <= 0)
+		return base ? 1 << 30 : 0;
+	return (base ? axes[ax].min : 0) + (int)(((long long)frac * span(ax) + FRAC / 2) / FRAC);
+}
+
 /* What the file does not name keeps its default. */
 static void read_config(const char *path)
 {
@@ -159,11 +230,11 @@ static void read_config(const char *path)
 			cfg.hold_ms = v;
 		else if (!strcmp(key, "repeat_ms"))
 			cfg.repeat_ms = v;
-		else if (!strcmp(key, "repeat_radius"))
+		else if (!strcmp(key, "repeat_radius") && (v = fraction(key, val, AX_X)) >= 0)
 			cfg.repeat_radius = v;
-		else if (!strcmp(key, "palm_major"))
+		else if (!strcmp(key, "palm_major") && (v = fraction(key, val, AX_MAJOR)) >= 0)
 			cfg.palm_major = v;
-		else if (!strcmp(key, "palm_pressure"))
+		else if (!strcmp(key, "palm_pressure") && (v = fraction(key, val, AX_PRESSURE)) >= 0)
 			cfg.palm_pressure = v;
 		else if (!strcmp(key, "palm_contacts"))
 			cfg.palm_contacts = v;
@@ -171,7 +242,7 @@ static void read_config(const char *path)
 			cfg.palm_grace_ms = v;
 		else if (!strcmp(key, "buzz_ms"))
 			cfg.buzz_ms = v < 0 ? 0 : (v > 500 ? 500 : v);
-		else if (!strcmp(key, "tap_radius"))
+		else if (!strcmp(key, "tap_radius") && (v = fraction(key, val, AX_X)) >= 0)
 			cfg.tap_radius = v;
 		else if (!strcmp(key, "long_ms"))
 			cfg.long_ms = v;
@@ -179,6 +250,14 @@ static void read_config(const char *path)
 			cfg.multitouch = v != 0;
 	}
 	fclose(f);
+}
+
+static void resolve_config(void)
+{
+	lim.repeat_radius = resolve(cfg.repeat_radius, AX_X, 0);
+	lim.tap_radius = resolve(cfg.tap_radius, AX_X, 0);
+	lim.palm_major = resolve(cfg.palm_major, AX_MAJOR, 1);
+	lim.palm_pressure = resolve(cfg.palm_pressure, AX_PRESSURE, 1);
 }
 
 /* The first direct multitouch device that is not our own, or the one
@@ -406,7 +485,7 @@ static void out_move(void)
 		if (i == primary) {
 			long long dx = s->x - s->x0, dy = s->y - s->y0;
 
-			if (dx * dx + dy * dy > (long long)cfg.tap_radius * cfg.tap_radius)
+			if (dx * dx + dy * dy > (long long)lim.tap_radius * lim.tap_radius)
 				touch_moved = 1; /* a scroll or a drag: no buzz */
 		}
 		emit(EV_ABS, ABS_MT_SLOT, i);
@@ -490,7 +569,7 @@ static int isqrt(int v)
 
 static int is_palm(const struct slot *s)
 {
-	return s->major >= cfg.palm_major || s->pressure >= cfg.palm_pressure;
+	return s->major >= lim.palm_major || s->pressure >= lim.palm_pressure;
 }
 
 /* Promote the pending primary once it has been held long enough. */
@@ -573,7 +652,7 @@ static void frame(long long t)
 		/* A new contact. */
 		int dx = s->x0 - last_x, dy = s->y0 - last_y;
 		int repeat = t - last_up < cfg.repeat_ms &&
-			     dx * dx + dy * dy < cfg.repeat_radius * cfg.repeat_radius;
+			     dx * dx + dy * dy < lim.repeat_radius * lim.repeat_radius;
 
 		if (t < palm_until || repeat || primary >= 0 || nlive) {
 			if (debugging() && repeat && t >= palm_until && primary < 0 && !nlive)
@@ -641,9 +720,9 @@ static void on_signal(int sig)
 static void log_config(void)
 {
 	logf_("hold %d ms, repeat %d ms / %d, palm size %d pressure %d contacts %d grace %d ms, "
-	      "buzz %d ms, tap %d, long %d ms, multitouch %d (%d slots)",
-	      cfg.hold_ms, cfg.repeat_ms, cfg.repeat_radius, cfg.palm_major, cfg.palm_pressure,
-	      cfg.palm_contacts, cfg.palm_grace_ms, cfg.buzz_ms, cfg.tap_radius, cfg.long_ms,
+	      "buzz %d ms, tap %d, long %d ms, multitouch %d (%d slots; screen units)",
+	      cfg.hold_ms, cfg.repeat_ms, lim.repeat_radius, lim.palm_major, lim.palm_pressure,
+	      cfg.palm_contacts, cfg.palm_grace_ms, cfg.buzz_ms, lim.tap_radius, cfg.long_ms,
 	      cfg.multitouch, nslots);
 }
 
@@ -652,8 +731,6 @@ int main(int argc, char **argv)
 	struct input_event evs[64];
 	const char *config = argc > 1 ? argv[1] : "/etc/b8k/touchguard.conf";
 
-	read_config(config);
-	haptic_open(); /* found now, not on the first touch */
 	debug = getenv("B8K_TOUCHGUARD_DEBUG") != NULL;
 	signal(SIGTERM, on_signal);
 	signal(SIGINT, on_signal);
@@ -667,6 +744,10 @@ int main(int argc, char **argv)
 		logf_("no touchscreen");
 		return 1;
 	}
+	read_axes();
+	read_config(config); /* its fractions need the axes */
+	resolve_config();
+	haptic_open(); /* found now, not on the first touch */
 	if (create_output() < 0) {
 		logf_("uinput: %s", strerror(errno));
 		return 1;
@@ -686,6 +767,7 @@ int main(int argc, char **argv)
 		if (reload) {
 			reload = 0;
 			read_config(config);
+			resolve_config();
 			haptic_close();
 			haptic_open();
 			log_config();

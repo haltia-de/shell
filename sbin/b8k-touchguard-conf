@@ -7,6 +7,10 @@
 # contact counted as a palm, would leave no way to undo it by touch).
 #
 #   b8k-touchguard-conf ranges              key, lowest, highest (no root)
+#
+# repeat_radius, palm_major, palm_pressure and tap_radius are hundredths of
+# a percent of the screen's axis in ranges and set (7333), and go into the
+# file as percent ("73.33%"), which b8k-touchguard reads.
 #   b8k-touchguard-conf set KEY=VALUE...    write them and reload the filter
 #   b8k-touchguard-conf log on|off          log every decision (15 min) or stop
 #
@@ -19,13 +23,13 @@ EVENTS=/run/b8k-touchguard.events
 
 RANGES='hold_ms 0 300
 repeat_ms 0 1500
-repeat_radius 0 600
-palm_major 6 15
-palm_pressure 60 255
+repeat_radius 0 2700
+palm_major 4000 10000
+palm_pressure 2350 10000
 palm_contacts 2 10
 palm_grace_ms 0 2000
 buzz_ms 0 500
-tap_radius 20 400
+tap_radius 90 1800
 long_ms 300 2000
 multitouch 0 1'
 
@@ -67,6 +71,8 @@ set)
 			for (i = 1; i <= n; i++) {
 				split(a[i], kv, "=")
 				val[kv[1]] = kv[2] + 0
+				if (kv[1] ~ /^(repeat_radius|palm_major|palm_pressure|tap_radius)$/)
+					val[kv[1]] = sprintf("%d.%02d%%", val[kv[1]] / 100, val[kv[1]] % 100)
 				order[i] = kv[1]
 			}
 		}

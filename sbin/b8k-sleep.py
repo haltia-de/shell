@@ -6,13 +6,21 @@ released; holding it for a second opens the power menu (b8k-ask power)
 in the user's session instead. Ten minutes without a touch or a key turn
 the lamp off as a short press would, so a tablet left lying on the table
 does not light the room for hours. Thirty seconds after the lamp goes off,
-b8k-suspend puts the system to sleep. There is no deep sleep on this
-kernel, only s2idle; the power key wakes it, and the same press turns the
-lamp back on. wlan_mt6628 does not survive a sleep, so b8k-suspend moves
-the Wi-Fi drivers out of the way.
+the system sleeps (s2idle): through the device's hook
+/usr/lib/haltia/hooks/suspend when it is there (B8000-H moves its Wi-Fi
+drivers out of the way in it), else by writing "freeze" to
+/sys/power/state. A wake source (the power key) wakes it, and the same
+press turns the lamp back on.
 
-The key shares its input device with Home. The device is grabbed so
-elogind cannot power the tablet off, and Home is passed through.
+The hook runs as root with no arguments and must return once the system
+is awake again, with what it took down brought back; its exit status is
+only logged. The lamp and the touch screen are not its business: they stay
+off and grabbed until a press of the power key, which this loop handles.
+
+The power key is the key device named power_key= in
+/etc/haltia/device.conf, else the first one with KEY_POWER. It is grabbed so
+elogind cannot power the tablet off, and the other keys on it (Home on
+B8000-H) are passed through.
 
 A program holds the screen on, or the system awake, as on any desktop:
 with a logind inhibitor in "block" mode — "idle" keeps the idle timer from
@@ -40,7 +48,9 @@ LONG_PRESS = 1.0  # seconds held before the power menu opens
 SUSPEND_AFTER = 30.0  # seconds with the screen off before a system sleep
 IDLE_OFF = 600.0  # seconds without any input before the screen goes off
 RESCAN_SEC = 30.0  # how often the input devices are looked at again
-SUSPEND = "/usr/local/sbin/b8k-suspend"
+SUSPEND_HOOK = "/usr/lib/haltia/hooks/suspend"
+POWER_STATE = "/sys/power/state"
+DEVICE_CONF = "/etc/haltia/device.conf"
 
 
 class Timeval(ctypes.Structure):
@@ -96,12 +106,29 @@ def log(msg):
     print(msg, flush=True)
 
 
+def device_conf(key):
+    """A value of /etc/haltia/device.conf (key=value lines), or ""."""
+    try:
+        with open(DEVICE_CONF) as fh:
+            for line in fh:
+                name, sep, val = line.partition("=")
+                if sep and name.strip() == key:
+                    return val.strip()
+    except OSError:
+        pass
+    return ""
+
+
 def backlight_path():
+    # b8k-brightness looks the lamp up alike.
     root = "/sys/class/backlight"
-    names = sorted(os.listdir(root))
-    if not names:
-        raise SystemExit("NO_BACKLIGHT")
-    return os.path.join(root, names[0], "brightness")
+    name = device_conf("backlight")
+    if not name:
+        names = sorted(os.listdir(root))
+        if not names:
+            raise SystemExit("NO_BACKLIGHT")
+        name = names[0]
+    return os.path.join(root, name, "brightness")
 
 
 def read_level(path):
@@ -123,11 +150,45 @@ def input_name(node):
         return ""
 
 
-def find_event(name):
-    for node in sorted(os.listdir("/sys/class/input")):
-        if node.startswith("event") and input_name(node) == name:
+def has_key(node, code):
+    """True when the input device's key bitmap (sysfs, hex words of the
+    kernel's long, highest first) has that key."""
+    try:
+        with open("/sys/class/input/%s/device/capabilities/key" % node) as fh:
+            words = fh.read().split()
+    except OSError:
+        return False
+    bits = ctypes.sizeof(ctypes.c_long) * 8
+    index = len(words) - 1 - code // bits
+    return index >= 0 and bool(int(words[index], 16) >> (code % bits) & 1)
+
+
+def find_power_key():
+    nodes = sorted((n for n in os.listdir("/sys/class/input") if n.startswith("event")),
+                   key=lambda n: int(n[5:]))
+    name = device_conf("power_key")
+    for node in nodes:
+        if (input_name(node) == name) if name else has_key(node, KEY_POWER):
             return "/dev/input/" + node
     return ""
+
+
+def can_freeze():
+    try:
+        with open(POWER_STATE) as fh:
+            return "freeze" in fh.read().split()
+    except OSError:
+        return False
+
+
+def suspend_command():
+    """How the system sleeps: the device's hook, else s2idle by hand, else
+    None (no sleep at all)."""
+    if os.access(SUSPEND_HOOK, os.X_OK):
+        return [SUSPEND_HOOK]
+    if can_freeze():
+        return ["/bin/sh", "-c", "sync; echo freeze >%s" % POWER_STATE]
+    return None
 
 
 def touch_nodes():
@@ -231,7 +292,7 @@ class Lamp:
 
     def suspend_due(self):
         """Seconds until the screen-off timer asks for a system sleep."""
-        if not self.asleep or not os.access(SUSPEND, os.X_OK):
+        if not self.asleep or suspend_command() is None:
             return None
         if awake_held("suspend"):
             self.since = time.monotonic()  # check again a full delay later
@@ -246,10 +307,11 @@ class Lamp:
         # A child does the sleep, so this loop is ready for the key that
         # wakes the tablet.
         try:
-            self.suspender = subprocess.Popen([SUSPEND])
-            log("SUSPEND")
-        except OSError as exc:
-            log("SUSPEND_FAIL %s" % exc.errno)
+            command = suspend_command()
+            self.suspender = subprocess.Popen(command)
+            log("SUSPEND %s" % command[0])
+        except (OSError, TypeError) as exc:
+            log("SUSPEND_FAIL %s" % getattr(exc, "errno", exc))
             self.since = time.monotonic()
 
     def _grab_touch(self):
@@ -391,7 +453,7 @@ def kick_frame():
 
 def power_menu():
     try:
-        if as_session_user(["/usr/local/bin/b8k-ask", "power"]):
+        if as_session_user(["/usr/bin/b8k-ask", "power"]):
             log("MENU")
         else:
             log("MENU_NO_SESSION")
@@ -449,7 +511,7 @@ def read_event(fd):
 
 
 def listen():
-    path = find_event("mtk-pmic-keys")
+    path = find_power_key()
     if not path:
         log("NO_POWER_KEY")
         return 1

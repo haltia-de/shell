@@ -25,13 +25,49 @@ gi.require_version("Gdk", "3.0")
 from gi.repository import Gdk, GLib, Gtk  # noqa: E402
 
 CONF = "/etc/b8k/touchguard.conf"
-DEFAULTS = "/usr/local/share/b8k/touchguard.conf"
-HELPER = "/usr/local/sbin/b8k-touchguard-conf"
+DEFAULTS = "/usr/share/b8k/touchguard.conf"
+HELPER = "/usr/sbin/b8k-touchguard-conf"
 EVENTS = "/run/b8k-touchguard.events"
 CONFIRM_S = 15
 APPLY_MS = 600  # a slider dragged is sent once it rests this long
 LOG_RENEW_S = 10 * 60  # the filter logs for 15 minutes per request
-PX_PER_UNIT = 86 / 150  # the screen's units against pixels (Synaptics Blade10)
+AXES = "/run/b8k-touchguard.axes"  # the screen's axes, written by the filter
+FRAC = 10000  # the fractions' unit: hundredths of a percent of the axis
+# key: the axis it is a fraction of (the file writes it as "73.33%").
+FRACTIONS = {"repeat_radius": "x", "tap_radius": "x", "palm_major": "major",
+             "palm_pressure": "pressure"}
+
+
+def read_axes():
+    # The B8000-H's, until the filter has written the screen's own.
+    axes = {"x": (0, 2230), "y": (0, 1250), "major": (0, 15), "pressure": (0, 255)}
+    try:
+        with open(AXES) as fh:
+            for line in fh:
+                parts = line.split()
+                if len(parts) == 3:
+                    axes[parts[0]] = (int(parts[1]), int(parts[2]))
+    except (OSError, ValueError):
+        pass
+    return axes
+
+
+AXIS = read_axes()
+
+
+def span(axis):
+    lo, hi = AXIS[axis]
+    return max(1, hi - lo)
+
+
+def screen_width():
+    try:
+        return Gdk.Display.get_default().get_monitor(0).get_geometry().width
+    except AttributeError:
+        return 1280
+
+
+PX_PER_UNIT = screen_width() / span("x")  # the screen's units against pixels
 
 # key, title, hint, unit. The ranges come from the helper, which enforces
 # them as root.
@@ -41,7 +77,7 @@ GROUPS = [
          "Касание короче засчитывается как случайное (вскользь). Палец "
          "нажимает 75–120 мс", "ms"),
         ("tap_radius", "Сдвиг пальца",
-         "Палец, ушедший дальше, листает или тянет и не вибрирует", "units"),
+         "Палец, ушедший дальше, листает или тянет и не вибрирует", "width"),
         ("long_ms", "Долгое нажатие",
          "Палец, лежащий столько на месте, вибрирует ещё раз", "ms"),
     ]),
@@ -56,15 +92,15 @@ GROUPS = [
          "Новое касание раньше этого после прошлого и рядом с ним — "
          "второй удар дрожащей руки, отбрасывается. 0 — не отбрасывать", "ms"),
         ("repeat_radius", "Повтор: расстояние",
-         "Насколько близко к прошлому касанию повтор отбрасывается", "units"),
+         "Насколько близко к прошлому касанию повтор отбрасывается", "width"),
     ]),
     ("Ладонь", [
         ("palm_major", "Ладонь: размер пятна",
-         "Пятно такого размера и больше — ладонь. Из 15; палец — около 5, "
-         "ладонь — 12–15", "of15"),
+         "Пятно такого размера и больше — ладонь. Доля от самого большого "
+         "пятна, что видит экран: палец — около трети, ладонь — 80–100 %", "major"),
         ("palm_pressure", "Ладонь: давление",
-         "Такое давление и сильнее — ладонь. Из 255; палец — около 48, "
-         "ладонь — 120–143", "of255"),
+         "Такое давление и сильнее — ладонь. Доля от наибольшего давления: "
+         "палец — около 20 %, ладонь — 45–55 %", "pressure"),
         ("palm_contacts", "Ладонь: касаний сразу",
          "Столько касаний одновременно — ладонь", "count"),
         ("palm_grace_ms", "Пауза после ладони",
@@ -76,7 +112,11 @@ GROUPS = [
          "ощущается", "ms"),
     ]),
 ]
-STEPS = {"ms": 10, "units": 10, "of15": 1, "of255": 5, "count": 1, "bool": 1}
+# A step of the − and + buttons: a size step is one of the screen's own,
+# a pressure step five.
+STEPS = {"ms": 10, "width": 50, "major": max(1, round(FRAC / span("major"))),
+         "pressure": max(1, round(5 * FRAC / span("pressure"))), "count": 1, "bool": 1}
+SNAP = ("ms", "count")  # fractions take any value a drag leaves
 LABELS = {k: t for _g, rows in GROUPS for k, t, _h, _u in rows}
 
 CSS = b"""
@@ -124,13 +164,24 @@ switch slider { min-width: 60px; min-height: 60px; border-radius: 30px; }
 
 
 def read_conf(path):
+    """The values, fractions in FRAC: "73.33%", or an old absolute value in
+    the screen's units (shell 1.x) converted as the filter does."""
     values = {}
     try:
         with open(path) as fh:
             for line in fh:
-                m = re.match(r"\s*([a-z_]+)\s*=\s*(-?\d+)", line)
-                if m and not line.lstrip().startswith("#"):
-                    values[m.group(1)] = int(m.group(2))
+                m = re.match(r"\s*([a-z_]+)\s*=\s*(-?\d+(?:\.\d+)?)(%?)", line)
+                if not m or line.lstrip().startswith("#"):
+                    continue
+                key, num, pct = m.groups()
+                if key not in FRACTIONS:
+                    values[key] = int(float(num))
+                elif pct:
+                    values[key] = int(float(num) * 100 + 0.5)
+                else:
+                    axis = FRACTIONS[key]
+                    base = 0 if axis == "x" else AXIS[axis][0]
+                    values[key] = (int(float(num)) - base) * FRAC // span(axis)
     except OSError:
         pass
     return values
@@ -181,12 +232,11 @@ def show_value(key, unit, v):
         if key == "repeat_ms" and v == 0:
             return "выкл."
         return "%d мс" % v
-    if unit == "units":
-        return "%d px" % round(v * PX_PER_UNIT)
-    if unit == "of15":
-        return "%d из 15" % v
-    if unit == "of255":
-        return "%d из 255" % v
+    if unit == "width":
+        return "%d px" % round(v * screen_width() / FRAC)
+    if unit in ("major", "pressure"):
+        lo, hi = AXIS[unit]
+        return "%d %% · %d из %d" % (round(v / 100), lo + round(v * span(unit) / FRAC), hi)
     return str(v)
 
 
@@ -387,7 +437,7 @@ class Setup:
         v = int(round(scale.get_value()))
         lo = self.ranges[key][0]
         snapped = lo + round((v - lo) / step) * step
-        if snapped != v and snapped <= self.ranges[key][1]:
+        if unit in SNAP and snapped != v and snapped <= self.ranges[key][1]:
             scale.set_value(snapped)  # comes back here with the snapped value
             return
         self.values[key].set_text(show_value(key, unit, v))
@@ -487,7 +537,7 @@ class Setup:
         alloc = w.get_allocation()
         Gtk.render_background(w.get_style_context(), cr, 0, 0, alloc.width, alloc.height)
         Gtk.render_frame(w.get_style_context(), cr, 0, 0, alloc.width, alloc.height)
-        r = self.current().get("tap_radius", 80) * PX_PER_UNIT
+        r = self.current().get("tap_radius", 358) * screen_width() / FRAC
         for x, y, a in self.taps:
             # The tap, and how far the finger may slide and still tap.
             cr.set_source_rgba(0x35 / 255, 0x84 / 255, 0xe4 / 255, 0.25 * a)

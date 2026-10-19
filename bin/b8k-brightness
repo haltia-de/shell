@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-2.0
-# Screen brightness: a large slider opened from the sun on the panel.
+# Screen brightness: a large slider opened from «Служебные».
 # The chosen level is kept in ~/.config/b8k/brightness; --restore sets it
 # again at session start (b8k-launcher) without opening the window.
 # The level goes through logind (Session.SetBrightness), so no root is
@@ -20,7 +20,27 @@ gi.require_version("Gdk", "3.0")
 gi.require_version("GtkLayerShell", "0.1")
 from gi.repository import Gdk, Gio, GLib, GObject, Gtk, GtkLayerShell  # noqa: E402
 
-BACKLIGHT = "mt6589-bls"
+DEVICE_CONF = "/etc/haltia/device.conf"
+
+
+def backlight_name():
+    """The device's lamp: backlight= in /etc/haltia/device.conf, else the
+    first one in /sys/class/backlight (b8k-sleep.py looks it up alike)."""
+    try:
+        with open(DEVICE_CONF) as fh:
+            for line in fh:
+                key, sep, val = line.partition("=")
+                if sep and key.strip() == "backlight" and val.strip():
+                    return val.strip()
+    except OSError:
+        pass
+    try:
+        return sorted(os.listdir("/sys/class/backlight"))[0]
+    except (OSError, IndexError):
+        return ""
+
+
+BACKLIGHT = backlight_name()
 SYSFS = "/sys/class/backlight/%s" % BACKLIGHT
 LOWEST = 10  # never black: the slider must stay visible
 SAVED = os.path.join(os.path.expanduser("~"), ".config", "b8k", "brightness")
@@ -62,7 +82,9 @@ button {
 
 
 class Buzz:
-    EVIOCSFF = 0x40000000 | (0x2C << 16) | (ord("E") << 8) | 0x80
+    # struct ff_effect is 44 bytes with 32-bit longs, 48 with 64-bit ones.
+    SIZE = 0x2C if struct.calcsize("l") == 4 else 0x30
+    EVIOCSFF = 0x40000000 | (SIZE << 16) | (ord("E") << 8) | 0x80
 
     def __init__(self, ms=70):
         self.fd = -1
@@ -75,7 +97,8 @@ class Buzz:
                         continue
                 self.fd = os.open("/dev/input/" + node, os.O_RDWR | os.O_CLOEXEC)
                 buf = bytearray(struct.pack("<HhHHHHHHH", 0x50, -1, 0, 0, 0, ms, 0,
-                                            0xFFFF, 0xFFFF) + bytes(32))
+                                            0xFFFF, 0xFFFF))
+                buf += bytes(self.SIZE - len(buf))
                 fcntl.ioctl(self.fd, self.EVIOCSFF, buf)
                 self.effect = struct.unpack_from("<h", buf, 2)[0]
                 break
@@ -85,7 +108,7 @@ class Buzz:
     def __call__(self, *_args):
         if self.fd >= 0:
             try:
-                os.write(self.fd, struct.pack("<llHHi", 0, 0, 0x15, self.effect, 1))
+                os.write(self.fd, struct.pack("llHHi", 0, 0, 0x15, self.effect, 1))
             except OSError:
                 pass
         return True
@@ -141,6 +164,8 @@ class Brightness:
 
 
 def restore():
+    if not BACKLIGHT:
+        return 0
     level = read_int(SAVED, 0)
     if level >= LOWEST:
         Brightness().set(min(level, read_int(SYSFS + "/max_brightness", 255)))
@@ -157,6 +182,9 @@ def main():
     except BlockingIOError:
         return 0  # already open, and on top
 
+    if not BACKLIGHT:
+        sys.stderr.write("b8k-brightness: no backlight\n")
+        return 1
     top = read_int(SYSFS + "/max_brightness", 255)
     now = read_int(SYSFS + "/brightness", top // 2)
     light = Brightness()

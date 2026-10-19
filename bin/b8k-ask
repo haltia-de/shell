@@ -18,7 +18,7 @@
 # as keys. A choice buzzes like the panel (b8k-press without a signal).
 set -u
 run=${XDG_RUNTIME_DIR:-$HOME/.cache}
-APPS=/usr/local/share/b8k/apps.conf
+APPS=/usr/share/b8k/apps.conf
 [ -f "$run/b8k/apps.conf" ] && APPS="$run/b8k/apps.conf"
 
 # One question at a time; a second tap while one is open does nothing.
@@ -40,13 +40,13 @@ conf() {
 ask() {
 	title=$1
 	shift
-	printf '%s\n' "$@" | fuzzel --config /usr/local/share/b8k/fuzzel-ask.ini \
+	printf '%s\n' "$@" | fuzzel --config /usr/share/b8k/fuzzel-ask.ini \
 		${ASK_LINE:+--line-height=$ASK_LINE} \
 		--dmenu --index --mesg "$title" --cache /dev/null --select-index $(($# - 1)) 2>/dev/null
 }
 
 chosen() {
-	/usr/local/bin/b8k-press ask >/dev/null 2>&1
+	/usr/bin/b8k-press ask >/dev/null 2>&1
 }
 
 # player ID: sets state (Playing or Paused) and bus (its MPRIS name) from
@@ -55,6 +55,16 @@ player() {
 	state= bus=
 	read -r state bus <"$run/b8k-play/$1" 2>/dev/null
 	[ -n "$bus" ]
+}
+
+# power off|reboot: through the shell's doas rule, else logind (without
+# that rule, on a system whose logind lets the session do it).
+power() {
+	doas -n /usr/sbin/b8k-poweroff "$1" 2>/dev/null && return
+	case $1 in
+	off) loginctl poweroff ;;
+	*) loginctl reboot ;;
+	esac
 }
 
 # mpris BUS METHOD: Play, Pause, PlayPause or Stop on that player.
@@ -75,18 +85,23 @@ play_items() {
 case ${1:-} in
 power)
 	# The USB port is a device until switched to host for a keyboard
-	# (b8k-usb): the item offers the other role.
-	usb=
+	# (the device's b8k-usb; no item without it): the item offers the
+	# other role.
+	usb= usb_item=
 	for f in /sys/class/usb_role/*/role; do [ -r "$f" ] && read -r usb <"$f"; done
-	case $usb in
-	host) usb_item="USB: компьютер" usb_to=device ;;
-	*) usb_item="USB: клавиатура" usb_to=host ;;
-	esac
-	case $(ask "Питание" "Выключить" "Перезагрузить" "Касания" "$usb_item" "Отмена") in
-	0) chosen; doas -n /usr/local/sbin/b8k-poweroff off ;;
-	1) chosen; doas -n /usr/local/sbin/b8k-poweroff reboot ;;
-	2) chosen; /usr/local/bin/b8k-launch start touch ;;
-	3) chosen; doas -n /usr/local/sbin/b8k-usb "$usb_to" ;;
+	usb_cmd=/usr/sbin/b8k-usb
+	[ -x "$usb_cmd" ] || usb_cmd=/usr/local/sbin/b8k-usb
+	if [ -x "$usb_cmd" ]; then
+		case $usb in
+		host) usb_item="USB: компьютер" usb_to=device ;;
+		*) usb_item="USB: клавиатура" usb_to=host ;;
+		esac
+	fi
+	case $(ask "Питание" "Выключить" "Перезагрузить" "Касания" ${usb_item:+"$usb_item"} "Отмена") in
+	0) chosen; power off ;;
+	1) chosen; power reboot ;;
+	2) chosen; /usr/bin/b8k-launch start touch ;;
+	3) [ -n "$usb_item" ] && chosen && doas -n "$usb_cmd" "$usb_to" ;;
 	esac
 	;;
 close)
@@ -97,7 +112,7 @@ close)
 	chosen
 	ids=$(conf "$id" app_ids)
 	# shellcheck disable=SC2086 # the app_ids are separate words
-	/usr/local/bin/b8k-focus close ${ids:-$id}
+	/usr/bin/b8k-focus close ${ids:-$id}
 	;;
 close-front)
 	# A program still starting under its curtain is stopped at once: there
@@ -105,7 +120,7 @@ close-front)
 	if read -r sid spid cpid <"$run/b8k-launch/starting" 2>/dev/null; then
 		rm -f "$run/b8k-launch/starting"
 		kill "$spid" "$cpid" 2>/dev/null
-		/usr/local/bin/b8k-close update 2>/dev/null
+		/usr/bin/b8k-close update 2>/dev/null
 		exit 0
 	fi
 	# The window in front by its app id; its program's label when one of
@@ -122,7 +137,7 @@ close-front)
 	[ -n "$id" ] && label=$(conf "$id" label)
 	[ "$(ask "Закрыть «${label:-$app}»?" "Закрыть" "Отмена")" = 0 ] || exit 0
 	chosen
-	/usr/local/bin/b8k-focus close "$app"
+	/usr/bin/b8k-focus close "$app"
 	;;
 media)
 	id=${2:-}
@@ -161,12 +176,12 @@ service)
 	shift "$n"
 	chosen
 	case $1 in
-	brightness) /usr/local/bin/b8k-brightness 9>&- & ;;
+	brightness) /usr/bin/b8k-brightness 9>&- & ;;
 	sound)
 		pactl set-sink-mute @DEFAULT_SINK@ toggle
-		/usr/local/sbin/b8k-panel-signal 10 2>/dev/null
+		/usr/sbin/b8k-panel-signal 10 2>/dev/null
 		;;
-	*) /usr/local/bin/b8k-launch tap "$1" 9>&- ;;
+	*) /usr/bin/b8k-launch tap "$1" 9>&- ;;
 	esac
 	;;
 pin)
@@ -184,13 +199,13 @@ pin)
 		case $(ask "«${label:-$id}»" $(play_items) "$item" "Отмена") in
 		0) chosen; mpris "$bus" PlayPause ;;
 		1) chosen; mpris "$bus" Stop ;;
-		2) chosen; /usr/local/bin/b8k-apps "$verb" "$id" >/dev/null ;;
+		2) chosen; /usr/bin/b8k-apps "$verb" "$id" >/dev/null ;;
 		esac
 		exit 0
 	fi
 	[ "$(ask "«${label:-$id}»" "$item" "Отмена")" = 0 ] || exit 0
 	chosen
-	/usr/local/bin/b8k-apps "$verb" "$id" >/dev/null
+	/usr/bin/b8k-apps "$verb" "$id" >/dev/null
 	;;
 *)
 	echo "usage: b8k-ask power | service | b8k-ask close|pin|media <id>" >&2

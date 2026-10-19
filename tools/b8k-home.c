@@ -52,7 +52,7 @@
 
 #include "wlr-layer-shell-unstable-v1-client-protocol.h"
 
-#define APPS "/usr/local/share/b8k/apps.conf"
+#define APPS "/usr/share/b8k/apps.conf"
 #define MAX_APPS 48
 #define ICON 96
 #define TILE_W 200
@@ -809,12 +809,12 @@ static void press_up(void)
 	if ((press == -2 || press == -3) && !moved) {
 		const char *id = press == -2 ? WEATHER_ID : CALENDAR_ID;
 
-		spawn("/usr/local/bin/b8k-press", id, NULL);
-		spawn("/usr/local/bin/b8k-launch", "start", id);
+		spawn("/usr/bin/b8k-press", id, NULL);
+		spawn("/usr/bin/b8k-launch", "start", id);
 		set_raised(0);
 	} else if (press >= 0 && !moved && !held) {
-		spawn("/usr/local/bin/b8k-press", apps[press].id, NULL);
-		spawn("/usr/local/bin/b8k-launch", "start", apps[press].id);
+		spawn("/usr/bin/b8k-press", apps[press].id, NULL);
+		spawn("/usr/bin/b8k-launch", "start", apps[press].id);
 		/* A menu opens over the home screen, which stays under it: what
 		 * is chosen there lowers it (b8k-launch tap), Отмена keeps it. */
 		if (apps[press].windows)
@@ -829,7 +829,7 @@ static void long_press(void)
 	if (press < 0 || moved)
 		return;
 	held = 1;
-	spawn("/usr/local/bin/b8k-ask", "pin", apps[press].id);
+	spawn("/usr/bin/b8k-ask", "pin", apps[press].id);
 	press = -1;
 	dirty = 1;
 }

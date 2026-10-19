@@ -4,6 +4,6 @@
 exec 9>/run/b8k-sleep.loop.lock
 flock -n 9 || exit 0
 while :; do
-	python3 /usr/local/sbin/b8k-sleep.py
+	python3 /usr/sbin/b8k-sleep.py
 	sleep 1
 done

@@ -1,8 +1,13 @@
 #!/bin/sh
-# The terminal (in «Служебные») runs a root shell (b8k-rootsh, allowed
-# without a password by a doas rule of the image). Without that rule, the
-# user's own login shell, so PATH still has the sbin directories.
-if doas -n /usr/local/sbin/b8k-rootsh --check 2>/dev/null; then
-	exec doas -n /usr/local/sbin/b8k-rootsh
+# The terminal (in «Служебные») runs a root shell (b8k-rootsh). The device
+# may allow it without a password by a doas rule (install.sh writes one
+# unless B8K_DOAS says otherwise); without that rule doas asks for the
+# password, and when that fails too (no rule for this user, or no password
+# given) the user's own login shell opens, so PATH still has the sbin
+# directories.
+if doas -n /usr/sbin/b8k-rootsh --check 2>/dev/null; then
+	exec doas -n /usr/sbin/b8k-rootsh
 fi
+echo "Терминал администратора: пароль (Ctrl+C — обычный терминал)"
+doas /usr/sbin/b8k-rootsh && exit 0
 exec /bin/sh -l

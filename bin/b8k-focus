@@ -19,7 +19,7 @@ ACTIVATED, MINIMIZED = 2, 1
 # signals), else the built-in one.
 APPS = os.path.join(os.environ.get("XDG_RUNTIME_DIR", "/nonexistent"), "b8k", "apps.conf")
 if not os.path.exists(APPS):
-    APPS = "/usr/local/share/b8k/apps.conf"
+    APPS = "/usr/share/b8k/apps.conf"
 
 
 def load_apps():

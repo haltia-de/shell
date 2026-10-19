@@ -237,8 +237,8 @@ static void tapped(void)
 {
 	pressed = 0;
 	if (shown == 1) {
-		spawn("/usr/local/bin/b8k-press", "close");
-		spawn("/usr/local/bin/b8k-ask", "close-front");
+		spawn("/usr/bin/b8k-press", "close");
+		spawn("/usr/bin/b8k-ask", "close-front");
 	}
 	render(shown == 1);
 }

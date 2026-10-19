@@ -6,7 +6,7 @@
 # one's, so its touches land on whatever is in front; what it hands out is
 # recorded and printed frame by frame, with the filter's decisions.
 #
-#   touchguard-test.py FILTER SCENARIO...
+#   [CONF=FILE] touchguard-test.py FILTER SCENARIO...   (CONF: /etc/b8k/touchguard.conf)
 #
 # Scenarios: tap, pinch (apart), zoom (together), slowpinch, join (the
 # second finger 15 ms after the first), scroll (two fingers up), palm,
@@ -54,7 +54,7 @@ def node_named(name, exclude=()):
 
 src = list(node_named("b8k-test screen"))[-1]
 old_out = set(node_named("b8k-touchguard touchscreen"))
-filt = subprocess.Popen([sys.argv[1], "/etc/b8k/touchguard.conf"], stderr=subprocess.PIPE,
+filt = subprocess.Popen([sys.argv[1], os.environ.get("CONF", "/etc/b8k/touchguard.conf")], stderr=subprocess.PIPE,
                         text=True,
                         env={"B8K_TOUCHGUARD_SCREEN": src, "B8K_TOUCHGUARD_DEBUG": "1"})
 time.sleep(3)  # the session picks the new device up
