@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-2.0
-# A test of b8k-touchguard on the tablet, as root: a made-up screen
+# A test of haltia-touchguard on the tablet, as root: a made-up screen
 # (uinput, "b8k-test screen") feeds a second instance of the filter
-# (B8K_TOUCHGUARD_SCREEN), whose output reaches the session like the real
+# (HALTIA_TOUCHGUARD_SCREEN), whose output reaches the session like the real
 # one's, so its touches land on whatever is in front; what it hands out is
 # recorded and printed frame by frame, with the filter's decisions.
 #
-#   [CONF=FILE] touchguard-test.py FILTER SCENARIO...   (CONF: /etc/b8k/touchguard.conf)
+#   [CONF=FILE] touchguard-test.py FILTER SCENARIO...   (CONF: /etc/haltia/touchguard.conf)
 #
 # Scenarios: tap, pinch (apart), zoom (together), slowpinch, join (the
 # second finger 15 ms after the first), scroll (two fingers up), palm,
@@ -53,12 +53,12 @@ def node_named(name, exclude=()):
 
 
 src = list(node_named("b8k-test screen"))[-1]
-old_out = set(node_named("b8k-touchguard touchscreen"))
-filt = subprocess.Popen([sys.argv[1], os.environ.get("CONF", "/etc/b8k/touchguard.conf")], stderr=subprocess.PIPE,
+old_out = set(node_named("haltia-touchguard touchscreen"))
+filt = subprocess.Popen([sys.argv[1], os.environ.get("CONF", "/etc/haltia/touchguard.conf")], stderr=subprocess.PIPE,
                         text=True,
-                        env={"B8K_TOUCHGUARD_SCREEN": src, "B8K_TOUCHGUARD_DEBUG": "1"})
+                        env={"HALTIA_TOUCHGUARD_SCREEN": src, "HALTIA_TOUCHGUARD_DEBUG": "1"})
 time.sleep(3)  # the session picks the new device up
-out = [n for n in node_named("b8k-touchguard touchscreen") if n not in old_out][0]
+out = [n for n in node_named("haltia-touchguard touchscreen") if n not in old_out][0]
 rec = []
 stop = False
 

@@ -1,0 +1,11 @@
+# haltia-shell's defaults for GTK's file chooser (MAX's «Сохранить как» and
+# «Папка для файлов», Firefox): the folder the program names, else the
+# last one, not «Недавние»; folders first; no size or type column, so the
+# name has the room. Installed as
+# /usr/share/glib-2.0/schemas/91-haltia-shell.gschema.override.
+[org.gtk.Settings.FileChooser]
+startup-mode='cwd'
+sort-directories-first=true
+show-size-column=false
+show-type-column=false
+sidebar-width=300

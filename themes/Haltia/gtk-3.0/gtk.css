@@ -1,0 +1,106 @@
+/* SPDX-License-Identifier: GPL-2.0 */
+/* Haltia: the shell's GTK theme (ADR 0001; once named b8k). Adwaita, with what makes
+   a program fit a touch screen held by an older hand: a tall header with
+   the right end left free for the shell's close button (haltia-close, 110 px),
+   and large questions. Programs draw only their content; in GNOME or KDE
+   the same programs simply look like Adwaita ones.
+
+   The selectors stay off what waybar draws (the panel runs with this
+   theme too): headers, dialogs and haltia-kit's classes only. */
+@import url("resource:///org/gtk/libgtk/theme/Adwaita/gtk-contained.css");
+
+/* --- the header --------------------------------------------------------- */
+headerbar {
+  background-color: #dcdcda;
+  background-image: none;
+  border: none;
+  box-shadow: none;
+  min-height: 88px;
+  padding: 8px 110px 8px 16px;
+}
+headerbar label.title { font-size: 30px; font-weight: bold; color: #2e3436; }
+headerbar label.subtitle { font-size: 18px; color: #5e5c64; }
+/* Every header button fills its 88 px, as the close button does; an icon
+   alone makes a square. The :not() outweighs Adwaita's own header-button
+   rules. */
+headerbar button:not(.haltia-any):not(.b8k-any) {
+  background-image: none;
+  background-color: #f2f2f0;
+  border: 1px solid #c0bfbc;
+  box-shadow: none;
+  border-radius: 16px;
+  min-height: 72px;
+  min-width: 72px;
+  padding: 7px 16px;
+  margin-top: 0;
+  margin-bottom: 0;
+  font-size: 26px;
+  color: #2e3436;
+}
+headerbar button.image-button:not(.haltia-any):not(.b8k-any) { min-width: 72px; padding: 7px; }
+headerbar button:active, headerbar button:checked { background-color: #c4dcf7; }
+headerbar button.suggested-action { background-color: #3584e4; border-color: #3584e4;
+  color: #ffffff; }
+headerbar button.destructive-action { background-color: #e01b24; border-color: #e01b24;
+  color: #ffffff; }
+
+/* --- questions (haltia-kit's dialogs, and GTK's own) --------------------- */
+dialog, messagedialog { font-size: 24px; }
+dialog .haltia-title, dialog .b8k-title, messagedialog label.title { font-size: 28px; font-weight: bold;
+  color: #2e3436; margin: 8px 8px 12px 8px; }
+dialog button, messagedialog button {
+  min-height: 72px;
+  min-width: 140px;
+  padding: 0 28px;
+  font-size: 24px;
+  border-radius: 16px;
+}
+dialog button.haltia-choice, dialog button.b8k-choice { min-height: 76px; font-size: 26px; }
+dialog button.haltia-choice.current, dialog button.b8k-choice.current { background-image: none; background-color: #c4dcf7; }
+dialog entry { min-height: 64px; font-size: 26px; }
+/* A question's own title bar would only repeat the program's name: a thin
+   edge instead, the question being the large label inside. GTK's other
+   dialogs (choosing a file) carry their buttons in the header, which
+   stays a header, right end free for the close button. */
+dialog.haltia-dialog headerbar.titlebar, dialog.b8k-dialog headerbar.titlebar,
+messagedialog headerbar.titlebar, dialog.haltia-dialog .titlebar,
+dialog.b8k-dialog .titlebar, messagedialog .titlebar {
+  min-height: 0;
+  padding: 0;
+  border: none;
+  background-color: transparent;
+}
+dialog.haltia-dialog .titlebar label.title, dialog.b8k-dialog .titlebar label.title,
+messagedialog .titlebar label.title {
+  font-size: 1px; color: transparent; }
+dialog .titlebar button.titlebutton, messagedialog .titlebar button.titlebutton {
+  min-height: 0; min-width: 0; padding: 0; border: none; background: none;
+  color: transparent; }
+
+/* --- choosing a file (GTK's chooser: MAX's «Сохранить как» and «Папка для
+   файлов», Firefox) --------------------------------------------------------
+   Places and files as rows a finger can hit, the path as large buttons.
+   Its columns, first folder and places are org.gtk.Settings.FileChooser
+   (haltia-shell's gschema override) and ~/.config/gtk-3.0/bookmarks
+   (haltia-launcher). */
+filechooser { font-size: 24px; }
+filechooser placessidebar row { min-height: 68px; padding: 0 12px; }
+filechooser placessidebar row label { font-size: 24px; }
+filechooser placessidebar row image { -gtk-icon-transform: scale(1.5); margin-right: 8px; }
+filechooser treeview.view { padding-top: 10px; padding-bottom: 10px; }
+filechooser treeview.view header button { font-size: 20px; padding: 8px 12px; }
+filechooser treeview.view:selected { background-color: #c4dcf7; color: #2e3436; }
+filechooser .path-bar button, filechooser pathbar button {
+  min-height: 64px; min-width: 64px; font-size: 24px; }
+filechooser .path-bar button image, filechooser pathbar button image {
+  -gtk-icon-transform: scale(1.5); }
+filechooser entry { min-height: 64px; font-size: 24px; }
+filechooser label { font-size: 24px; }
+/* Saving: the name's entry sits in the header, between Отмена and
+   Сохранить; narrower buttons keep it all within the screen. */
+dialog headerbar entry { min-height: 64px; font-size: 20px; }
+/* Its «Имя» label: the entry with the name in it says enough. */
+dialog headerbar box > label:not(.title) { font-size: 1px; color: transparent;
+  min-width: 0; margin: 0; padding: 0; }
+dialog headerbar button:not(.haltia-any):not(.b8k-any) { padding: 7px 12px; font-size: 24px; }
+dialog headerbar button.image-button image { -gtk-icon-transform: scale(1.6); }

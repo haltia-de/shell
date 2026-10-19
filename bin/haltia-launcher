@@ -1,0 +1,134 @@
+#!/bin/sh
+# Haltia's session (the device's session loop runs it under phoc).
+# Program buttons, a Wi-Fi icon, a battery icon and a clock.
+# A tap on Wi-Fi opens Settings. A tap on the battery opens the power menu.
+# One window watcher updates a button only when its state changes.
+# The keyboard stays hidden until a text field is focused.
+run=${XDG_RUNTIME_DIR:-$HOME/.cache}
+mkdir -p "$run/haltia"
+# The shell's own settings move from ~/.config/b8k (shell 1.x) to
+# ~/.config/haltia, file by file: the programs move theirs (haltia-kit).
+mkdir -p "$HOME/.config/haltia"
+for f in panel apps.conf brightness rotate filechooser-1; do
+	if [ -e "$HOME/.config/b8k/$f" ] && [ ! -L "$HOME/.config/b8k/$f" ] &&
+		[ ! -e "$HOME/.config/haltia/$f" ]; then
+		mv "$HOME/.config/b8k/$f" "$HOME/.config/haltia/$f"
+	fi
+done
+# No screen reader runs here. Without these GTK starts the at-spi bus and
+# its registry for every session.
+export NO_AT_BRIDGE=1 GTK_A11Y=none
+# The shell's GTK theme (themes/Haltia): tall headers with room for «✕», large
+# questions. A program with a theme of its own (env= in apps.conf) keeps it.
+if [ -f /usr/share/themes/Haltia/gtk-3.0/gtk.css ]; then
+	export GTK_THEME=Haltia
+fi
+# The programs and the panel as set in ~/.config/haltia (haltia-apps): the
+# session's apps.conf, read by everything started below, and the panel's
+# config and style. Without them, the built-in ones.
+panel=
+# phoc starts with the screen in landscape; haltia-rotate writes portrait.
+rm -f "$run"/haltia/apps.conf "$run"/haltia/orientation
+if [ -x /usr/bin/haltia-apps ] && /usr/bin/haltia-apps >"$run"/haltia/apps.log 2>&1 &&
+	[ -s "$run"/haltia/waybar.json ] && [ -s "$run"/haltia/style.css ]; then
+	panel=yes
+fi
+# The home screen: every program as a tile, on the background layer right
+# of the panel; the panel's home button raises it over the windows.
+if [ -x /usr/libexec/haltia/haltia-home ]; then
+	setsid /usr/libexec/haltia/haltia-home >"$run"/haltia/home.log 2>&1 &
+fi
+# The "✕" in the top right corner that closes the program in front.
+if [ -x /usr/libexec/haltia/haltia-close ]; then
+	setsid /usr/libexec/haltia/haltia-close >"$run"/haltia/close.log 2>&1 &
+fi
+# The file chooser's places (MAX's «Сохранить как», Firefox): the usual
+# folders that exist, added once each; one's own bookmarks stay.
+marks="$HOME/.config/gtk-3.0/bookmarks"
+mkdir -p "${marks%/*}"
+for d in Загрузки Downloads Документы Изображения Музыка Видео Раскраски; do
+	[ -d "$HOME/$d" ] || continue
+	uri="file://$HOME/$d"
+	awk -v u="$uri" '$1 == u { f = 1 } END { exit !f }' "$marks" 2>/dev/null ||
+		printf '%s %s\n' "$uri" "$d" >>"$marks"
+done
+# The chooser writes all its settings to dconf whenever it closes, so the
+# shell's defaults (91-haltia-shell.gschema.override) reach one who used it
+# before only through a reset: once, then one's own choices stay.
+if [ ! -e "$HOME/.config/haltia/filechooser-1" ] && command -v gsettings >/dev/null; then
+	for k in startup-mode sort-directories-first show-size-column show-type-column \
+		sidebar-width window-size window-position; do
+		gsettings reset org.gtk.Settings.FileChooser "$k" 2>/dev/null
+	done
+	mkdir -p "$HOME/.config/haltia" && : >"$HOME/.config/haltia/filechooser-1"
+fi
+# The brightness chosen last time (haltia-brightness keeps it).
+/usr/bin/haltia-brightness --restore >"$run"/haltia/brightness.log 2>&1
+# Settings starts through D-Bus activation and takes the bus environment.
+dbus-update-activation-environment NO_AT_BRIDGE GTK_A11Y ${GTK_THEME:+GTK_THEME} 2>/dev/null
+# Helpers that need no display outlive the session that started them
+# (setsid): one of each, or a volume key steps two or three times.
+# (busybox's pkill has no -u: ps, for this user only.)
+for pid in $(ps -o pid,user,args | awk -v u="$(id -un)" \
+	'$2 == u && $NF ~ /\/(haltia|b8k)-(volume|rotate)$/ { print $1 }'); do
+	kill "$pid" 2>/dev/null
+done
+# Volume keys. Without this nothing handles them, and a muted sink at 0%
+# has no way back.
+if [ -x /usr/libexec/haltia/haltia-volume ]; then
+	setsid /usr/libexec/haltia/haltia-volume >"$run"/haltia/volume.log 2>&1 &
+fi
+# The screen follows the tablet: portrait on its side, turned over upside
+# down (off in «Служебные»).
+if [ -x /usr/bin/haltia-rotate ] && command -v wlr-randr >/dev/null; then
+	setsid /usr/bin/haltia-rotate >"$run"/haltia/rotate.log 2>&1 &
+fi
+if [ -x /usr/bin/haltia-focus ]; then
+	setsid /usr/bin/haltia-focus watch >"$run"/haltia/focus-watch.log 2>&1 &
+fi
+# Notifications (org.freedesktop.Notifications): large cards at the top
+# that buzz once; a tap opens what they are about.
+if command -v mako >/dev/null && ! pgrep -x -u "$(id -u)" mako >/dev/null; then
+	setsid mako -c /usr/share/haltia/mako.conf >"$run"/mako.log 2>&1 &
+fi
+# Counts on buttons from programs' Unity LauncherEntry signals.
+if [ -x /usr/libexec/haltia/haltia-badges ]; then
+	setsid /usr/libexec/haltia/haltia-badges >"$run"/haltia/badges.log 2>&1 &
+fi
+# Wi-Fi passwords: NetworkManager asks a secret agent, which GNOME keeps
+# in its shell. Without one, a tap on a protected network in Settings
+# does nothing. The session restarts with waybar; one agent is enough.
+if command -v nm-applet >/dev/null && ! pgrep -x -u "$(id -u)" nm-applet >/dev/null; then
+	setsid nm-applet >"$run"/nm-applet.log 2>&1 &
+fi
+# Сообщения (MAX) live in the background: messages buzz and the button
+# counts them with no window open. (Until the program brings an XDG
+# autostart file of its own; haltia-messenger was b8k-max.)
+max=
+for m in /usr/bin/haltia-messenger /usr/bin/b8k-max /usr/local/bin/b8k-max; do
+	[ -x "$m" ] && max=$m && break
+done
+if [ -n "$max" ] && { [ -s "$HOME/.local/share/haltia-messenger/web.db" ] ||
+	[ -s "$HOME/.local/share/b8k-max/web.db" ]; } &&
+	[ ! -e /etc/xdg/autostart/io.github.haltia_de.Messenger.desktop ] &&
+	[ ! -e /etc/xdg/autostart/io.github.trudenboy.Max.desktop ]; then
+	setsid "$max" --background >"$run"/haltia/messenger.log 2>&1 &
+fi
+# Programs started in the background the standard way: XDG autostart
+# entries marked X-Haltia-Autostart=true, and one's own ~/.config/autostart.
+if [ -x /usr/bin/haltia-apps ]; then
+	/usr/bin/haltia-apps autostart >"$run"/haltia/autostart.log 2>&1
+fi
+if [ -x /usr/libexec/haltia/haltia-keyboard ]; then
+	pidof haltia-wvkbd >/dev/null 2>&1 || \
+		/usr/libexec/haltia/haltia-keyboard >"$run"/haltia/keyboard.log 2>&1 &
+elif [ -x /usr/bin/squeekboard ]; then
+	squeekboard >"$run"/squeekboard.log 2>&1 &
+fi
+# Firefox starts only from its button: running without a window it held
+# 300-500 MB, and once its WebExtensions process filled the swap and froze
+# the session.
+if [ -n "$panel" ]; then
+	exec waybar -c "$run"/haltia/waybar.json -s "$run"/haltia/style.css
+fi
+exec waybar -c /usr/share/haltia/waybar/config -s /usr/share/haltia/waybar/style.css

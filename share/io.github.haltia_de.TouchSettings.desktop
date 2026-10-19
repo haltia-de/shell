@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Касания
+Comment=Защита от случайных касаний и вибрация
+Exec=/usr/bin/haltia-touch-settings
+Icon=input-touchscreen
+NoDisplay=true
+X-Flatpak-RenamedFrom=b8k-touchguard-setup.desktop;

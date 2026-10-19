@@ -1,0 +1,15 @@
+#!/bin/sh
+# The runlevels b8k-touchguard is in, for haltia-upgrade (post-install and
+# post-upgrade): taking over b8k-shell is an install of haltia-shell to apk,
+# and the old package takes its links away with it.
+mkdir -p /run/haltia
+levels=
+for l in /etc/runlevels/*/b8k-touchguard /etc/runlevels/*/haltia-touchguard; do
+	[ -e "$l" ] || [ -L "$l" ] || continue
+	l=${l%/*}
+	levels="$levels ${l##*/}"
+done
+if [ -e /etc/init.d/b8k-touchguard ] || [ -e /etc/init.d/haltia-touchguard ]; then
+	echo "$levels" >/run/haltia/touchguard-levels
+fi
+exit 0

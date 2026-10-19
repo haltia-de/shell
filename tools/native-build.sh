@@ -33,13 +33,13 @@ done
 proto="$work/wlr-layer-shell-unstable-v1-protocol.c $work/xdg-shell-protocol.c"
 cd "$here"
 # shellcheck disable=SC2046,SC2086 # pkg-config and the list print separate words
-for t in b8k-home b8k-close b8k-splash; do
+for t in haltia-home haltia-close haltia-splash; do
 	$CC $CFLAGS -Wall -Wextra -I"$work" -o "$out/$t" "$t.c" $proto \
 		$(pkg-config --cflags --libs pangocairo wayland-client) -ldl -lm
 done
 # shellcheck disable=SC2086
-$CC $CFLAGS -Wall -Wextra -I"$work" -o "$out/b8k-tab" b8k-tab.c $proto -lwayland-client -lm
-$CC $CFLAGS -Wall -Wextra -o "$out/b8k-touchguard" b8k-touchguard.c
-$CC $CFLAGS -Wall -Wextra -o "$out/b8k-press" b8k-press.c
-$CC $CFLAGS -Wall -o "$out/b8k-session" b8k-session.c -lpam
+$CC $CFLAGS -Wall -Wextra -I"$work" -o "$out/haltia-tab" haltia-tab.c $proto -lwayland-client -lm
+$CC $CFLAGS -Wall -Wextra -o "$out/haltia-touchguard" haltia-touchguard.c
+$CC $CFLAGS -Wall -Wextra -o "$out/haltia-press" haltia-press.c
+$CC $CFLAGS -Wall -o "$out/haltia-session" haltia-session.c -lpam
 ls -l "$out"

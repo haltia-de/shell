@@ -1,0 +1,93 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-2.0
+# Moves a system from the b8k shell (1.x) to Haltia's (2.x), as root: the
+# package's post-install and post-upgrade run it, and install.sh on a
+# running system. Run again, it changes nothing.
+#
+#   haltia-upgrade [install]
+#
+#  - /etc/b8k moves into /etc/haltia (one's own files win over the
+#    package's defaults: touchguard.conf keeps its tuning) and becomes a
+#    symlink to it until 3.0;
+#  - the touch filter's service is now haltia-touchguard: it goes into the
+#    runlevels b8k-touchguard was in (the package's pre-upgrade noted them
+#    in /run/haltia/touchguard-levels), into default on a first install
+#    or when the old filter runs and nothing else is known, and nowhere when
+#    it had been turned off; the old filter stops and the new one starts;
+#  - the power key's loop restarts from its new place;
+#  - files an install.sh of 1.x left behind (a package's go with it) go.
+set -u
+mode=${1:-upgrade}
+mkdir -p /run/haltia
+
+# /etc/b8k -> /etc/haltia.
+if [ -d /etc/b8k ] && [ ! -L /etc/b8k ]; then
+	mkdir -p /etc/haltia
+	for f in /etc/b8k/* /etc/b8k/.[!.]*; do
+		[ -e "$f" ] || [ -L "$f" ] || continue
+		rm -rf "/etc/haltia/${f##*/}"
+		mv "$f" /etc/haltia/
+	done
+	rmdir /etc/b8k && ln -s haltia /etc/b8k
+elif [ ! -e /etc/b8k ]; then
+	ln -s haltia /etc/b8k
+fi
+
+# The touch filter's runlevels.
+levels=
+if [ -f /run/haltia/touchguard-levels ]; then
+	levels=$(cat /run/haltia/touchguard-levels)
+	known=yes
+else
+	known=
+	for l in /etc/runlevels/*/b8k-touchguard; do
+		[ -e "$l" ] || [ -L "$l" ] || continue
+		l=${l%/*}
+		levels="$levels ${l##*/}"
+		known=yes
+	done
+fi
+old_pid=$(cat /run/b8k-touchguard.pid 2>/dev/null)
+# Taking over b8k-shell, apk removes the old package (and its runlevel
+# links) before haltia-shell's scripts run, so nothing may be known: a
+# running old filter, or a first install, means default. Only links seen
+# (here or by pre-install/pre-upgrade) can say it was turned off.
+if [ -z "$known" ] && { [ "$mode" = install ] ||
+	{ [ -n "$old_pid" ] && kill -0 "$old_pid" 2>/dev/null; }; }; then
+	levels=default
+fi
+for l in $levels; do
+	rc-update add haltia-touchguard "$l" >/dev/null 2>&1
+done
+rm -f /etc/runlevels/*/b8k-touchguard /run/haltia/touchguard-levels
+if [ -n "$old_pid" ] && kill -0 "$old_pid" 2>/dev/null; then
+	kill "$old_pid"
+	sleep 1
+fi
+rm -f /etc/init.d/b8k-touchguard /run/b8k-touchguard.pid
+rm -rf /run/openrc/started/b8k-touchguard /run/openrc/daemons/b8k-touchguard \
+	/run/openrc/options/b8k-touchguard
+if [ -n "$levels" ] && [ -x /etc/init.d/haltia-touchguard ]; then
+	rc-service haltia-touchguard restart >/dev/null 2>&1 ||
+		rc-service haltia-touchguard start >/dev/null 2>&1
+fi
+
+# The power key's loop, from its new place.
+for p in $(ps -o pid,args | awk '/b8k-sleep(-loop|\.py)/ && !/awk/ { print $1 }'); do
+	kill "$p" 2>/dev/null
+done
+rm -f /run/b8k-sleep.pid /run/b8k-sleep.lock /run/b8k-sleep.loop.lock
+if [ -d /run/b8k-sleep ] && [ ! -e /run/haltia/sleep ]; then
+	mv /run/b8k-sleep /run/haltia/sleep
+fi
+if [ -x /etc/local.d/haltia-sleep.start ] &&
+	! ps -o args | grep -q '[h]altia-sleep-loop'; then
+	/etc/local.d/haltia-sleep.start
+fi
+
+# What an install.sh of 1.x left (a package removes its own files).
+rm -f /etc/local.d/b8k-sleep.start /etc/doas.d/z-b8k-shell.conf /etc/pam.d/b8k-session \
+	/etc/NetworkManager/dispatcher.d/90-b8k-panel \
+	/etc/elogind/logind.conf.d/b8k-power-key.conf \
+	/usr/share/glib-2.0/schemas/91-b8k-shell.gschema.override
+exit 0

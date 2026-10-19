@@ -1,0 +1,225 @@
+#!/bin/sh
+# Large questions: the power menu (a one-second hold of the power key) and
+# "close this program?" (a tap on the program already in front).
+#
+#   haltia-ask power
+#   haltia-ask close <id>
+#   haltia-ask close-front       (the "✕" of haltia-close: the window in front)
+#   haltia-ask pin <id>          (a long press on a home screen tile)
+#   haltia-ask media <id>        (a tap on the button of a program in front
+#                             that plays: pause or go on, stop)
+#   haltia-ask service           (the «Служебные» tile: Settings, the touch
+#                             settings, brightness, sound off or on,
+#                             turning with the tablet on or off, the
+#                             terminal)
+#
+# The question is a fuzzel menu (C, Wayland only) on the overlay layer: it
+# shows in about 0.3 s, where the GTK version in Python took 2.3 s, and it
+# is always on top, so nothing has to raise it. fuzzel takes taps as well
+# as keys. A choice buzzes like the panel (haltia-press without a signal).
+set -u
+run=${XDG_RUNTIME_DIR:-$HOME/.cache}
+APPS=/usr/share/haltia/apps.conf
+# A session started by shell 1.x keeps its copy in $run/b8k until it restarts.
+for a in "$run/haltia/apps.conf" "$run/b8k/apps.conf"; do
+	[ -f "$a" ] && APPS=$a && break
+done
+
+# One question at a time; a second tap while one is open does nothing.
+exec 9>"$run/haltia/ask.lock" || exit 1
+flock -n 9 || exit 0
+
+# A value of one section of apps.conf.
+conf() {
+	awk -v sec="[$1]" -v key="$2" '
+		/^\[/ { inside = ($0 == sec); next }
+		inside && $0 ~ "^" key "[ \t]*=" {
+			sub("^[^=]*=[ \t]*", ""); print; exit
+		}' "$APPS"
+}
+
+# ask TITLE ITEM... -- prints the index of the chosen item, nothing on cancel.
+# The last item, Отмена, is the one highlighted, so Enter never does harm.
+# ASK_LINE (pt) overrides the config's line height, for a longer list.
+ask() {
+	title=$1
+	shift
+	printf '%s\n' "$@" | fuzzel --config /usr/share/haltia/fuzzel-ask.ini \
+		${ASK_LINE:+--line-height=$ASK_LINE} --lines=$# \
+		--dmenu --index --mesg "$title" --cache /dev/null --select-index $(($# - 1)) 2>/dev/null
+}
+
+chosen() {
+	/usr/libexec/haltia/haltia-press ask >/dev/null 2>&1
+}
+
+# player ID: sets state (Playing or Paused) and bus (its MPRIS name) from
+# haltia-badges' file, or fails when the program's player is not playing.
+player() {
+	state= bus=
+	read -r state bus <"$run/haltia/play/$1" 2>/dev/null
+	[ -n "$bus" ]
+}
+
+# power off|reboot: through the shell's doas rule, else logind (without
+# that rule, on a system whose logind lets the session do it).
+power() {
+	doas -n /usr/libexec/haltia/haltia-poweroff "$1" 2>/dev/null && return
+	case $1 in
+	off) loginctl poweroff ;;
+	*) loginctl reboot ;;
+	esac
+}
+
+# mpris BUS METHOD: Play, Pause, PlayPause or Stop on that player.
+mpris() {
+	gdbus call --session --dest "$1" --object-path /org/mpris/MediaPlayer2 \
+		--method "org.mpris.MediaPlayer2.Player.$2" >/dev/null 2>&1
+}
+
+# play_items: "Пауза" or "Продолжить", then "Стоп", for a program that plays.
+play_items() {
+	case $state in
+	Playing) echo Пауза ;;
+	*) echo Продолжить ;;
+	esac
+	echo Стоп
+}
+
+case ${1:-} in
+power)
+	# The USB port is a device until switched to host for a keyboard
+	# (the device's b8k-usb; no item without it): the item offers the
+	# other role.
+	usb= usb_item=
+	for f in /sys/class/usb_role/*/role; do [ -r "$f" ] && read -r usb <"$f"; done
+	usb_cmd=/usr/sbin/b8k-usb
+	[ -x "$usb_cmd" ] || usb_cmd=/usr/local/sbin/b8k-usb
+	if [ -x "$usb_cmd" ]; then
+		case $usb in
+		host) usb_item="USB: компьютер" usb_to=device ;;
+		*) usb_item="USB: клавиатура" usb_to=host ;;
+		esac
+	fi
+	case $(ask "Питание" "Выключить" "Перезагрузить" "Касания" ${usb_item:+"$usb_item"} "Отмена") in
+	0) chosen; power off ;;
+	1) chosen; power reboot ;;
+	2) chosen; /usr/bin/haltia-launch start touch ;;
+	3) [ -n "$usb_item" ] && chosen && doas -n "$usb_cmd" "$usb_to" ;;
+	esac
+	;;
+close)
+	id=${2:-}
+	[ -n "$id" ] || exit 2
+	label=$(conf "$id" label)
+	[ "$(ask "Закрыть «${label:-$id}»?" "Закрыть" "Отмена")" = 0 ] || exit 0
+	chosen
+	ids=$(conf "$id" app_ids)
+	# shellcheck disable=SC2086 # the app_ids are separate words
+	/usr/bin/haltia-focus close ${ids:-$id}
+	;;
+close-front)
+	# A program still starting under its curtain is stopped at once: there
+	# is nothing of it to lose yet.
+	if read -r sid spid cpid <"$run/haltia/launch/starting" 2>/dev/null; then
+		rm -f "$run/haltia/launch/starting"
+		kill "$spid" "$cpid" 2>/dev/null
+		/usr/libexec/haltia/haltia-close update 2>/dev/null
+		exit 0
+	fi
+	# The window in front by its app id; its program's label when one of
+	# apps.conf has that app id.
+	app=$(cat "$run/haltia/launch/front" 2>/dev/null)
+	[ -n "$app" ] || exit 0
+	id=$(awk -v app="$app" '
+		/^\[/ { sec = $0; gsub(/[][ \t]/, "", sec); next }
+		/^[ \t]*app_ids[ \t]*=/ {
+			v = $0; sub(/^[^=]*=/, "", v); n = split(v, a, " ")
+			for (i = 1; i <= n; i++) if (a[i] == app) { print sec; exit }
+		}' "$APPS")
+	label=
+	[ -n "$id" ] && label=$(conf "$id" label)
+	[ "$(ask "Закрыть «${label:-$app}»?" "Закрыть" "Отмена")" = 0 ] || exit 0
+	chosen
+	/usr/bin/haltia-focus close "$app"
+	;;
+media)
+	id=${2:-}
+	player "$id" || exit 0
+	label=$(conf "$id" label)
+	case $(ask "«${label:-$id}»" $(play_items) "Отмена") in
+	0) chosen; mpris "$bus" PlayPause ;;
+	1) chosen; mpris "$bus" Stop ;;
+	esac
+	;;
+service)
+	# What the person rarely needs, in one place: each opens over the home
+	# screen like a tile does (haltia-launch tap lowers it).
+	set -- settings touch brightness sound rotate term
+	command -v wlr-randr >/dev/null && [ -x /usr/bin/haltia-rotate ] || set -- settings touch brightness sound term
+	case $(pactl get-sink-mute @DEFAULT_SINK@ 2>/dev/null | awk '{ print $2 }') in
+	yes | да) sound="Включить звук" ;;
+	*) sound="Выключить звук" ;;
+	esac
+	case $(/usr/bin/haltia-rotate status 2>/dev/null) in
+	off) rotate="Включить поворот" ;;
+	*) rotate="Выключить поворот" ;;
+	esac
+	labels=
+	for id in "$@"; do
+		case $id in
+		brightness) l=Яркость ;;
+		sound) l=$sound ;;
+		rotate) l=$rotate ;;
+		*) l=$(conf "$id" label) ;;
+		esac
+		labels="$labels${labels:+
+}${l:-$id}"
+	done
+	IFS='
+'
+	# shellcheck disable=SC2086 # one label per line
+	# Up to seven rows: closer than the power menu's, to fit 800 px.
+	n=$(ASK_LINE=$((46 - 6 * ($# > 5))) ask "Служебные" $labels "Отмена")
+	unset IFS
+	[ -n "$n" ] && [ "$n" -lt $# ] || exit 0
+	shift "$n"
+	chosen
+	case $1 in
+	brightness) /usr/bin/haltia-brightness 9>&- & ;;
+	sound)
+		pactl set-sink-mute @DEFAULT_SINK@ toggle
+		/usr/bin/haltia-panel-signal 10 2>/dev/null
+		;;
+	rotate) /usr/bin/haltia-rotate toggle ;;
+	*) /usr/bin/haltia-launch tap "$1" 9>&- ;;
+	esac
+	;;
+pin)
+	id=${2:-}
+	[ -n "$id" ] || exit 2
+	label=$(conf "$id" label)
+	sig=$(conf "$id" signal)
+	if [ "${sig:-0}" -gt 0 ] 2>/dev/null; then
+		item="Убрать с панели" verb=unpin
+	else
+		item="Закрепить на панели" verb=pin
+	fi
+	if player "$id"; then
+		# A program that plays: its pause and stop come first.
+		case $(ask "«${label:-$id}»" $(play_items) "$item" "Отмена") in
+		0) chosen; mpris "$bus" PlayPause ;;
+		1) chosen; mpris "$bus" Stop ;;
+		2) chosen; /usr/bin/haltia-apps "$verb" "$id" >/dev/null ;;
+		esac
+		exit 0
+	fi
+	[ "$(ask "«${label:-$id}»" "$item" "Отмена")" = 0 ] || exit 0
+	chosen
+	/usr/bin/haltia-apps "$verb" "$id" >/dev/null
+	;;
+*)
+	echo "usage: haltia-ask power | service | haltia-ask close|pin|media <id>" >&2
+	exit 2
+	;;
+esac

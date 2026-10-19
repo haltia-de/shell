@@ -1,0 +1,317 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0
+"""The screen follows the tablet: turned on its side it goes portrait,
+turned over it turns over too.
+
+    haltia-rotate                 watch the accelerometer (haltia-launcher runs it)
+    haltia-rotate on|off|toggle   turn following on or off («Служебные»)
+    haltia-rotate status          print on or off
+
+It reads the accelerometer of the IIO subsystem (the first device with
+in_accel_x_raw, or accelerometer=<name> in /etc/haltia/device.conf) a few
+times a second, puts it into the screen's frame with the device's
+in_mount_matrix, and turns the output (the first one wlr-randr lists, or
+output=<name> there) through wlr-output-management (wlr-randr) once the
+tablet has stood the new way for a second. Lying flat, or half way between
+two ways, it keeps what it has. With the screen off it reads seldom.
+
+Between landscape and portrait it moves the panel too: it writes the
+orientation to $XDG_RUNTIME_DIR/haltia/orientation, haltia-apps writes the
+panel's files for it (along the bottom edge in portrait), and waybar
+rereads them on SIGUSR2, sent only once waybar catches it (an uncaught
+SIGUSR2 would end waybar, and with it the session). A panel hidden by
+haltia-tab comes back first.
+
+"off" (kept in ~/.config/haltia/rotate) turns the screen back to normal and
+leaves it there.
+"""
+import math
+import os
+import signal
+import subprocess
+import sys
+import time
+
+DEVICE_CONF = "/etc/haltia/device.conf"
+SAVED = os.path.join(os.path.expanduser("~"), ".config", "haltia", "rotate")
+RUN = os.environ.get("XDG_RUNTIME_DIR") or os.path.expanduser("~/.cache")
+PIDFILE = os.path.join(RUN, "haltia/rotate.pid")
+IIO = "/sys/bus/iio/devices"
+PERIOD = 0.3      # seconds between readings with the screen on
+DARK_PERIOD = 2.0  # and with it off
+STEADY = 1.0      # seconds the tablet stands the new way before the turn
+FLAT = 0.45       # g: less than this in the screen's plane is lying flat
+CLEAR = 1.4       # one axis this many times the other, or it is half way
+G = 9.80665
+
+# The way the tablet stands -> the output's transform that keeps the
+# picture upright (wlr-randr --transform). Measured on the B8000-H: upright
+# in landscape the screen's y reads -1 g, as iio-sensor-proxy expects.
+TRANSFORMS = {"normal": "normal", "left-up": "90", "bottom-up": "180", "right-up": "270"}
+ORIENTATION = os.path.join(RUN, "haltia", "orientation")
+
+
+def log(msg):
+    print("haltia-rotate: " + msg, flush=True)
+
+
+def device_conf(key):
+    try:
+        with open(DEVICE_CONF) as fh:
+            for line in fh:
+                name, sep, val = line.partition("=")
+                if sep and name.strip() == key:
+                    return val.strip()
+    except OSError:
+        pass
+    return ""
+
+
+def read(path, default=None):
+    try:
+        with open(path) as fh:
+            return fh.read().strip()
+    except OSError:
+        return default
+
+
+def find_accel():
+    want = device_conf("accelerometer")
+    try:
+        nodes = sorted(os.listdir(IIO))
+    except OSError:
+        return None
+    for node in nodes:
+        path = os.path.join(IIO, node)
+        if not os.path.exists(os.path.join(path, "in_accel_x_raw")):
+            continue
+        if want and read(os.path.join(path, "name")) != want:
+            continue
+        return path
+    return None
+
+
+def mount_matrix(path):
+    """The rows of in_mount_matrix ("a, b, c; d, e, f; g, h, i"), the
+    identity when the device has none."""
+    raw = read(os.path.join(path, "in_mount_matrix")) or read(os.path.join(path, "mount_matrix"))
+    try:
+        rows = [[float(v) for v in row.split(",")] for row in raw.split(";")]
+        if len(rows) == 3 and all(len(r) == 3 for r in rows):
+            return rows
+    except (AttributeError, ValueError):
+        pass
+    return [[1, 0, 0], [0, 1, 0], [0, 0, 1]]
+
+
+def gravity(path, matrix):
+    """The acceleration in the screen's frame, in g, or None."""
+    try:
+        scale = float(read(os.path.join(path, "in_accel_scale"), "1"))
+        raw = [float(read(os.path.join(path, "in_accel_%s_raw" % a))) for a in "xyz"]
+    except (TypeError, ValueError):
+        return None
+    v = [sum(m * r for m, r in zip(row, raw)) * scale / G for row in matrix]
+    return v
+
+
+def classify(v):
+    """The way the tablet stands, or None while it lies flat or is half way."""
+    x, y = v[0], v[1]
+    if math.hypot(x, y) < FLAT:
+        return None
+    if abs(y) > CLEAR * abs(x):
+        return "normal" if y < 0 else "bottom-up"
+    if abs(x) > CLEAR * abs(y):
+        return "left-up" if x > 0 else "right-up"
+    return None
+
+
+def backlight_dark():
+    root = "/sys/class/backlight"
+    name = device_conf("backlight")
+    if not name:
+        try:
+            name = sorted(os.listdir(root))[0]
+        except (OSError, IndexError):
+            return False
+    return read(os.path.join(root, name, "brightness"), "1") == "0"
+
+
+def output_name():
+    name = device_conf("output")
+    if name:
+        return name
+    try:
+        out = subprocess.run(["wlr-randr"], capture_output=True, text=True, timeout=5).stdout
+    except (OSError, subprocess.SubprocessError):
+        return None
+    for line in out.splitlines():
+        if line and not line[0].isspace():
+            return line.split()[0]
+    return None
+
+
+def turn(output, way):
+    try:
+        res = subprocess.run(["wlr-randr", "--output", output, "--transform", TRANSFORMS[way]],
+                             capture_output=True, text=True, timeout=10)
+    except (OSError, subprocess.SubprocessError) as exc:
+        log("wlr-randr: %s" % exc)
+        return False
+    if res.returncode:
+        log("wlr-randr: %s" % (res.stderr.strip() or res.returncode))
+        return False
+    log("turned %s" % way)
+    return True
+
+
+def orientation_of(way):
+    return "portrait" if way in ("left-up", "right-up") else "landscape"
+
+
+def pids_of(name):
+    """The processes running /usr/bin/<name> (C) or python3 with it."""
+    found = []
+    for pid in os.listdir("/proc"):
+        if not pid.isdigit():
+            continue
+        try:
+            with open("/proc/%s/cmdline" % pid, "rb") as fh:
+                args = fh.read().split(b"\0")
+        except OSError:
+            continue
+        if any(os.path.basename(a) == name.encode() for a in args[:2]):
+            found.append(int(pid))
+    return found
+
+
+def catches(pid, signum):
+    try:
+        with open("/proc/%d/status" % pid) as fh:
+            mask = next(line for line in fh if line.startswith("SigCgt:"))
+        return bool(int(mask.split()[1], 16) >> (signum - 1) & 1)
+    except (OSError, StopIteration, ValueError):
+        return False
+
+
+def move_panel(orientation):
+    """Writes the panel's files for the orientation; True when done."""
+    os.makedirs(os.path.dirname(ORIENTATION), exist_ok=True)
+    with open(ORIENTATION + ".new", "w") as fh:
+        fh.write(orientation + "\n")
+    os.replace(ORIENTATION + ".new", ORIENTATION)
+    for pid in pids_of("haltia-tab"):
+        try:
+            os.kill(pid, signal.SIGTERM)  # it shows the panel as it ends
+        except OSError:
+            pass
+    try:
+        res = subprocess.run(["/usr/bin/haltia-apps", "panel"], capture_output=True, text=True,
+                             timeout=30)
+    except (OSError, subprocess.SubprocessError) as exc:
+        log("haltia-apps: %s" % exc)
+        return False
+    if res.returncode:
+        log("haltia-apps: %s" % (res.stderr.strip() or res.returncode))
+        return False
+    log("panel for %s" % orientation)
+    return True
+
+
+def reload_panel():
+    """SIGUSR2 to waybar, once it catches it; False to try again later."""
+    bars = [p for p in pids_of("waybar") if os.stat("/proc/%d" % p).st_uid == os.getuid()]
+    if not bars or not all(catches(p, signal.SIGUSR2) for p in bars):
+        return False
+    for pid in bars:
+        os.kill(pid, signal.SIGUSR2)
+    return True
+
+
+def enabled():
+    return read(SAVED, "on") != "off"
+
+
+def watch():
+    accel = find_accel()
+    if not accel:
+        log("no accelerometer")
+        return 0
+    output = output_name()
+    if not output:
+        log("no output (wlr-randr)")
+        return 0
+    matrix = mount_matrix(accel)
+    log("%s (%s), output %s" % (accel, read(os.path.join(accel, "name")), output))
+    with open(PIDFILE, "w") as fh:
+        fh.write("%d\n" % os.getpid())
+    changed = [True]
+    signal.signal(signal.SIGUSR1, lambda *_a: changed.__setitem__(0, True))
+    signal.signal(signal.SIGTERM, lambda *_a: sys.exit(0))
+    shown, candidate, since, on = None, None, 0.0, None
+    panel, reload = "landscape", False  # haltia-launcher starts with landscape
+    while True:
+        if changed[0]:
+            changed[0] = False
+            on = enabled()
+            if not on and shown != "normal":
+                shown = "normal" if turn(output, "normal") else shown
+            candidate = None
+        if shown and orientation_of(shown) != panel and move_panel(orientation_of(shown)):
+            panel, reload = orientation_of(shown), True
+        if reload:
+            reload = not reload_panel()
+        if not on:
+            time.sleep(DARK_PERIOD)
+            continue
+        if backlight_dark():
+            candidate = None
+            time.sleep(DARK_PERIOD)
+            continue
+        v = gravity(accel, matrix)
+        way = classify(v) if v else None
+        now = time.monotonic()
+        if way is None or way == shown:
+            candidate = None
+        elif way != candidate:
+            candidate, since = way, now
+        elif now - since >= STEADY:
+            if turn(output, way):
+                shown = way
+            candidate = None
+        time.sleep(PERIOD)
+
+
+def tell():
+    try:
+        with open(PIDFILE) as fh:
+            os.kill(int(fh.read().strip()), signal.SIGUSR1)
+    except (OSError, ValueError):
+        pass
+
+
+def main():
+    arg = sys.argv[1] if len(sys.argv) > 1 else "watch"
+    if arg == "watch":
+        return watch()
+    if arg == "status":
+        print("on" if enabled() else "off")
+        return 0
+    if arg in ("on", "off", "toggle"):
+        state = ("off" if enabled() else "on") if arg == "toggle" else arg
+        os.makedirs(os.path.dirname(SAVED), exist_ok=True)
+        with open(SAVED + ".new", "w") as fh:
+            fh.write(state + "\n")
+        os.replace(SAVED + ".new", SAVED)
+        tell()
+        return 0
+    sys.stderr.write("usage: haltia-rotate [watch | on | off | toggle | status]\n")
+    return 2
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main())
+    except KeyboardInterrupt:
+        sys.exit(0)

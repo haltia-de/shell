@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: GPL-2.0
 # The shell's session under headless phoc (wlroots' headless backend,
 # pixman rendering) on whatever Alpine this runs in, x86_64 in CI: builds
-# the C parts natively, installs everything, starts phoc with b8k-launcher
+# the C parts natively, installs everything, starts phoc with haltia-launcher
 # as the session user, waits for the panel and the home screen, and takes
 # a screenshot. Anything tied to the B8000-H (its backlight, touchscreen,
 # power key, paths of its own) shows up here as a failure or in the
@@ -26,11 +26,11 @@ apk add --no-cache build-base pkgconf git linux-headers wayland-dev wayland-prot
 # The keyboard's source at the pinned commit, then the C parts.
 git clone -q https://github.com/jjsullivan5196/wvkbd /tmp/wvkbd
 git -C /tmp/wvkbd checkout -q "$wvkbd_pin"
-sh "$here/tools/native-build.sh" /tmp/wvkbd /tmp/b8k-out >/dev/null
-TOOLS=/tmp/b8k-out WVKBD=/tmp/b8k-out/wvkbd-b8k sh "$here/install.sh"
+sh "$here/tools/native-build.sh" /tmp/wvkbd /tmp/haltia-out >/dev/null
+TOOLS=/tmp/haltia-out WVKBD=/tmp/haltia-out/wvkbd-b8k sh "$here/install.sh"
 
 id user >/dev/null 2>&1 || adduser -D user
-echo user >/etc/b8k/session-user
+echo user >/etc/haltia/session-user
 run=/tmp/xdg-user
 install -d -m 700 -o user -g user "$run"
 # One headless output the size of the B8000-H's screen.
@@ -42,7 +42,7 @@ INI
 su user -s /bin/sh -c "
 	export XDG_RUNTIME_DIR=$run HOME=/home/user LANG=ru_RU.UTF-8
 	export WLR_BACKENDS=headless WLR_RENDERER=pixman WLR_LIBINPUT_NO_DEVICES=1
-	exec dbus-run-session -- phoc -C /tmp/phoc-ci.ini -E /usr/bin/b8k-launcher
+	exec dbus-run-session -- phoc -C /tmp/phoc-ci.ini -E /usr/bin/haltia-launcher
 " >"$out/session.log" 2>&1 &
 session=$!
 
@@ -50,7 +50,7 @@ session=$!
 # pgrep -x does not match these by name; pidof does.)
 ok=
 for _ in $(seq 60); do
-	if pidof waybar >/dev/null && pidof b8k-home >/dev/null; then
+	if pidof waybar >/dev/null && pidof haltia-home >/dev/null; then
 		ok=yes
 		break
 	fi
@@ -67,7 +67,7 @@ else
 	echo "no Wayland display" >&2
 	status=1
 fi
-for p in waybar b8k-home b8k-close mako; do
+for p in waybar haltia-home haltia-close mako; do
 	if pidof "$p" >/dev/null; then
 		echo "running: $p"
 	else

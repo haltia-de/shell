@@ -15,6 +15,6 @@ for b in "$here"/tools/build-*.sh; do
 	sh "$b" || failed="$failed $(basename "$b" .sh)"
 done
 if [ -n "$failed" ]; then
-	echo "b8k-shell: not built:$failed" >&2
+	echo "haltia-shell: not built:$failed" >&2
 	exit 1
 fi

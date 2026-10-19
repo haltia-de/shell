@@ -1,9 +1,9 @@
 # Maintainer: Mikhail Nevskiy <rensomail@gmail.com>
-pkgname=b8k-shell
-pkgver=1.9.0
+pkgname=haltia-shell
+pkgver=2.0.0
 pkgrel=0
 _wvkbd=bbecd996aae5a4dc4bc32bd643d37cefa9f63752
-pkgdesc="A tablet shell for an older person: panel, home screen, close button, touch filter, keyboard"
+pkgdesc="Haltia's shell: panel, home screen, close button, touch filter, keyboard"
 url="https://github.com/haltia-de/shell"
 arch="all"
 license="GPL-2.0-only"
@@ -11,6 +11,10 @@ depends="python3 py3-gobject3 gtk+3.0 gtk-layer-shell waybar fuzzel foot mako
 	elogind doas networkmanager pulseaudio-utils grim wlr-randr"
 makedepends="wayland-dev wayland-protocols pango-dev cairo-dev libxkbcommon-dev
 	linux-pam-dev linux-headers pkgconf"
+# It takes over the b8k shell (1.x): apk upgrade swaps it in by itself.
+provides="b8k-shell=$pkgver-r$pkgrel"
+replaces="b8k-shell"
+install="$pkgname.pre-install $pkgname.pre-upgrade $pkgname.post-install $pkgname.post-upgrade"
 options="!check !fhs"
 source="$pkgname-$pkgver.tar.gz::https://github.com/haltia-de/shell/archive/v$pkgver.tar.gz
 	wvkbd-$_wvkbd.tar.gz::https://github.com/jjsullivan5196/wvkbd/archive/$_wvkbd.tar.gz"
@@ -22,10 +26,11 @@ build() {
 	sh tools/native-build.sh "$srcdir/wvkbd-$_wvkbd" "$builddir/out"
 }
 
-# The files go to /usr; the symlinks install.sh leaves at the old
-# /usr/local paths (bin, sbin, share/b8k) are removed in 2.0 (ADR 0004).
+# Files go to /usr and /usr/libexec/haltia; the old b8k names stay as
+# symlinks until 3.0 (install.sh). /usr/local is left to the person.
 package() {
-	TOOLS="$builddir/out" WVKBD="$builddir/out/wvkbd-b8k" sh ./install.sh "$pkgdir"
+	HALTIA_PACKAGE=1 TOOLS="$builddir/out" WVKBD="$builddir/out/wvkbd-b8k" \
+		sh ./install.sh "$pkgdir"
 }
 
 # `abuild checksum` fills this in for a release.

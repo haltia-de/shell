@@ -1,0 +1,10 @@
+#!/bin/sh
+# One listener for the power key. OpenRC local.d starts this in the
+# background; flock keeps a second copy from running after a reboot race.
+mkdir -p /run/haltia
+exec 9>/run/haltia/sleep.loop.lock
+flock -n 9 || exit 0
+while :; do
+	python3 /usr/libexec/haltia/haltia-sleep
+	sleep 1
+done

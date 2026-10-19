@@ -1,0 +1,30 @@
+#!/sbin/openrc-run
+# SPDX-License-Identifier: GPL-2.0
+# Keeps accidental touches off the screen (haltia-touchguard): brushes, a
+# tremor's repeated strikes and a resting palm. Settings in
+# /etc/haltia/touchguard.conf; reload reads them again without letting go of
+# the screen (haltia-touch-settings changes them so).
+description="Filter for accidental touches"
+command=/usr/libexec/haltia/haltia-touchguard
+command_background=yes
+pidfile=/run/haltia/touchguard.pid
+output_log=/var/log/haltia-touchguard.log
+error_log=/var/log/haltia-touchguard.log
+extra_started_commands="reload"
+description_reload="Read the settings again"
+
+start_pre() {
+	checkpath -d -m 755 /run/haltia
+}
+
+depend() {
+	# Before the session and haltia-sleep (local.d) see the screen.
+	before local
+	after udev
+}
+
+reload() {
+	ebegin "Reloading $RC_SVCNAME"
+	start-stop-daemon --signal HUP --pidfile "$pidfile"
+	eend $?
+}

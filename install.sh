@@ -1,29 +1,38 @@
 #!/bin/sh
 # SPDX-License-Identifier: GPL-2.0
-# Install the b8k tablet shell into a root file system: sh install.sh [ROOT]
+# Install Haltia's shell into a root file system: sh install.sh [ROOT]
 # (ROOT empty or / for this system). The device repository's image build
-# (lenovo-b8000h-linux, build-rootfs.sh) runs build.sh and then this.
+# (haltia-de/device-lenovo-b8000h, build-rootfs.sh) runs build.sh and then
+# this; the Alpine package haltia-shell runs it into its pkgdir with
+# HALTIA_PACKAGE=1.
 #
 # The shell runs programs on a tablet without a desktop: the panel
 # (waybar), the home screen, the close button, the start-up curtain, the
 # panel tab, the shell's own questions (fuzzel), the touch filter with its
 # buzz, the on-screen keyboard (wvkbd), notifications (mako) and the GTK
-# theme b8k. It knows programs through their .desktop files (ADR 0001 in
-# lenovo-b8000h-linux). Its paths are /usr/{bin,sbin,share/b8k}: the
-# scripts name them. /usr/local is the person's; until shell 2.0 it holds
-# a symlink at each old path (/usr/local/{bin,sbin,share/b8k}), so that an
-# older session start, doas rule or program still finds the shell.
+# theme Haltia. It knows programs through their .desktop files (ADR 0001
+# in the device repository). Its paths:
+#   /usr/bin/haltia-*            what a person, a program or the device runs
+#   /usr/libexec/haltia/haltia-* the shell's own parts and root helpers
+#   /usr/share/haltia            configuration, icons, the panel
+#   /etc/haltia                  touchguard.conf (and the device's files)
+# Until 3.0 the old names stay as symlinks: /usr/bin/b8k-* and
+# /usr/sbin/b8k-* (programs, the device's scripts and doas rules call
+# them), the few /usr/local paths older images name (their session loop,
+# doas rules and scripts), /usr/share/b8k/* file by file, /etc/b8k -> /etc/haltia (made by
+# haltia-upgrade), and the GTK themes b8k, b8k-cards and b8k-galculator.
 #
 # The C parts come prebuilt from build.sh: TOOLS ($WORK/tools) and WVKBD
 # ($WORK/out/wvkbd-b8k), WORK being the build's work folder (/opt/b8000h
 # by default); a part not built is left out with a warning. The compositor
 # and how the session starts are the device's.
 #
-# B8K_DOAS chooses the doas rules written to /etc/doas.d/z-b8k-shell.conf:
-# all (the default: the power menu, the touch settings and a root terminal
-# without a password), shell (the same without the root terminal, which
-# then asks for the password) or none (no file: the device's package
-# decides; the power menu then goes through logind).
+# HALTIA_DOAS (B8K_DOAS until 3.0) chooses the doas rules written to
+# /etc/doas.d/z-haltia-shell.conf: all (the default: the power menu, the
+# touch settings and a root terminal without a password), shell (the same
+# without the root terminal, which then asks for the password) or none (no
+# file: the device's package decides; the power menu then goes through
+# logind).
 set -eu
 root=${1:-}
 root=${root%/}
@@ -31,34 +40,29 @@ here=$(cd "$(dirname "$0")" && pwd)
 WORK=${WORK:-/opt/b8000h}
 TOOLS=${TOOLS:-$WORK/tools}
 WVKBD=${WVKBD:-$WORK/out/wvkbd-b8k}
-B8K_DOAS=${B8K_DOAS:-all}
-case $B8K_DOAS in
+HALTIA_DOAS=${HALTIA_DOAS:-${B8K_DOAS:-all}}
+HALTIA_PACKAGE=${HALTIA_PACKAGE:-}
+case $HALTIA_DOAS in
 all | shell | none) ;;
-*) echo "b8k-shell: B8K_DOAS must be all, shell or none" >&2; exit 2 ;;
+*) echo "haltia-shell: HALTIA_DOAS must be all, shell or none" >&2; exit 2 ;;
 esac
 bin=$root/usr/bin
-sbin=$root/usr/sbin
-share=$root/usr/share/b8k
-install -d -m 755 "$bin" "$sbin" "$share" "$root/etc/b8k" "$root/etc/local.d"
+lib=$root/usr/libexec/haltia
+share=$root/usr/share/haltia
+install -d -m 755 "$bin" "$lib" "$share" "$root/etc/haltia" "$root/etc/local.d"
 
 for f in "$here"/bin/*; do
 	install -m 755 "$f" "$bin/${f##*/}"
 done
-for f in "$here"/sbin/*; do
-	install -m 755 "$f" "$sbin/${f##*/}"
+for f in "$here"/libexec/*; do
+	install -m 755 "$f" "$lib/${f##*/}"
 done
 for f in apps.conf panel fuzzel-ask.ini foot.ini phoc.ini mako.conf; do
 	install -m 644 "$here/share/$f" "$share/$f"
 done
 install -m 644 "$here"/share/icons/* "$share/"
-# Gone with ADR 0001 step 5: b8k_ui (programs use b8k-compat), apps.d
-# (programs bring .desktop files), the web-app windows' icon.
-rm -rf "$root/usr/local/share/b8k/python" "$root/usr/local/share/b8k/site.svg"
-# Gone with the panel's drawer (1.5.0): its handle and the sun.
-for f in drawer-open.svg drawer-closed.svg brightness.svg; do
-	rm -f "$share/$f" "$root/usr/local/share/b8k/$f"
-done
-rmdir "$root/usr/local/share/b8k/apps.d" 2>/dev/null || true
+install -D -m 644 "$here/share/io.github.haltia_de.TouchSettings.desktop" \
+	"$root/usr/share/applications/io.github.haltia_de.TouchSettings.desktop"
 # The panel's configuration in the shell's folder (/etc/xdg/waybar is the
 # waybar package's own).
 install -D -m 644 "$here/waybar/config" "$share/waybar/config"
@@ -66,10 +70,18 @@ install -D -m 644 "$here/waybar/style.css" "$share/waybar/style.css"
 for t in "$here"/themes/*; do
 	install -D -m 644 "$t/gtk-3.0/gtk.css" "$root/usr/share/themes/${t##*/}/gtk-3.0/gtk.css"
 done
+# The old theme names (GTK_THEME, a program's env= or gsettings may name
+# them) import the new themes until 3.0.
+for t in b8k:Haltia b8k-cards:Haltia-Cards b8k-galculator:Haltia-Galculator; do
+	install -d -m 755 "$root/usr/share/themes/${t%%:*}/gtk-3.0"
+	printf '/* The old name of the theme %s (Haltia shell 2.x). */\n@import url("/usr/share/themes/%s/gtk-3.0/gtk.css");\n' \
+		"${t#*:}" "${t#*:}" >"$root/usr/share/themes/${t%%:*}/gtk-3.0/gtk.css"
+done
 # GTK's file chooser as the shell wants it (folders first, no size or
 # type column, the folder the program names).
-install -D -m 644 "$here/share/b8k-shell.gschema.override" \
-	"$root/usr/share/glib-2.0/schemas/91-b8k-shell.gschema.override"
+install -D -m 644 "$here/share/haltia-shell.gschema.override" \
+	"$root/usr/share/glib-2.0/schemas/91-haltia-shell.gschema.override"
+rm -f "$root/usr/share/glib-2.0/schemas/91-b8k-shell.gschema.override"
 if command -v glib-compile-schemas >/dev/null && [ -z "$root" ]; then
 	glib-compile-schemas /usr/share/glib-2.0/schemas
 fi
@@ -85,101 +97,120 @@ part() { # name destination
 	if [ -x "$TOOLS/$1" ]; then
 		install -m 755 "$TOOLS/$1" "$2/$1"
 	else
-		echo "b8k-shell: $1 not built (build.sh), left out" >&2
+		echo "haltia-shell: $1 not built (build.sh), left out" >&2
 	fi
 }
-for t in b8k-press b8k-splash b8k-close b8k-home b8k-tab b8k-session; do
-	part "$t" "$bin"
+part haltia-session "$bin"
+for t in haltia-press haltia-splash haltia-close haltia-home haltia-tab; do
+	part "$t" "$lib"
 done
 if [ -x "$WVKBD" ]; then
-	install -m 755 "$WVKBD" "$bin/wvkbd-b8k"
+	install -m 755 "$WVKBD" "$lib/haltia-wvkbd"
 else
-	echo "b8k-shell: wvkbd-b8k not built (build.sh), left out" >&2
+	echo "haltia-shell: wvkbd-b8k not built (build.sh), left out" >&2
 fi
-# The PAM service b8k-session opens (pam_elogind: a logind session).
+# The PAM service haltia-session opens (pam_elogind: a logind session).
 install -d -m 755 "$root/etc/pam.d"
 printf 'auth     sufficient pam_permit.so\naccount  sufficient pam_permit.so\nsession  include    base-session\n' \
-	>"$root/etc/pam.d/b8k-session"
+	>"$root/etc/pam.d/haltia-session"
 
-# The touch filter, on from the first boot; settings in /etc/b8k/touchguard.conf.
-if [ -x "$TOOLS/b8k-touchguard" ]; then
-	install -m 755 "$TOOLS/b8k-touchguard" "$sbin/b8k-touchguard"
-	install -D -m 755 "$here/etc/b8k-touchguard.initd" "$root/etc/init.d/b8k-touchguard"
-	[ -e "$root/etc/b8k/touchguard.conf" ] ||
-		install -m 644 "$here/etc/touchguard.conf" "$root/etc/b8k/touchguard.conf"
-	# The values as shipped, for b8k-touchguard-setup's «Как при установке».
+# The touch filter, on from the first boot; settings in
+# /etc/haltia/touchguard.conf. A package leaves the runlevel to its
+# post-install and post-upgrade (haltia-upgrade), so that one who turned the
+# filter off keeps it off.
+if [ -x "$TOOLS/haltia-touchguard" ]; then
+	install -m 755 "$TOOLS/haltia-touchguard" "$lib/haltia-touchguard"
+	install -D -m 755 "$here/etc/haltia-touchguard.initd" "$root/etc/init.d/haltia-touchguard"
+	[ -e "$root/etc/haltia/touchguard.conf" ] || [ -e "$root/etc/b8k/touchguard.conf" ] ||
+		install -m 644 "$here/etc/touchguard.conf" "$root/etc/haltia/touchguard.conf"
+	# The values as shipped, for haltia-touch-settings's «Как при установке».
 	install -m 644 "$here/etc/touchguard.conf" "$share/touchguard.conf"
-	install -d -m 755 "$root/etc/runlevels/default"
-	ln -sf /etc/init.d/b8k-touchguard "$root/etc/runlevels/default/b8k-touchguard"
+	if [ -z "$HALTIA_PACKAGE" ]; then
+		install -d -m 755 "$root/etc/runlevels/default"
+		ln -sf /etc/init.d/haltia-touchguard "$root/etc/runlevels/default/haltia-touchguard"
+	fi
 else
-	echo "b8k-shell: b8k-touchguard not built (build.sh), left out" >&2
+	echo "haltia-shell: haltia-touchguard not built (build.sh), left out" >&2
 fi
 
 # The power key: the screen off and on, the power menu, sleep after 30 s
-# with the screen off (b8k-sleep.py runs the device's suspend hook, if
+# with the screen off (haltia-sleep runs the device's suspend hook, if
 # any). elogind's default would power the tablet off.
-cat >"$root/etc/local.d/b8k-sleep.start" <<'EOF'
+cat >"$root/etc/local.d/haltia-sleep.start" <<'EOF'
 #!/bin/sh
+mkdir -p /run/haltia
 start-stop-daemon --start --background \
-	--exec /usr/sbin/b8k-sleep-loop \
-	--pidfile /run/b8k-sleep.pid --make-pidfile \
-	--stdout /var/log/b8k-sleep.log --stderr /var/log/b8k-sleep.log
+	--exec /usr/libexec/haltia/haltia-sleep-loop \
+	--pidfile /run/haltia/sleep.pid --make-pidfile \
+	--stdout /var/log/haltia-sleep.log --stderr /var/log/haltia-sleep.log
 EOF
-chmod +x "$root/etc/local.d/b8k-sleep.start"
+chmod +x "$root/etc/local.d/haltia-sleep.start"
 install -d -m 755 "$root/etc/elogind/logind.conf.d"
 printf '[Login]\nHandlePowerKey=ignore\nHandlePowerKeyLongPress=ignore\n' \
-	>"$root/etc/elogind/logind.conf.d/b8k-power-key.conf"
+	>"$root/etc/elogind/logind.conf.d/haltia-power-key.conf"
 
 # The panel's Wi-Fi follows NetworkManager at once.
 install -d -m 755 "$root/etc/NetworkManager/dispatcher.d"
-install -m 755 "$here/etc/nm-dispatcher-b8k-panel" "$root/etc/NetworkManager/dispatcher.d/90-b8k-panel"
+install -m 755 "$here/etc/nm-dispatcher-haltia-panel" "$root/etc/NetworkManager/dispatcher.d/90-haltia-panel"
 
-# The session user's commands without a password (B8K_DOAS): the power
-# menu, the touch settings (b8k-touchguard-conf checks every value itself)
-# and, with all, the root terminal (z- sorts after wheel.conf; doas uses
-# the last matching rule). doas matches the path as written, so the old
-# /usr/local/sbin paths are allowed as well until shell 2.0.
+# The session user's commands without a password (HALTIA_DOAS): the power
+# menu, the touch settings (haltia-touchguard-conf checks every value
+# itself) and, with all, the root terminal (z- sorts after wheel.conf; doas
+# uses the last matching rule). doas matches the path as written, so the
+# old /usr/sbin/b8k-* and /usr/local/sbin/b8k-* names are allowed as well
+# until 3.0.
 install -d -m 755 "$root/etc/doas.d"
-if [ "$B8K_DOAS" = none ]; then
-	rm -f "$root/etc/doas.d/z-b8k-shell.conf"
+if [ "$HALTIA_DOAS" = none ]; then
+	rm -f "$root/etc/doas.d/z-haltia-shell.conf"
 else
-	for d in /usr/sbin /usr/local/sbin; do
-		echo "permit nopass user cmd $d/b8k-poweroff args off"
-		echo "permit nopass user cmd $d/b8k-poweroff args reboot"
-		echo "permit nopass user cmd $d/b8k-touchguard-conf"
-		if [ "$B8K_DOAS" = all ]; then
-			echo "permit nopass user cmd $d/b8k-rootsh"
+	for p in /usr/libexec/haltia/haltia- /usr/sbin/b8k- /usr/local/sbin/b8k-; do
+		echo "permit nopass user cmd ${p}poweroff args off"
+		echo "permit nopass user cmd ${p}poweroff args reboot"
+		echo "permit nopass user cmd ${p}touchguard-conf"
+		if [ "$HALTIA_DOAS" = all ]; then
+			echo "permit nopass user cmd ${p}rootsh"
 		fi
-	done >"$root/etc/doas.d/z-b8k-shell.conf"
+	done >"$root/etc/doas.d/z-haltia-shell.conf"
 fi
 
-# The old paths (shell 1.6 and older) as symlinks to the new ones, file by
-# file, not the folders: programs' install.sh still remove their own old
-# files from /usr/local/share/b8k. Removed in shell 2.0 (ADR 0004, step 4).
-compat() { # new-folder old-folder
-	install -d -m 755 "$root$2"
-	for f in "$root$1"/*; do
-		[ -f "$f" ] && [ ! -L "$f" ] || continue
-		rm -rf "$root$2/${f##*/}"
-		ln -s "$1/${f##*/}" "$root$2/${f##*/}"
-	done
+# The old names (shell 1.x) as symlinks to the new ones, until 3.0.
+old() { # old-path new-path
+	[ -e "$root$2" ] || return 0
+	install -d -m 755 "$root${1%/*}"
+	rm -rf "$root$1"
+	ln -s "$2" "$root$1"
 }
-# Only the shell's own files in /usr/bin and /usr/sbin.
-compat_names() { # new-folder old-folder name...
-	new=$1 old=$2
-	shift 2
-	install -d -m 755 "$root$old"
-	for n in "$@"; do
-		[ -f "$root$new/$n" ] || continue
-		rm -f "$root$old/$n"
-		ln -s "$new/$n" "$root$old/$n"
-	done
-}
-names() { for f in "$@"; do printf '%s\n' "${f##*/}"; done; }
-# shellcheck disable=SC2046 # one name per word
-compat_names /usr/bin /usr/local/bin $(names "$here"/bin/*) \
-	b8k-press b8k-splash b8k-close b8k-home b8k-tab b8k-session wvkbd-b8k
-# shellcheck disable=SC2046
-compat_names /usr/sbin /usr/local/sbin $(names "$here"/sbin/*) b8k-touchguard
-compat /usr/share/b8k /usr/local/share/b8k
-compat /usr/share/b8k/waybar /usr/local/share/b8k/waybar
+for n in apps ask brightness focus launch launcher panel-signal rotate session term; do
+	old "/usr/bin/b8k-$n" "/usr/bin/haltia-$n"
+done
+old /usr/bin/b8k-touchguard-setup /usr/bin/haltia-touch-settings
+for n in badges clock close home keyboard meter press splash tab volume; do
+	old "/usr/bin/b8k-$n" "/usr/libexec/haltia/haltia-$n"
+done
+old /usr/bin/wvkbd-b8k /usr/libexec/haltia/haltia-wvkbd
+old /usr/sbin/b8k-panel-signal /usr/bin/haltia-panel-signal
+for n in poweroff rootsh sleep-loop touchguard touchguard-conf; do
+	old "/usr/sbin/b8k-$n" "/usr/libexec/haltia/haltia-$n"
+done
+old /usr/sbin/b8k-sleep.py /usr/libexec/haltia/haltia-sleep
+# What the B8000-H images up to v1.1.0 name in /usr/local: their desktop.start
+# (a session loop read at boot keeps the old text), z-b8k-power.conf and
+# the device's scripts.
+old /usr/local/bin/b8k-session /usr/bin/haltia-session
+old /usr/local/bin/b8k-launcher /usr/bin/haltia-launcher
+old /usr/local/share/b8k/phoc.ini /usr/share/haltia/phoc.ini
+for n in rootsh poweroff touchguard-conf; do
+	old "/usr/local/sbin/b8k-$n" "/usr/libexec/haltia/haltia-$n"
+done
+old /usr/local/sbin/b8k-panel-signal /usr/bin/haltia-panel-signal
+# /usr/share/b8k file by file: the device's desktop.start names phoc.ini.
+for f in "$share"/* "$share"/waybar/*; do
+	[ -f "$f" ] || continue
+	old "/usr/share/b8k${f#"$share"}" "/usr/share/haltia${f#"$share"}"
+done
+
+# On a running system (not a package or an image): move /etc/b8k, the
+# runlevel and the running services over at once.
+if [ -z "$root" ] && [ -z "$HALTIA_PACKAGE" ]; then
+	/usr/libexec/haltia/haltia-upgrade
+fi

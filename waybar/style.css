@@ -1,11 +1,11 @@
-/* b8k palette: GNOME/libadwaita colours, see docs/shell.md.
-   Program buttons share the class "app" (b8k-launch status); b8k-apps adds
+/* Haltia palette: GNOME/libadwaita colours, see docs/shell.md.
+   Program buttons share the class "app" (haltia-launch status); haltia-apps adds
    each button's icon to the copy waybar loads. */
 * { font-family: "DejaVu Sans", sans-serif; font-size: 15px; }
 window#waybar { background: #242424; color: #ffffff; }
 /* The home button, five buttons, the line above the open programs, the
    Wi-Fi and speaker row, the battery, the two-line clock and the hide
-   button fit the 800 px column; more buttons get shorter (b8k-apps). */
+   button fit the 800 px column; more buttons get shorter (haltia-apps). */
 .app {
   min-height: 24px;
   margin: 2px 4px;
@@ -18,10 +18,10 @@ window#waybar { background: #242424; color: #ffffff; }
 }
 #custom-firefox { background-image: url("/usr/share/icons/hicolor/64x64/apps/firefox.png"); }
 #custom-calc { background-image: url("/usr/share/icons/hicolor/scalable/apps/galculator.svg"); }
-#custom-weather { background-image: url("/usr/share/b8k/weather.svg"); }
-#custom-news { background-image: url("/usr/share/b8k/news.svg"); }
-#custom-max { background-image: url("/usr/share/b8k/max.png"); }
-#custom-paint { background-image: url("/usr/share/b8k/paint.svg"); }
+#custom-weather { background-image: url("/usr/share/haltia/weather.svg"); }
+#custom-news { background-image: url("/usr/share/haltia/news.svg"); }
+#custom-max { background-image: url("/usr/share/haltia/max.png"); }
+#custom-paint { background-image: url("/usr/share/haltia/paint.svg"); }
 #custom-cards { background-image: url("/usr/share/icons/hicolor/256x256/apps/gnome-aisleriot.png"); }
 .app.running {
   background-color: #3a3a3a;
@@ -36,7 +36,7 @@ window#waybar { background: #242424; color: #ffffff; }
   background-color: #3584e4;
   color: #ffffff;
 }
-/* The home button: raises the home screen (b8k-home) over the windows. */
+/* The home button: raises the home screen (haltia-home) over the windows. */
 #custom-home {
   min-height: 60px;
   margin: 2px 4px 4px;
@@ -46,10 +46,10 @@ window#waybar { background: #242424; color: #ffffff; }
   background-repeat: no-repeat;
   background-position: center;
   background-size: 50px 50px;
-  background-image: url("/usr/share/b8k/home.svg");
+  background-image: url("/usr/share/haltia/home.svg");
 }
 #custom-home.raised { background-color: #3584e4; }
-/* Open programs that are not pinned (b8k-launch slot N): outlined instead
+/* Open programs that are not pinned (haltia-launch slot N): outlined instead
    of filled, under a line that shows while there is one. */
 #custom-sep {
   font-size: 1px;
@@ -82,11 +82,11 @@ window#waybar { background: #242424; color: #ffffff; }
   background-position: center;
   background-size: 30px 32px;
 }
-#custom-volume.v0 { background-image: url("/usr/share/b8k/vol-0.svg"); }
-#custom-volume.v1 { background-image: url("/usr/share/b8k/vol-1.svg"); }
-#custom-volume.v2 { background-image: url("/usr/share/b8k/vol-2.svg"); }
-#custom-volume.v3 { background-image: url("/usr/share/b8k/vol-3.svg"); }
-#custom-volume.v4 { background-image: url("/usr/share/b8k/vol-4.svg"); }
+#custom-volume.v0 { background-image: url("/usr/share/haltia/vol-0.svg"); }
+#custom-volume.v1 { background-image: url("/usr/share/haltia/vol-1.svg"); }
+#custom-volume.v2 { background-image: url("/usr/share/haltia/vol-2.svg"); }
+#custom-volume.v3 { background-image: url("/usr/share/haltia/vol-3.svg"); }
+#custom-volume.v4 { background-image: url("/usr/share/haltia/vol-4.svg"); }
 #custom-wifi3,
 #custom-battery {
   min-height: 40px;
@@ -104,23 +104,23 @@ window#waybar { background: #242424; color: #ffffff; }
   background-size: 40px 30px;
 }
 #custom-battery { background-size: 83px 34px; }
-#custom-wifi3.w0 { background-image: url("/usr/share/b8k/wifi-p0.svg"); }
-#custom-wifi3.w1 { background-image: url("/usr/share/b8k/wifi-p1.svg"); }
-#custom-wifi3.w2 { background-image: url("/usr/share/b8k/wifi-p2.svg"); }
-#custom-wifi3.w3 { background-image: url("/usr/share/b8k/wifi-p3.svg"); }
-#custom-wifi3.w4 { background-image: url("/usr/share/b8k/wifi-p4.svg"); }
-#custom-wifi3.wx { background-image: url("/usr/share/b8k/wifi-x.svg"); }
-#custom-battery.b0 { background-image: url("/usr/share/b8k/bat-b0.svg"); }
-#custom-battery.b1 { background-image: url("/usr/share/b8k/bat-b1.svg"); }
-#custom-battery.b2 { background-image: url("/usr/share/b8k/bat-b2.svg"); }
-#custom-battery.b3 { background-image: url("/usr/share/b8k/bat-b3.svg"); }
-#custom-battery.b4 { background-image: url("/usr/share/b8k/bat-b4.svg"); }
-#custom-battery.c0 { background-image: url("/usr/share/b8k/bat-c0.svg"); }
-#custom-battery.c1 { background-image: url("/usr/share/b8k/bat-c1.svg"); }
-#custom-battery.c2 { background-image: url("/usr/share/b8k/bat-c2.svg"); }
-#custom-battery.c3 { background-image: url("/usr/share/b8k/bat-c3.svg"); }
-#custom-battery.c4 { background-image: url("/usr/share/b8k/bat-c4.svg"); }
-/* Hides the panel; b8k-tab draws its 120x44 tab in exactly this place, so
+#custom-wifi3.w0 { background-image: url("/usr/share/haltia/wifi-p0.svg"); }
+#custom-wifi3.w1 { background-image: url("/usr/share/haltia/wifi-p1.svg"); }
+#custom-wifi3.w2 { background-image: url("/usr/share/haltia/wifi-p2.svg"); }
+#custom-wifi3.w3 { background-image: url("/usr/share/haltia/wifi-p3.svg"); }
+#custom-wifi3.w4 { background-image: url("/usr/share/haltia/wifi-p4.svg"); }
+#custom-wifi3.wx { background-image: url("/usr/share/haltia/wifi-x.svg"); }
+#custom-battery.b0 { background-image: url("/usr/share/haltia/bat-b0.svg"); }
+#custom-battery.b1 { background-image: url("/usr/share/haltia/bat-b1.svg"); }
+#custom-battery.b2 { background-image: url("/usr/share/haltia/bat-b2.svg"); }
+#custom-battery.b3 { background-image: url("/usr/share/haltia/bat-b3.svg"); }
+#custom-battery.b4 { background-image: url("/usr/share/haltia/bat-b4.svg"); }
+#custom-battery.c0 { background-image: url("/usr/share/haltia/bat-c0.svg"); }
+#custom-battery.c1 { background-image: url("/usr/share/haltia/bat-c1.svg"); }
+#custom-battery.c2 { background-image: url("/usr/share/haltia/bat-c2.svg"); }
+#custom-battery.c3 { background-image: url("/usr/share/haltia/bat-c3.svg"); }
+#custom-battery.c4 { background-image: url("/usr/share/haltia/bat-c4.svg"); }
+/* Hides the panel; haltia-tab draws its 120x44 tab in exactly this place, so
    keep the size (40 px + 2 px margins) and the 30 px icon in step with it. */
 #custom-hide {
   min-height: 40px;
@@ -130,7 +130,7 @@ window#waybar { background: #242424; color: #ffffff; }
   background-repeat: no-repeat;
   background-position: center;
   background-size: 30px 30px;
-  background-image: url("/usr/share/b8k/hide.svg");
+  background-image: url("/usr/share/haltia/hide.svg");
 }
 #custom-clock {
   font-size: 18px;
@@ -138,7 +138,7 @@ window#waybar { background: #242424; color: #ffffff; }
   padding: 2px 0 6px;
 }
 
-/* A tap, shown for 300 ms by b8k-press (waybar ignores :active on touch). */
+/* A tap, shown for 300 ms by haltia-press (waybar ignores :active on touch). */
 .app.pressed {
   background-color: #3584e4;
   color: #ffffff;
