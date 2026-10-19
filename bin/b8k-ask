@@ -9,7 +9,8 @@
 #   b8k-ask media <id>        (a tap on the button of a program in front
 #                             that plays: pause or go on, stop)
 #   b8k-ask service           (the «Служебные» tile: Settings, the touch
-#                             settings, brightness, sound off or on, the
+#                             settings, brightness, sound off or on,
+#                             turning with the tablet on or off, the
 #                             terminal)
 #
 # The question is a fuzzel menu (C, Wayland only) on the overlay layer: it
@@ -41,7 +42,7 @@ ask() {
 	title=$1
 	shift
 	printf '%s\n' "$@" | fuzzel --config /usr/share/b8k/fuzzel-ask.ini \
-		${ASK_LINE:+--line-height=$ASK_LINE} \
+		${ASK_LINE:+--line-height=$ASK_LINE} --lines=$# \
 		--dmenu --index --mesg "$title" --cache /dev/null --select-index $(($# - 1)) 2>/dev/null
 }
 
@@ -151,16 +152,22 @@ media)
 service)
 	# What the person rarely needs, in one place: each opens over the home
 	# screen like a tile does (b8k-launch tap lowers it).
-	set -- settings touch brightness sound term
+	set -- settings touch brightness sound rotate term
+	command -v wlr-randr >/dev/null && [ -x /usr/bin/b8k-rotate ] || set -- settings touch brightness sound term
 	case $(pactl get-sink-mute @DEFAULT_SINK@ 2>/dev/null | awk '{ print $2 }') in
 	yes | да) sound="Включить звук" ;;
 	*) sound="Выключить звук" ;;
+	esac
+	case $(/usr/bin/b8k-rotate status 2>/dev/null) in
+	off) rotate="Включить поворот" ;;
+	*) rotate="Выключить поворот" ;;
 	esac
 	labels=
 	for id in "$@"; do
 		case $id in
 		brightness) l=Яркость ;;
 		sound) l=$sound ;;
+		rotate) l=$rotate ;;
 		*) l=$(conf "$id" label) ;;
 		esac
 		labels="$labels${labels:+
@@ -169,8 +176,8 @@ service)
 	IFS='
 '
 	# shellcheck disable=SC2086 # one label per line
-	# Six rows: a little closer than the power menu's, to fit 800 px.
-	n=$(ASK_LINE=46 ask "Служебные" $labels "Отмена")
+	# Up to seven rows: closer than the power menu's, to fit 800 px.
+	n=$(ASK_LINE=$((46 - 6 * ($# > 5))) ask "Служебные" $labels "Отмена")
 	unset IFS
 	[ -n "$n" ] && [ "$n" -lt $# ] || exit 0
 	shift "$n"
@@ -181,6 +188,7 @@ service)
 		pactl set-sink-mute @DEFAULT_SINK@ toggle
 		/usr/sbin/b8k-panel-signal 10 2>/dev/null
 		;;
+	rotate) /usr/bin/b8k-rotate toggle ;;
 	*) /usr/bin/b8k-launch tap "$1" 9>&- ;;
 	esac
 	;;

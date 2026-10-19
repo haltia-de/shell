@@ -1,6 +1,6 @@
 # Maintainer: Mikhail Nevskiy <rensomail@gmail.com>
 pkgname=b8k-shell
-pkgver=1.7.0
+pkgver=1.8.0
 pkgrel=0
 _wvkbd=bbecd996aae5a4dc4bc32bd643d37cefa9f63752
 pkgdesc="A tablet shell for an older person: panel, home screen, close button, touch filter, keyboard"
@@ -8,7 +8,7 @@ url="https://github.com/haltia-de/shell"
 arch="all"
 license="GPL-2.0-only"
 depends="python3 py3-gobject3 gtk+3.0 gtk-layer-shell waybar fuzzel foot mako
-	elogind doas networkmanager pulseaudio-utils grim"
+	elogind doas networkmanager pulseaudio-utils grim wlr-randr"
 makedepends="wayland-dev wayland-protocols pango-dev cairo-dev libxkbcommon-dev
 	linux-pam-dev linux-headers pkgconf"
 options="!check !fhs"

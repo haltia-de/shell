@@ -60,6 +60,11 @@ dbus-update-activation-environment NO_AT_BRIDGE GTK_A11Y ${GTK_THEME:+GTK_THEME}
 if [ -x /usr/bin/b8k-volume ]; then
 	setsid /usr/bin/b8k-volume >"$run"/b8k-volume.log 2>&1 &
 fi
+# The screen follows the tablet: portrait on its side, turned over upside
+# down (off in «Служебные»).
+if [ -x /usr/bin/b8k-rotate ] && command -v wlr-randr >/dev/null; then
+	setsid /usr/bin/b8k-rotate >"$run"/b8k-rotate.log 2>&1 &
+fi
 if [ -x /usr/bin/b8k-focus ]; then
 	setsid /usr/bin/b8k-focus watch >"$run"/b8k-focus-watch.log 2>&1 &
 fi

@@ -20,7 +20,7 @@ wvkbd_pin=$(sed -n 's/^PIN=//p' "$here/wvkbd/build.sh")
 apk add --no-cache build-base pkgconf git linux-headers wayland-dev wayland-protocols \
 	pango-dev cairo-dev libxkbcommon-dev linux-pam-dev \
 	python3 py3-gobject3 gtk+3.0 gtk-layer-shell waybar fuzzel foot mako \
-	elogind doas networkmanager pulseaudio-utils grim phoc dbus dbus-x11 \
+	elogind doas networkmanager pulseaudio-utils grim wlr-randr phoc dbus dbus-x11 \
 	font-dejavu adwaita-icon-theme >/dev/null
 
 # The keyboard's source at the pinned commit, then the C parts.

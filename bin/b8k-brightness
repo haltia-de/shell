@@ -205,7 +205,12 @@ def main():
     GtkLayerShell.init_for_window(win)
     GtkLayerShell.set_layer(win, GtkLayerShell.Layer.OVERLAY)
     GtkLayerShell.set_namespace(win, "b8k-brightness")
-    win.set_size_request(800, -1)
+    # 800 px, or less when the screen stands portrait (b8k-rotate).
+    try:
+        room = win.get_display().get_monitor(0).get_geometry().width - 160
+    except AttributeError:
+        room = 800
+    win.set_size_request(max(400, min(800, room)), -1)
     box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=28)
     box.get_style_context().add_class("card")
     for side in ("start", "end", "top", "bottom"):
