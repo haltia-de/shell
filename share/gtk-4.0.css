@@ -1,0 +1,35 @@
+/* SPDX-License-Identifier: GPL-2.0 */
+/* Haltia for GTK 4 and libadwaita programs (GNOME Settings and its dialogs):
+   libadwaita takes no GTK theme, only a user style sheet, which
+   haltia-launcher points here (~/.config/gtk-4.0/gtk.css imports this file
+   when one has no style sheet of one's own). What the theme Haltia gives
+   GTK 3 programs, as far as libadwaita lets it: the header 88 px and 8 px
+   above and below (104 px, so the shell's close button, 96 px down, keeps
+   a margin) with room on the right for it (haltia-close, 110 px), its
+   title 30 px bold, buttons a finger can hit at 26 px, and text larger
+   than libadwaita's 11 pt. */
+window { font-size: 20px; }
+headerbar {
+  background-color: #dcdcda;
+  min-height: 88px;
+  padding: 8px 110px 8px 16px;
+}
+/* The sidebar's header is not at the right edge. */
+.sidebar-pane headerbar, .sidebar headerbar { padding-left: 6px; padding-right: 6px; }
+headerbar .title { font-size: 30px; font-weight: bold; color: #2e3436; }
+headerbar .subtitle { font-size: 18px; color: #5e5c64; }
+headerbar button {
+  background-color: #f2f2f0;
+  border: 1px solid #c0bfbc;
+  border-radius: 16px;
+  min-height: 72px;
+  min-width: 64px;
+  font-size: 26px;
+  color: #2e3436;
+}
+headerbar button:active, headerbar button:checked { background-color: #c4dcf7; }
+headerbar button image { -gtk-icon-size: 32px; }
+/* The sidebar is narrow: its title and buttons smaller, so «Настройки»
+   fits between them. */
+.sidebar-pane headerbar .title, .sidebar headerbar .title { font-size: 19px; }
+.sidebar-pane headerbar button, .sidebar headerbar button { min-width: 52px; padding: 0 4px; }

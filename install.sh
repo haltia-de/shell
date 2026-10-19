@@ -57,7 +57,7 @@ done
 for f in "$here"/libexec/*; do
 	install -m 755 "$f" "$lib/${f##*/}"
 done
-for f in apps.conf panel fuzzel-ask.ini foot.ini phoc.ini mako.conf; do
+for f in apps.conf panel fuzzel-ask.ini foot.ini phoc.ini mako.conf gtk-4.0.css; do
 	install -m 644 "$here/share/$f" "$share/$f"
 done
 install -m 644 "$here"/share/icons/* "$share/"

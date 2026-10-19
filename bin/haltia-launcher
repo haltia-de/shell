@@ -62,6 +62,15 @@ if [ ! -e "$HOME/.config/haltia/filechooser-1" ] && command -v gsettings >/dev/n
 	done
 	mkdir -p "$HOME/.config/haltia" && : >"$HOME/.config/haltia/filechooser-1"
 fi
+# GTK 4 and libadwaita programs (GNOME Settings) take no GTK theme, only a
+# user style sheet: the shell's header for them, unless one has a style
+# sheet of one's own; no window buttons (the shell's «✕» closes).
+gtk4="$HOME/.config/gtk-4.0"
+mkdir -p "$gtk4"
+[ -e "$gtk4/gtk.css" ] ||
+	printf '/* Haltia (haltia-launcher): remove the line below to style GTK 4 yourself. */\n@import url("file:///usr/share/haltia/gtk-4.0.css");\n' >"$gtk4/gtk.css"
+[ -e "$gtk4/settings.ini" ] ||
+	printf '[Settings]\ngtk-decoration-layout=:\n' >"$gtk4/settings.ini"
 # The brightness chosen last time (haltia-brightness keeps it).
 /usr/bin/haltia-brightness --restore >"$run"/haltia/brightness.log 2>&1
 # Settings starts through D-Bus activation and takes the bus environment.
