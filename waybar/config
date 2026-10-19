@@ -9,8 +9,7 @@
     "custom/max"
   ],
   "modules-right": [
-    "group/status",
-    "custom/battery",
+    "custom/status",
     "custom/clock",
     "custom/hide"
   ],
@@ -86,41 +85,15 @@
     "on-click-release": "/usr/libexec/haltia/haltia-press cards 3; /usr/bin/haltia-launch tap cards",
     "tooltip": false
   },
-  "group/status": {
-    "orientation": "horizontal",
-    "modules": [
-      "custom/wifi3",
-      "custom/volume"
-    ]
-  },
-  "custom/volume": {
-    "exec": "/usr/libexec/haltia/haltia-meter volume",
-    "return-type": "json",
-    "format": "{text}",
-    "signal": 10,
-    "interval": 60,
-    "exec-on-event": true,
-    "on-click-release": "/usr/libexec/haltia/haltia-press volume 10; pactl set-sink-mute @DEFAULT_SINK@ toggle",
-    "tooltip": false
-  },
-  "custom/wifi3": {
-    "exec": "/usr/libexec/haltia/haltia-meter wifi",
+  "custom/status": {
+    "exec": "/usr/libexec/haltia/haltia-meter status",
     "return-type": "json",
     "format": "{text}",
     "interval": 30,
-    "exec-on-event": false,
-    "on-click-release": "/usr/libexec/haltia/haltia-press wifi 10; /usr/bin/haltia-launch tap settings",
+    "exec-on-event": true,
+    "on-click-release": "/usr/libexec/haltia/haltia-press status 10; /usr/bin/haltia-ask status",
     "tooltip": false,
     "signal": 10
-  },
-  "custom/battery": {
-    "exec": "/usr/libexec/haltia/haltia-meter battery",
-    "return-type": "json",
-    "format": "{text}",
-    "interval": 30,
-    "exec-on-event": false,
-    "tooltip": false,
-    "signal": 11
   },
   "custom/clock": {
     "exec": "/usr/libexec/haltia/haltia-clock",

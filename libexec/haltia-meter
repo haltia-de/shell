@@ -1,16 +1,21 @@
 #!/bin/sh
-# Waybar status for the home button, the volume, the Wi-Fi icon, the 4-bar
-# battery and the hide button.
+# Waybar status for the home button, the status card (one module: the Wi-Fi
+# icon, the volume and the 4-bar battery as classes, which the style
+# haltia-apps writes draws as three icons on it) and the hide button.
 # Always prints one JSON line and exits 0, so the icon cannot disappear.
 set -u
 
-# haltia-press marks a tap for 300 ms: print the class with "pressed" added.
+# out ID CLASS...: one JSON line; haltia-press marks a tap for 300 ms, which
+# adds the class "pressed".
 out() {
-	if [ -e "${XDG_RUNTIME_DIR:-/tmp}/haltia/press/$1" ]; then
-		printf '{"text":" ","class":["%s","pressed"]}\n' "$2"
-	else
-		printf '{"text":" ","class":"%s"}\n' "$2"
-	fi
+	id=$1
+	shift
+	[ -e "${XDG_RUNTIME_DIR:-/tmp}/haltia/press/$id" ] && set -- "$@" pressed
+	list=
+	for c in "$@"; do
+		list="$list${list:+,}\"$c\""
+	done
+	printf '{"text":" ","class":[%s]}\n' "$list"
 }
 
 wifi_class() {
@@ -42,11 +47,7 @@ wifi_class() {
 	echo "$class"
 }
 
-wifi() {
-	out wifi "$(wifi_class)"
-}
-
-battery() {
+battery_class() {
 	cap=0
 	status=Unknown
 	if [ -r /sys/class/power_supply/battery/capacity ]; then
@@ -70,21 +71,22 @@ battery() {
 	if [ -r /sys/class/power_supply/battery/status ]; then
 		status=$(cat /sys/class/power_supply/battery/status 2>/dev/null || echo Unknown)
 	fi
-	# bN is the level. cN is the same level while the supply is charging or full.
+	# bN is the level. cN is the same level while the supply is charging or
+	# full. low: 15 % or less and not charging, the one red battery.
 	case $status in
 		Charging|Full) class=c$bars ;;
-		*) class=b$bars ;;
+		*) class=b$bars; [ "$cap" -le 15 ] && class=low ;;
 	esac
-	out battery "$class"
+	echo "$class"
 }
 
-volume() {
+volume_class() {
 	# v0 is muted or 0%. v1..v4 are four waves, a quarter of the range each,
 	# same idea as the Wi-Fi bars.
 	vol=$(pactl get-sink-volume @DEFAULT_SINK@ 2>/dev/null | awk -F/ '/Volume/ { gsub(/[ %]/, "", $2); print $2; exit }')
 	mute=$(pactl get-sink-mute @DEFAULT_SINK@ 2>/dev/null | awk '{ print $2 }')
 	case $vol in
-		''|*[!0-9]*) out volume v0; return ;;
+		''|*[!0-9]*) echo v0; return ;;
 	esac
 	if [ "$vol" -eq 0 ] || [ "$mute" = yes ] || [ "$mute" = да ]; then
 		class=v0
@@ -94,11 +96,11 @@ volume() {
 		[ "$w" -gt 4 ] && w=4
 		class=v$w
 	fi
-	out volume "$class"
+	echo "$class"
 }
 
 case ${1:-} in
-	volume) volume ;;
+	status) out status "$(wifi_class)" "$(volume_class)" "$(battery_class)" ;;
 	hide) out hide idle ;;
 	home)
 		# Lit while the home screen is up over the windows (haltia-home).
@@ -108,8 +110,6 @@ case ${1:-} in
 			out home idle
 		fi
 		;;
-	wifi) wifi ;;
-	battery) battery ;;
-	*) printf '{"text":" ","class":"w0"}\n' ;;
+	*) printf '{"text":" ","class":["w0","v0","b0"]}\n' ;;
 esac
 exit 0

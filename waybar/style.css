@@ -7,14 +7,14 @@ window#waybar { background: #242424; color: #ffffff; }
    Wi-Fi and speaker row, the battery, the two-line clock and the hide
    button fit the 800 px column; more buttons get shorter (haltia-apps). */
 .app {
-  min-height: 24px;
+  min-height: 30px;
   margin: 2px 4px;
-  padding-top: 44px;
+  padding-top: 62px;
   border-radius: 12px;
   background-color: #303030;
   background-repeat: no-repeat;
-  background-position: center 3px;
-  background-size: 38px 38px;
+  background-position: center 5px;
+  background-size: 54px 54px;
 }
 #custom-firefox { background-image: url("/usr/share/icons/hicolor/64x64/apps/firefox.png"); }
 #custom-calc { background-image: url("/usr/share/icons/hicolor/scalable/apps/galculator.svg"); }
@@ -38,14 +38,14 @@ window#waybar { background: #242424; color: #ffffff; }
 }
 /* The home button: raises the home screen (haltia-home) over the windows. */
 #custom-home {
-  min-height: 60px;
+  min-height: 84px;
   margin: 2px 4px 4px;
   padding: 0;
   border-radius: 12px;
   background-color: #303030;
   background-repeat: no-repeat;
   background-position: center;
-  background-size: 50px 50px;
+  background-size: 60px 60px;
   background-image: url("/usr/share/haltia/home.svg");
 }
 #custom-home.raised { background-color: #3584e4; }
@@ -68,58 +68,21 @@ window#waybar { background: #242424; color: #ffffff; }
   background-color: #3584e4;
   border-color: #3584e4;
 }
-/* Wi-Fi and the speaker side by side over the battery (group/status):
-   always in sight, no drawer to open. Wi-Fi opens Settings, the speaker
-   mutes; brightness is in «Служебные». */
-#custom-volume {
-  min-height: 48px;
-  min-width: 52px;
-  margin: 2px 4px 2px 0;
-  padding: 0;
-  border-radius: 12px;
-  background-color: #242424;
-  background-repeat: no-repeat;
-  background-position: center;
-  background-size: 30px 32px;
-}
-#custom-volume.v0 { background-image: url("/usr/share/haltia/vol-0.svg"); }
-#custom-volume.v1 { background-image: url("/usr/share/haltia/vol-1.svg"); }
-#custom-volume.v2 { background-image: url("/usr/share/haltia/vol-2.svg"); }
-#custom-volume.v3 { background-image: url("/usr/share/haltia/vol-3.svg"); }
-#custom-volume.v4 { background-image: url("/usr/share/haltia/vol-4.svg"); }
-#custom-wifi3,
-#custom-battery {
-  min-height: 40px;
+/* The status (custom/status, haltia-meter status): Wi-Fi, the speaker and
+   the battery in one row, one button without a plate or a highlight, in one
+   style: white outlines, grey for what is not there, red only for a
+   warning (no network, muted, 15 % or less); a bolt beside the battery
+   while it charges. Its classes (w0-w4 or wx, v0-v4, b0-b4, c0-c4 or low)
+   pick the three icons, which haltia-apps draws as background layers. A
+   tap opens «Состояние» (haltia-ask status), which tells the charge in
+   percent. */
+#custom-status {
+  min-height: 42px;
   margin: 2px 4px;
   padding: 0;
-  background-color: #242424;
+  background-color: transparent;
   background-repeat: no-repeat;
-  background-position: center;
 }
-#custom-wifi3 {
-  min-height: 48px;
-  min-width: 52px;
-  margin: 2px 0 2px 4px;
-  border-radius: 12px;
-  background-size: 40px 30px;
-}
-#custom-battery { background-size: 83px 34px; }
-#custom-wifi3.w0 { background-image: url("/usr/share/haltia/wifi-p0.svg"); }
-#custom-wifi3.w1 { background-image: url("/usr/share/haltia/wifi-p1.svg"); }
-#custom-wifi3.w2 { background-image: url("/usr/share/haltia/wifi-p2.svg"); }
-#custom-wifi3.w3 { background-image: url("/usr/share/haltia/wifi-p3.svg"); }
-#custom-wifi3.w4 { background-image: url("/usr/share/haltia/wifi-p4.svg"); }
-#custom-wifi3.wx { background-image: url("/usr/share/haltia/wifi-x.svg"); }
-#custom-battery.b0 { background-image: url("/usr/share/haltia/bat-b0.svg"); }
-#custom-battery.b1 { background-image: url("/usr/share/haltia/bat-b1.svg"); }
-#custom-battery.b2 { background-image: url("/usr/share/haltia/bat-b2.svg"); }
-#custom-battery.b3 { background-image: url("/usr/share/haltia/bat-b3.svg"); }
-#custom-battery.b4 { background-image: url("/usr/share/haltia/bat-b4.svg"); }
-#custom-battery.c0 { background-image: url("/usr/share/haltia/bat-c0.svg"); }
-#custom-battery.c1 { background-image: url("/usr/share/haltia/bat-c1.svg"); }
-#custom-battery.c2 { background-image: url("/usr/share/haltia/bat-c2.svg"); }
-#custom-battery.c3 { background-image: url("/usr/share/haltia/bat-c3.svg"); }
-#custom-battery.c4 { background-image: url("/usr/share/haltia/bat-c4.svg"); }
 /* Hides the panel; haltia-tab draws its 120x44 tab in exactly this place, so
    keep the size (40 px + 2 px margins) and the 30 px icon in step with it. */
 #custom-hide {
@@ -143,9 +106,4 @@ window#waybar { background: #242424; color: #ffffff; }
   background-color: #3584e4;
   color: #ffffff;
 }
-#custom-home.pressed,
-#custom-volume.pressed,
-#custom-wifi3.pressed {
-  background-color: #3a3a3a;
-  border-radius: 12px;
-}
+#custom-home.pressed { background-color: #3a3a3a; }

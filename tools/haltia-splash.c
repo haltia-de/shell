@@ -39,7 +39,7 @@
 
 #define APPS "/usr/share/haltia/apps.conf"
 #define BAR 120        /* the panel on the left edge */
-#define BAR_BOTTOM 92  /* or along the bottom, portrait (haltia-apps) */
+#define BAR_BOTTOM 100 /* or along the bottom, portrait (haltia-apps) */
 #define ICON 160       /* icon size, px */
 #define DOTS 10
 #define RING 86        /* ring radius */

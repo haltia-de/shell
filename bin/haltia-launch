@@ -78,14 +78,23 @@ label_of() { field "$1" label; }
 bin_of() { field "$1" exec; }
 aliases_of() { field "$1" app_ids; }
 
-# play_mark ID: "▶ " while the program's media player plays, "‖ " while it
-# is paused (haltia-badges follows MPRIS players into $run/haltia/play/<id>).
-play_mark() {
-	state=
+# marks ID: the classes of the marks on the program's button, which the
+# style haltia-apps writes draws in its corners, clear of the label: play or
+# pause while its media player plays or is paused (haltia-badges follows
+# MPRIS players into $run/haltia/play/<id>), and count-N (1-9, or many) for
+# an unread count ($run/haltia/badge/<id>). Printed as ,"class" items.
+marks() {
+	state= badge=
 	[ -f "$run/haltia/play/$1" ] && read -r state _ <"$run/haltia/play/$1" 2>/dev/null
 	case $state in
-	Playing) printf "<span foreground='#99c1f1'>▶</span> " ;;
-	Paused) printf "<span foreground='#99c1f1'>‖</span> " ;;
+	Playing) printf ',"play"' ;;
+	Paused) printf ',"pause"' ;;
+	esac
+	[ -f "$run/haltia/badge/$1" ] && read -r badge <"$run/haltia/badge/$1" 2>/dev/null
+	case $badge in
+	'' | 0 | *[!0-9]*) ;;
+	[1-9]) printf ',"count-%s"' "$badge" ;;
+	*) printf ',"count-many"' ;;
 	esac
 }
 
@@ -137,15 +146,7 @@ status)
 	fi
 	# haltia-press marks a tap for 300 ms; waybar ignores :active on touch.
 	[ -e "$run/haltia/press/$id" ] && class=pressed
-	# An unread count from the program itself (b8k-max writes one).
-	badge=
-	[ -f "$run/haltia/badge/$id" ] && read -r badge <"$run/haltia/badge/$id" 2>/dev/null
-	case $badge in
-		''|0|*[!0-9]*) ;;
-		*) label="$label <span background='#e01b24' foreground='#ffffff' weight='bold'> $badge </span>" ;;
-	esac
-	label="$(play_mark "$id")$label"
-	printf '{"text":"%s","class":["app","%s"]}\n' "$label" "$class"
+	printf '{"text":"%s","class":["app","%s"%s]}\n' "$label" "$class" "$(marks "$id")"
 	exit 0
 	;;
 slot)
@@ -159,11 +160,11 @@ slot)
 	fi
 	label=$(label_of "$id" || true)
 	[ -n "$label" ] || label="$id"
-	label="$(play_mark "$id")$label"
 	class=$(awk -v id="$id" '$1 == id { print $2; exit }' "$dir/state" 2>/dev/null || true)
 	[ -e "$run/haltia/press/slot$n" ] && class=pressed
 	cls=id-$(printf '%s' "$id" | tr -c 'A-Za-z0-9_-' '-')
-	printf '{"text":"%s","class":["app","slot","%s","%s"]}\n' "$label" "${class:-running}" "$cls"
+	printf '{"text":"%s","class":["app","slot","%s","%s"%s]}\n' "$label" "${class:-running}" "$cls" \
+		"$(marks "$id")"
 	exit 0
 	;;
 sep)
@@ -306,8 +307,10 @@ open)
 		export "$env"
 	fi
 	# exec may carry arguments; apps.conf has no quoting, so plain splitting.
+	# HALTIA_LAUNCH_ARGS adds some for this start (haltia-ask status opens
+	# Settings at its Wi-Fi page).
 	# shellcheck disable=SC2086
-	$bin >"$run"/haltia/app-"$id".log 2>&1 9>&- &
+	$bin ${HALTIA_LAUNCH_ARGS:-} >"$run"/haltia/app-"$id".log 2>&1 9>&- &
 	# While it starts, the close button stops it (haltia-ask close-front kills
 	# the pid and the curtain, and removes this file) and the home button
 	# takes the curtain away (haltia-home).

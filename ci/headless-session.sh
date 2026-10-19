@@ -67,6 +67,14 @@ else
 	echo "no Wayland display" >&2
 	status=1
 fi
+# The panel's style as waybar gets it, and as haltia-rotate has it written
+# for portrait: GTK must take every rule.
+su user -s /bin/sh -c "
+	export XDG_RUNTIME_DIR=$run WAYLAND_DISPLAY=$display HOME=/home/user
+	mkdir -p /tmp/portrait/haltia && echo portrait >/tmp/portrait/haltia/orientation
+	XDG_RUNTIME_DIR=/tmp/portrait /usr/bin/haltia-apps panel &&
+	python3 $here/ci/check-css.py $run/haltia/style.css /tmp/portrait/haltia/style.css
+" || status=1
 for p in waybar haltia-home haltia-close mako; do
 	if pidof "$p" >/dev/null; then
 		echo "running: $p"

@@ -1,6 +1,7 @@
 #!/usr/bin/python3
 # SPDX-License-Identifier: GPL-2.0
-"""Volume keys: 5% up or down on the PulseAudio default sink.
+"""Volume keys: 5% up or down on the PulseAudio default sink per press; a
+key held down slides the volume 2% every 80 ms until it is let go.
 
 Phosh used to handle the keys; phoc alone ignores them, so the sound could
 be muted at 0% with no way back. Runs in the session as the user, who is
@@ -8,6 +9,7 @@ in the input group. The keypad is only read, not grabbed.
 """
 import ctypes
 import os
+import select
 import signal
 import struct
 import subprocess
@@ -19,7 +21,10 @@ KEY_VOLUMEUP = 115
 EV_KEY = 1
 EVENT = struct.Struct("llHHi")  # struct input_event (a timeval of two longs)
 LONG_BITS = ctypes.sizeof(ctypes.c_long) * 8
-STEP = 5  # percent; up stops at 100, past which PulseAudio would overdrive
+STEP = 5  # percent per press; up stops at 100, past which PulseAudio would overdrive
+HOLD = 0.4  # seconds a key is held before the slope starts
+RAMP = 2  # percent per tick while it is held
+TICK = 0.08  # seconds between ticks
 
 
 def find_keypad():
@@ -76,6 +81,16 @@ def refresh_bar():
             pass
 
 
+def step(level, by):
+    """Set the volume to level + by, within 0-100; returns the new level."""
+    new = max(0, min(100, level + by))
+    if by > 0:
+        pactl("set-sink-mute", "@DEFAULT_SINK@", "0")
+    pactl("set-sink-volume", "@DEFAULT_SINK@", "%d%%" % new)
+    refresh_bar()
+    return new
+
+
 def main():
     path = find_keypad()
     if not path:
@@ -84,26 +99,32 @@ def main():
         dev = open(path, "rb", buffering=0)
     except OSError as exc:
         sys.exit("haltia-volume: %s: %s" % (path, exc.strerror))
+    # A press steps STEP; a key held past HOLD goes on by RAMP every TICK
+    # until it is let go: a smooth slope, whether or not the keypad repeats
+    # the key itself (its own repeats, value 2, are ignored).
+    held = None  # (code, direction, level, next step time)
     with dev:
         while True:
+            timeout = None if held is None else max(0.0, held[3] - time.monotonic())
+            if not select.select([dev], [], [], timeout)[0]:
+                code, by, level, _due = held
+                held = (code, by, step(level, by * RAMP), time.monotonic() + TICK)
+                continue
             data = dev.read(EVENT.size)
             if len(data) < EVENT.size:
                 time.sleep(1)
                 continue
             _sec, _usec, etype, code, value = EVENT.unpack(data)
-            # 1 is a press, 2 an autorepeat while the key is held.
-            if etype != EV_KEY or value not in (1, 2):
+            if etype != EV_KEY or code not in (KEY_VOLUMEUP, KEY_VOLUMEDOWN):
                 continue
-            if code == KEY_VOLUMEUP:
-                pactl("set-sink-mute", "@DEFAULT_SINK@", "0")
-                pactl("set-sink-volume", "@DEFAULT_SINK@",
-                      "%d%%" % min(100, volume() + STEP))
-            elif code == KEY_VOLUMEDOWN:
-                pactl("set-sink-volume", "@DEFAULT_SINK@",
-                      "%d%%" % max(0, volume() - STEP))
-            else:
+            if value == 0:
+                if held and held[0] == code:
+                    held = None
                 continue
-            refresh_bar()
+            if value != 1:
+                continue
+            by = 1 if code == KEY_VOLUMEUP else -1
+            held = (code, by, step(volume(), by * STEP), time.monotonic() + HOLD)
 
 
 if __name__ == "__main__":

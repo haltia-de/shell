@@ -8,6 +8,8 @@
 #   haltia-ask pin <id>          (a long press on a home screen tile)
 #   haltia-ask media <id>        (a tap on the button of a program in front
 #                             that plays: pause or go on, stop)
+#   haltia-ask status            (the status card on the panel: the network,
+#                             brightness and volume, sound off or on)
 #   haltia-ask service           (the «Служебные» tile: Settings, the touch
 #                             settings, brightness, sound off or on,
 #                             turning with the tablet on or off, the
@@ -101,11 +103,10 @@ power)
 		*) usb_item="USB: клавиатура" usb_to=host ;;
 		esac
 	fi
-	case $(ask "Питание" "Выключить" "Перезагрузить" "Касания" ${usb_item:+"$usb_item"} "Отмена") in
+	case $(ask "Питание" "Выключить" "Перезагрузить" ${usb_item:+"$usb_item"} "Отмена") in
 	0) chosen; power off ;;
 	1) chosen; power reboot ;;
-	2) chosen; /usr/bin/haltia-launch start touch ;;
-	3) [ -n "$usb_item" ] && chosen && doas -n "$usb_cmd" "$usb_to" ;;
+	2) [ -n "$usb_item" ] && chosen && doas -n "$usb_cmd" "$usb_to" ;;
 	esac
 	;;
 close)
@@ -152,6 +153,49 @@ media)
 	1) chosen; mpris "$bus" Stop ;;
 	esac
 	;;
+status)
+	# The status card on the panel: the charge in the question, the network
+	# by name, brightness and volume on one card, sound off or on.
+	cap= state=
+	[ -r /sys/class/power_supply/battery/capacity ] &&
+		read -r cap </sys/class/power_supply/battery/capacity 2>/dev/null
+	[ -r /sys/class/power_supply/battery/status ] &&
+		read -r state </sys/class/power_supply/battery/status 2>/dev/null
+	title="Состояние"
+	case $cap in
+	'' | *[!0-9]*) ;;
+	*)
+		title="Заряд $cap %"
+		case $state in
+		Charging) title="$title, заряжается" ;;
+		Full) title="$title, заряжен" ;;
+		esac
+		;;
+	esac
+	net=$(nmcli -t -f NAME,TYPE connection show --active 2>/dev/null |
+		awk -F: '$2 ~ /wireless/ { print $1; exit }')
+	case $(pactl get-sink-mute @DEFAULT_SINK@ 2>/dev/null | awk '{ print $2 }') in
+	yes | да) sound="Включить звук" ;;
+	*) sound="Выключить звук" ;;
+	esac
+	case $(ask "$title" "Сеть: ${net:-нет}" "Яркость и громкость" "$sound" "Отмена") in
+	0)
+		chosen
+		# Settings at its Wi-Fi page: a running one turns to it (GNOME
+		# Settings is one instance), a new one starts there.
+		if /usr/bin/haltia-focus has org.gnome.Settings gnome-control-center >/dev/null 2>&1; then
+			gnome-control-center wifi >/dev/null 2>&1 9>&- &
+		fi
+		HALTIA_LAUNCH_ARGS=wifi /usr/bin/haltia-launch tap settings 9>&-
+		;;
+	1) chosen; /usr/bin/haltia-brightness 9>&- & ;;
+	2)
+		chosen
+		pactl set-sink-mute @DEFAULT_SINK@ toggle
+		/usr/bin/haltia-panel-signal 10 2>/dev/null
+		;;
+	esac
+	;;
 service)
 	# What the person rarely needs, in one place: each opens over the home
 	# screen like a tile does (haltia-launch tap lowers it).
@@ -168,7 +212,7 @@ service)
 	labels=
 	for id in "$@"; do
 		case $id in
-		brightness) l=Яркость ;;
+		brightness) l="Яркость и громкость" ;;
 		sound) l=$sound ;;
 		rotate) l=$rotate ;;
 		*) l=$(conf "$id" label) ;;
@@ -219,7 +263,7 @@ pin)
 	/usr/bin/haltia-apps "$verb" "$id" >/dev/null
 	;;
 *)
-	echo "usage: haltia-ask power | service | haltia-ask close|pin|media <id>" >&2
+	echo "usage: haltia-ask power | status | service | haltia-ask close|pin|media <id>" >&2
 	exit 2
 	;;
 esac

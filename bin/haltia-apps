@@ -86,12 +86,15 @@ RESERVED = range(8, 12)
 # button; more get shorter (write_style).
 MAX_BUTTONS = 10
 FULL_SIZE = 5
+ICON = 54  # px, a program's icon on its button (style.css)
+MARK = 24  # px, a mark in a corner of it (haltia-launch marks)
+SHARE = "/usr/share/haltia"
 # At least this many slots for open programs, even with a long panel.
 MIN_SLOTS = 2
 # The panel along the bottom edge of a portrait screen: its height, and the
-# width its buttons share (800 px less the home button, the Wi-Fi, speaker
-# and battery block and the clock).
-BOTTOM_HEIGHT = 92
+# width its buttons share (800 px less the home button, the status card
+# and the clock).
+BOTTOM_HEIGHT = 100
 BOTTOM_ROOM = 480
 PORTRAIT_CSS = """
 /* Written by haltia-apps: the screen stands portrait, the panel is one row
@@ -99,8 +102,7 @@ PORTRAIT_CSS = """
 .app { min-width: %dpx; margin: 2px; }
 #custom-home { min-width: 76px; margin: 4px 2px 4px 4px; }
 #custom-sep { min-height: 0; min-width: 3px; margin: 14px 5px; }
-#custom-battery { min-height: 36px; min-width: 104px; margin: 0 4px; }
-#custom-wifi3, #custom-volume { min-height: 44px; }
+#custom-status { min-width: 116px; margin: 8px 4px; }
 #custom-clock { padding: 0 10px 0 6px; }
 """
 FIELDS = ("label", "icon", "app_ids", "exec", "env", "home")
@@ -398,13 +400,12 @@ def write_waybar(path, apps, panel, slots):
             "tooltip": False,
         }
     if portrait():
-        # One row along the bottom; Wi-Fi and the speaker over the battery.
+        # One row along the bottom: the status card and the clock on the
+        # right, no hide button.
         conf["position"] = "bottom"
         conf.pop("width", None)
         conf["height"] = BOTTOM_HEIGHT
-        conf["modules-right"] = ["group/system", "custom/clock"]
-        conf["group/system"] = {"orientation": "vertical",
-                                "modules": ["group/status", "custom/battery"]}
+        conf["modules-right"] = ["custom/status", "custom/clock"]
     for app_id in panel:
         sig = apps[app_id]["signal"]
         conf["custom/" + app_id] = {
@@ -422,18 +423,70 @@ def write_waybar(path, apps, panel, slots):
     os.replace(path + ".new", path)
 
 
+def status_css():
+    """The status's three icons (haltia-meter status gives one class of each
+    kind) as background layers of the one module, so it is one button: a
+    rule for every Wi-Fi, volume and battery state together."""
+    wifi = ["w%d" % n for n in range(5)] + ["wx"]
+    vol = ["v%d" % n for n in range(5)]
+    bat = ["b%d" % n for n in range(5)] + ["c%d" % n for n in range(5)] + ["low"]
+    file = {"w": "wifi-p%s.svg", "v": "vol-%s.svg", "b": "bat-b%s.svg", "c": "bat-c%s.svg"}
+
+    def icon(cls):
+        if cls == "low":
+            return "bat-low.svg"
+        if cls == "wx":
+            return "wifi-x.svg"
+        return file[cls[0]] % cls[1:]
+    rules = ["", "/* Written by haltia-apps: the status's icons. */"]
+    for w in wifi:
+        for v in vol:
+            for b in bat:
+                rules.append(
+                    "#custom-status.%s.%s.%s { background-image: %s; }"
+                    % (w, v, b, ", ".join('url("%s/%s")' % (SHARE, icon(c)) for c in (w, v, b))))
+    # Left edge, middle, right edge: apart, whatever the width.
+    rules.append("#custom-status { background-position: 0%% 50%%, 50%% 50%%, 100%% 50%%;"
+                 " background-size: %s; }" % ", ".join(["34px 26px"] * 3))
+    return rules
+
+
 def write_style(path, apps, order, panel, slots):
     with open(WAYBAR_STYLE, encoding="utf-8") as fh:
         css = fh.read()
     extra = ["", "/* Written by haltia-apps: the icon of each program, for its pinned button"
                  " and for a slot that shows it. */"]
+    extra += status_css()
+    buttons = len(panel) + len(slots)
+    # The icon's size: smaller when more buttons than fit at full size share
+    # the column (below), or the row in portrait.
+    size = ICON
+    if not portrait() and buttons > FULL_SIZE:
+        size = min(ICON, 500 // buttons - 4 - 18) - 4
     for app_id in order:
         icon = apps[app_id].get("icon", "").replace('"', "")
         # Dots and the like in an id (org.gnome.Settings) need escaping in CSS.
         selector = re.sub(r"([^A-Za-z0-9_-])", r"\\\1", app_id)
-        extra.append('#custom-%s, .%s { background-image: url("%s"); }'
-                     % (selector, css_class(app_id), icon))
-    buttons = len(panel) + len(slots)
+        sel = "#custom-%s%%s, .%s%%s" % (selector, css_class(app_id))
+        extra.append('%s { background-image: url("%s"); }' % (sel % ("", ""), icon))
+        # The marks (haltia-launch marks): play or pause in the top left
+        # corner, an unread count in the top right one, over the icon's
+        # corners and clear of the label.
+        for play in ("", "play", "pause"):
+            for count in [""] + ["count-%s" % n for n in list(range(1, 10)) + ["many"]]:
+                if not play and not count:
+                    continue
+                layers = [("mark-%s.svg" % play, "4px 2px")] if play else []
+                if count:
+                    layers.append(("mark-%s.svg" % count, "100% 2px"))
+                classes = "".join("." + c for c in (play, count) if c)
+                extra.append(
+                    "%s { background-image: %s, url(\"%s\"); background-position: %s, center 5px;"
+                    " background-size: %s, %dpx %dpx; }"
+                    % (sel % (classes, classes),
+                       ", ".join('url("%s/%s")' % (SHARE, f) for f, _p in layers), icon,
+                       ", ".join(p for _f, p in layers),
+                       ", ".join("%dpx %dpx" % (MARK, MARK) for _l in layers), size, size))
     if portrait():
         # The buttons share the row's room; crowded, the labels get smaller.
         width = max(52, min(92, BOTTOM_ROOM // max(1, buttons) - 4))
@@ -443,11 +496,10 @@ def write_style(path, apps, order, panel, slots):
     elif buttons > FULL_SIZE:
         # More buttons than fit at full size: shorter ones, smaller icons.
         # The rest of the 800 px column (home button, the line above the
-        # slots, Wi-Fi and speaker row, battery, two-line clock, hide button:
+        # slots, the status card, two-line clock, hide button:
         # style.css) leaves 500 px; 4 px are margins and 18 px the label.
-        top = 500 // buttons - 4 - 18
         extra.append(".app { padding-top: %dpx; background-size: %dpx %dpx; min-height: 18px; }"
-                     % (top, top - 4, top - 4))
+                     % (size + 4, size, size))
     with open(path + ".new", "w", encoding="utf-8") as fh:
         fh.write(css + "\n".join(extra) + "\n")
     os.replace(path + ".new", path)
