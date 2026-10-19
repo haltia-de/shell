@@ -17,7 +17,8 @@ fi
 # session's apps.conf, read by everything started below, and the panel's
 # config and style. Without them, the built-in ones.
 panel=
-rm -f "$run"/b8k/apps.conf
+# phoc starts with the screen in landscape; b8k-rotate writes portrait.
+rm -f "$run"/b8k/apps.conf "$run"/b8k/orientation
 if [ -x /usr/bin/b8k-apps ] && /usr/bin/b8k-apps >"$run"/b8k-apps.log 2>&1 &&
 	[ -s "$run"/b8k/waybar.json ] && [ -s "$run"/b8k/style.css ]; then
 	panel=yes

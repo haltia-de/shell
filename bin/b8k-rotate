@@ -15,6 +15,13 @@ output=<name> there) through wlr-output-management (wlr-randr) once the
 tablet has stood the new way for a second. Lying flat, or half way between
 two ways, it keeps what it has. With the screen off it reads seldom.
 
+Between landscape and portrait it moves the panel too: it writes the
+orientation to $XDG_RUNTIME_DIR/b8k/orientation, b8k-apps writes the
+panel's files for it (along the bottom edge in portrait), and waybar
+rereads them on SIGUSR2, sent only once waybar catches it (an uncaught
+SIGUSR2 would end waybar, and with it the session). A panel hidden by
+b8k-tab comes back first.
+
 "off" (kept in ~/.config/b8k/rotate) turns the screen back to normal and
 leaves it there.
 """
@@ -41,6 +48,7 @@ G = 9.80665
 # picture upright (wlr-randr --transform). Measured on the B8000-H: upright
 # in landscape the screen's y reads -1 g, as iio-sensor-proxy expects.
 TRANSFORMS = {"normal": "normal", "left-up": "90", "bottom-up": "180", "right-up": "270"}
+ORIENTATION = os.path.join(RUN, "b8k", "orientation")
 
 
 def log(msg):
@@ -158,6 +166,69 @@ def turn(output, way):
     return True
 
 
+def orientation_of(way):
+    return "portrait" if way in ("left-up", "right-up") else "landscape"
+
+
+def pids_of(name):
+    """The processes running /usr/bin/<name> (C) or python3 with it."""
+    found = []
+    for pid in os.listdir("/proc"):
+        if not pid.isdigit():
+            continue
+        try:
+            with open("/proc/%s/cmdline" % pid, "rb") as fh:
+                args = fh.read().split(b"\0")
+        except OSError:
+            continue
+        if any(os.path.basename(a) == name.encode() for a in args[:2]):
+            found.append(int(pid))
+    return found
+
+
+def catches(pid, signum):
+    try:
+        with open("/proc/%d/status" % pid) as fh:
+            mask = next(line for line in fh if line.startswith("SigCgt:"))
+        return bool(int(mask.split()[1], 16) >> (signum - 1) & 1)
+    except (OSError, StopIteration, ValueError):
+        return False
+
+
+def move_panel(orientation):
+    """Writes the panel's files for the orientation; True when done."""
+    os.makedirs(os.path.dirname(ORIENTATION), exist_ok=True)
+    with open(ORIENTATION + ".new", "w") as fh:
+        fh.write(orientation + "\n")
+    os.replace(ORIENTATION + ".new", ORIENTATION)
+    for pid in pids_of("b8k-tab"):
+        try:
+            os.kill(pid, signal.SIGTERM)  # it shows the panel as it ends
+        except OSError:
+            pass
+    try:
+        res = subprocess.run(["/usr/bin/b8k-apps", "panel"], capture_output=True, text=True,
+                             timeout=30)
+    except (OSError, subprocess.SubprocessError) as exc:
+        log("b8k-apps: %s" % exc)
+        return False
+    if res.returncode:
+        log("b8k-apps: %s" % (res.stderr.strip() or res.returncode))
+        return False
+    log("panel for %s" % orientation)
+    return True
+
+
+def reload_panel():
+    """SIGUSR2 to waybar, once it catches it; False to try again later."""
+    bars = [p for p in pids_of("waybar") if os.stat("/proc/%d" % p).st_uid == os.getuid()]
+    if not bars or not all(catches(p, signal.SIGUSR2) for p in bars):
+        return False
+    for pid in bars:
+        os.kill(pid, signal.SIGUSR2)
+    return True
+
+
 def enabled():
     return read(SAVED, "on") != "off"
 
@@ -179,6 +250,7 @@ def watch():
     signal.signal(signal.SIGUSR1, lambda *_a: changed.__setitem__(0, True))
     signal.signal(signal.SIGTERM, lambda *_a: sys.exit(0))
     shown, candidate, since, on = None, None, 0.0, None
+    panel, reload = "landscape", False  # b8k-launcher starts with landscape
     while True:
         if changed[0]:
             changed[0] = False
@@ -186,6 +258,10 @@ def watch():
             if not on and shown != "normal":
                 shown = "normal" if turn(output, "normal") else shown
             candidate = None
+        if shown and orientation_of(shown) != panel and move_panel(orientation_of(shown)):
+            panel, reload = orientation_of(shown), True
+        if reload:
+            reload = not reload_panel()
         if not on:
             time.sleep(DARK_PERIOD)
             continue

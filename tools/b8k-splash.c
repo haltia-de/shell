@@ -5,8 +5,9 @@
  *   b8k-splash [ID]
  *
  * b8k-launch starts it when a program has no window yet and stops it
- * (SIGTERM) once the window is there. It covers the screen right of the
- * panel on the top layer: the program's icon and name from apps.conf
+ * (SIGTERM) once the window is there. It covers the screen beside the
+ * panel (right of it, or above it while the screen stands portrait and the
+ * panel lies along the bottom: b8k-rotate) on the top layer: the program's icon and name from apps.conf
  * (the "icon" and "label" keys of section ID), and a ring of dots that
  * turns while the program starts. Without an ID, or an icon, it shows
  * "Загрузка" alone.
@@ -38,6 +39,7 @@
 
 #define APPS "/usr/share/b8k/apps.conf"
 #define BAR 120        /* the panel on the left edge */
+#define BAR_BOTTOM 92  /* or along the bottom, portrait (b8k-apps) */
 #define ICON 160       /* icon size, px */
 #define DOTS 10
 #define RING 86        /* ring radius */
@@ -366,6 +368,24 @@ static const struct zwlr_layer_surface_v1_listener layer_listener = {
 	.closed = layer_closed,
 };
 
+/* b8k-rotate writes "portrait" into $XDG_RUNTIME_DIR/b8k/orientation. */
+static int portrait(void)
+{
+	const char *run = getenv("XDG_RUNTIME_DIR");
+	char path[512], buf[16] = "";
+	FILE *f;
+
+	if (!run)
+		return 0;
+	snprintf(path, sizeof(path), "%s/b8k/orientation", run);
+	if (!(f = fopen(path, "r")))
+		return 0;
+	if (!fgets(buf, sizeof(buf), f))
+		buf[0] = 0;
+	fclose(f);
+	return strncmp(buf, "portrait", 8) == 0;
+}
+
 int main(int argc, char **argv)
 {
 	struct wl_display *display;
@@ -402,9 +422,12 @@ int main(int argc, char **argv)
 					 ZWLR_LAYER_SURFACE_V1_ANCHOR_BOTTOM |
 					 ZWLR_LAYER_SURFACE_V1_ANCHOR_LEFT |
 					 ZWLR_LAYER_SURFACE_V1_ANCHOR_RIGHT);
-	/* Zone -1 takes the whole output; the left margin keeps the panel free. */
+	/* Zone -1 takes the whole output; a margin keeps the panel free. */
 	zwlr_layer_surface_v1_set_exclusive_zone(layer, -1);
-	zwlr_layer_surface_v1_set_margin(layer, 0, 0, 0, BAR);
+	if (portrait())
+		zwlr_layer_surface_v1_set_margin(layer, 0, 0, BAR_BOTTOM, 0);
+	else
+		zwlr_layer_surface_v1_set_margin(layer, 0, 0, 0, BAR);
 	wl_surface_commit(surface);
 	wl_display_flush(display);
 	load_icon();

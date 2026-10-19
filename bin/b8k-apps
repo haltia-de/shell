@@ -4,6 +4,8 @@
 
     b8k-apps            write the files below (b8k-launcher, at session start)
     b8k-apps reload     write them and apply them to the running session
+    b8k-apps panel      write them for the screen's orientation now, without
+                        applying them (b8k-rotate reloads waybar itself)
     b8k-apps list       the ids one can put on the panel
     b8k-apps pin ID     put a program on the panel (last), and reload
     b8k-apps unpin ID   take it off, and reload
@@ -33,7 +35,9 @@ Written to $XDG_RUNTIME_DIR/b8k/:
                panel; b8k-launch, b8k-focus, b8k-ask and b8k-splash read
                this one when it is there
   waybar.json  the panel: /usr/share/b8k/waybar/config with these
-               buttons
+               buttons; along the bottom edge, in one row, while the
+               screen stands portrait ("portrait" in orientation, written
+               by b8k-rotate), where it has no hide button
   style.css    /usr/share/b8k/waybar/style.css and each program's icon
   slots        the waybar signal of each slot, one per line (b8k-focus)
   aliases      "old new" per line: old shell ids taken over by .desktop
@@ -74,6 +78,21 @@ MAX_BUTTONS = 10
 FULL_SIZE = 5
 # At least this many slots for open programs, even with a long panel.
 MIN_SLOTS = 2
+# The panel along the bottom edge of a portrait screen: its height, and the
+# width its buttons share (800 px less the home button, the Wi-Fi, speaker
+# and battery block and the clock).
+BOTTOM_HEIGHT = 92
+BOTTOM_ROOM = 480
+PORTRAIT_CSS = """
+/* Written by b8k-apps: the screen stands portrait, the panel is one row
+   along the bottom edge (b8k-rotate). */
+.app { min-width: %dpx; margin: 2px; }
+#custom-home { min-width: 76px; margin: 4px 2px 4px 4px; }
+#custom-sep { min-height: 0; min-width: 3px; margin: 14px 5px; }
+#custom-battery { min-height: 36px; min-width: 104px; margin: 0 4px; }
+#custom-wifi3, #custom-volume { min-height: 44px; }
+#custom-clock { padding: 0 10px 0 6px; }
+"""
 FIELDS = ("label", "icon", "app_ids", "exec", "env", "home")
 ALIASES = {}  # old shell id -> the .desktop program that replaced it (build())
 
@@ -83,6 +102,14 @@ def out_dir():
     path = os.path.join(run, "b8k")
     os.makedirs(path, exist_ok=True)
     return path
+
+
+def portrait():
+    try:
+        with open(os.path.join(out_dir(), "orientation")) as fh:
+            return fh.read().strip() == "portrait"
+    except OSError:
+        return False
 
 
 def read_conf(path):
@@ -337,6 +364,14 @@ def write_waybar(path, apps, panel, slots):
                         % (n, sig, n),
             "tooltip": False,
         }
+    if portrait():
+        # One row along the bottom; Wi-Fi and the speaker over the battery.
+        conf["position"] = "bottom"
+        conf.pop("width", None)
+        conf["height"] = BOTTOM_HEIGHT
+        conf["modules-right"] = ["group/system", "custom/clock"]
+        conf["group/system"] = {"orientation": "vertical",
+                                "modules": ["group/status", "custom/battery"]}
     for app_id in panel:
         sig = apps[app_id]["signal"]
         conf["custom/" + app_id] = {
@@ -366,7 +401,13 @@ def write_style(path, apps, order, panel, slots):
         extra.append('#custom-%s, .%s { background-image: url("%s"); }'
                      % (selector, css_class(app_id), icon))
     buttons = len(panel) + len(slots)
-    if buttons > FULL_SIZE:
+    if portrait():
+        # The buttons share the row's room; crowded, the labels get smaller.
+        width = max(52, min(92, BOTTOM_ROOM // max(1, buttons) - 4))
+        extra.append(PORTRAIT_CSS % width)
+        if width < 80:
+            extra.append(".app { font-size: 12px; }")
+    elif buttons > FULL_SIZE:
         # More buttons than fit at full size: shorter ones, smaller icons.
         # The rest of the 800 px column (home button, the line above the
         # slots, Wi-Fi and speaker row, battery, two-line clock, hide button:
@@ -471,7 +512,7 @@ def main():
         if not pin(sys.argv[2], cmd == "pin"):
             return 1
         cmd = "reload"
-    if cmd not in ("", "reload", "list"):
+    if cmd not in ("", "reload", "list", "panel"):
         sys.stderr.write(__doc__)
         return 2
     apps, order, panel, slots = build()
