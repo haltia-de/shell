@@ -17,12 +17,12 @@ window#waybar { background: #242424; color: #ffffff; }
   background-size: 54px 54px;
 }
 #custom-firefox { background-image: url("/usr/share/icons/hicolor/64x64/apps/firefox.png"); }
-#custom-calc { background-image: url("/usr/share/icons/hicolor/scalable/apps/galculator.svg"); }
+#custom-calc { background-image: url("/usr/share/haltia/calculator.svg"); }
 #custom-weather { background-image: url("/usr/share/haltia/weather.svg"); }
 #custom-news { background-image: url("/usr/share/haltia/news.svg"); }
 #custom-max { background-image: url("/usr/share/haltia/max.png"); }
 #custom-paint { background-image: url("/usr/share/haltia/paint.svg"); }
-#custom-cards { background-image: url("/usr/share/icons/hicolor/256x256/apps/gnome-aisleriot.png"); }
+#custom-cards { background-image: url("/usr/share/haltia/cards.svg"); }
 .app.running {
   background-color: #3a3a3a;
   box-shadow: inset 0 -6px 0 #99c1f1;

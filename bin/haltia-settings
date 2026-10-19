@@ -689,7 +689,8 @@ class About:
         disk = run("df", "-h", "/").splitlines()
         battery = run("/usr/libexec/haltia/haltia-meter", "battery-info")
         addr = run("nmcli", "-g", "IP4.ADDRESS", "device", "show", "wlan0").split("|")[0]
-        items = [("Устройство", model or "—"),
+        items = [("Haltia", "Спокойная сенсорная среда, которая о вас заботится"),
+                 ("Устройство", model or "—"),
                  ("Оболочка", shell[0].replace("haltia-shell-", "Haltia ") if shell else "—")]
         if len(mem) > 1:
             parts = mem[1].split()
