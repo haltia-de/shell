@@ -75,6 +75,17 @@ label_of() { field "$1" label; }
 bin_of() { field "$1" exec; }
 aliases_of() { field "$1" app_ids; }
 
+# play_mark ID: "▶ " while the program's media player plays, "‖ " while it
+# is paused (b8k-badges follows MPRIS players into $run/b8k-play/<id>).
+play_mark() {
+	state=
+	[ -f "$run/b8k-play/$1" ] && read -r state _ <"$run/b8k-play/$1" 2>/dev/null
+	case $state in
+	Playing) printf "<span foreground='#99c1f1'>▶</span> " ;;
+	Paused) printf "<span foreground='#99c1f1'>‖</span> " ;;
+	esac
+}
+
 # Firefox reads these from the profile, so they must be there before the
 # first start: otherwise the large buttons only came with the second one.
 install_firefox_chrome() {
@@ -127,6 +138,7 @@ status)
 		''|0|*[!0-9]*) ;;
 		*) label="$label <span background='#e01b24' foreground='#ffffff' weight='bold'> $badge </span>" ;;
 	esac
+	label="$(play_mark "$id")$label"
 	printf '{"text":"%s","class":["app","%s"]}\n' "$label" "$class"
 	exit 0
 	;;
@@ -141,6 +153,7 @@ slot)
 	fi
 	label=$(label_of "$id" || true)
 	[ -n "$label" ] || label="$id"
+	label="$(play_mark "$id")$label"
 	class=$(awk -v id="$id" '$1 == id { print $2; exit }' "$dir/state" 2>/dev/null || true)
 	[ -e "$run/b8k-press/slot$n" ] && class=pressed
 	cls=id-$(printf '%s' "$id" | tr -c 'A-Za-z0-9_-' '-')
@@ -193,8 +206,12 @@ tap)
 		esac
 	fi
 	# The program in front stays: closing is the "✕" in the corner
-	# (b8k-close) for every program alike.
-	[ "$class" = active ] && exit 0
+	# (b8k-close) for every program alike. One that plays or is paused
+	# offers pause and stop instead (waybar has no long press).
+	if [ "$class" = active ]; then
+		[ -f "$run/b8k-play/$id" ] && exec /usr/local/bin/b8k-ask media "$id"
+		exit 0
+	fi
 	exec "$0" start "$id"
 	;;
 url)

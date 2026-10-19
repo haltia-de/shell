@@ -6,6 +6,8 @@
 #   b8k-ask close <id>
 #   b8k-ask close-front       (the "✕" of b8k-close: the window in front)
 #   b8k-ask pin <id>          (a long press on a home screen tile)
+#   b8k-ask media <id>        (a tap on the button of a program in front
+#                             that plays: pause or go on, stop)
 #   b8k-ask service           (the «Служебные» tile: Settings, the touch
 #                             settings, brightness, sound off or on, the
 #                             terminal)
@@ -45,6 +47,29 @@ ask() {
 
 chosen() {
 	/usr/local/bin/b8k-press ask >/dev/null 2>&1
+}
+
+# player ID: sets state (Playing or Paused) and bus (its MPRIS name) from
+# b8k-badges' file, or fails when the program's player is not playing.
+player() {
+	state= bus=
+	read -r state bus <"$run/b8k-play/$1" 2>/dev/null
+	[ -n "$bus" ]
+}
+
+# mpris BUS METHOD: Play, Pause, PlayPause or Stop on that player.
+mpris() {
+	gdbus call --session --dest "$1" --object-path /org/mpris/MediaPlayer2 \
+		--method "org.mpris.MediaPlayer2.Player.$2" >/dev/null 2>&1
+}
+
+# play_items: "Пауза" or "Продолжить", then "Стоп", for a program that plays.
+play_items() {
+	case $state in
+	Playing) echo Пауза ;;
+	*) echo Продолжить ;;
+	esac
+	echo Стоп
 }
 
 case ${1:-} in
@@ -99,6 +124,15 @@ close-front)
 	chosen
 	/usr/local/bin/b8k-focus close "$app"
 	;;
+media)
+	id=${2:-}
+	player "$id" || exit 0
+	label=$(conf "$id" label)
+	case $(ask "«${label:-$id}»" $(play_items) "Отмена") in
+	0) chosen; mpris "$bus" PlayPause ;;
+	1) chosen; mpris "$bus" Stop ;;
+	esac
+	;;
 service)
 	# What the person rarely needs, in one place: each opens over the home
 	# screen like a tile does (b8k-launch tap lowers it).
@@ -145,12 +179,21 @@ pin)
 	else
 		item="Закрепить на панели" verb=pin
 	fi
+	if player "$id"; then
+		# A program that plays: its pause and stop come first.
+		case $(ask "«${label:-$id}»" $(play_items) "$item" "Отмена") in
+		0) chosen; mpris "$bus" PlayPause ;;
+		1) chosen; mpris "$bus" Stop ;;
+		2) chosen; /usr/local/bin/b8k-apps "$verb" "$id" >/dev/null ;;
+		esac
+		exit 0
+	fi
 	[ "$(ask "«${label:-$id}»" "$item" "Отмена")" = 0 ] || exit 0
 	chosen
 	/usr/local/bin/b8k-apps "$verb" "$id" >/dev/null
 	;;
 *)
-	echo "usage: b8k-ask power | service | b8k-ask close|pin <id>" >&2
+	echo "usage: b8k-ask power | service | b8k-ask close|pin|media <id>" >&2
 	exit 2
 	;;
 esac

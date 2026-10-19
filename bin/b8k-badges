@@ -15,8 +15,16 @@ b8k-launch status shows on the button, then the button is told (badge()). The pr
 apps.conf by its id, or by an app_ids word, which is how a program still
 under its old shell id (max, with app_ids b8k.Max) is found. A count that
 is not visible, or a program leaving the bus, clears the number.
+
+It also follows the media players on the bus (MPRIS: any
+org.mpris.MediaPlayer2.* name, found by its DesktopEntry): a player that
+plays or is paused writes "Playing <bus name>" or "Paused <bus name>" to
+$XDG_RUNTIME_DIR/b8k-play/<id>, which b8k-launch status marks on the
+button (▶ or ‖) and b8k-ask media uses to pause or stop it; stopped, or
+gone from the bus, removes the file.
 """
 import configparser
+import glob
 import os
 import signal
 
@@ -53,11 +61,20 @@ def panel_signal(app_id):
     return 0
 
 
+def slot_signals():
+    """The signals of the panel's slots (b8k-apps writes them): an open
+    program without a button of its own shows in one of them."""
+    run = os.environ.get("XDG_RUNTIME_DIR", "")
+    try:
+        with open(os.path.join(run, "b8k", "slots")) as fh:
+            return [int(l) for l in fh if l.strip().isdigit()]
+    except OSError:
+        return []
+
+
 def badge(app_id, count):
     """Write the number b8k-launch shows on the program's button, then tell
-    waybar to redraw it. An uncaught real-time signal would kill the bar,
-    and the whole session with it, so only a waybar that catches it gets
-    one."""
+    waybar to redraw it."""
     run = os.environ.get("XDG_RUNTIME_DIR")
     if not run:
         return
@@ -70,10 +87,19 @@ def badge(app_id, count):
         os.replace(path + ".new", path)
     except OSError:
         return
-    sig = panel_signal(app_id)
-    if sig <= 0:
-        return
-    signum = signal.SIGRTMIN + sig
+    redraw(panel_signal(app_id))
+
+
+def redraw(*sigs):
+    """Tell waybar to redraw the modules on these signals. An uncaught
+    real-time signal would kill the bar, and the whole session with it, so
+    only a waybar that catches it gets one."""
+    for sig in sigs:
+        if sig > 0:
+            send(signal.SIGRTMIN + sig)
+
+
+def send(signum):
     for pid in os.listdir("/proc"):
         if not pid.isdigit():
             continue
@@ -138,8 +164,104 @@ def on_owner(_bus, _sender, _path, _iface, _signal, params, _data):
         badge(app, 0)
 
 
+MPRIS = "org.mpris.MediaPlayer2"
+players = {}  # unique bus name -> [well-known name, apps.conf id or None]
+
+
+def play_mark(app_id, status, name):
+    """The player's state for the panel: a file while it plays or is
+    paused, none when stopped; then its button and the slots redraw."""
+    run = os.environ.get("XDG_RUNTIME_DIR")
+    if not run or not app_id:
+        return
+    folder = os.path.join(run, "b8k-play")
+    path = os.path.join(folder, app_id)
+    try:
+        if status in ("Playing", "Paused"):
+            os.makedirs(folder, mode=0o700, exist_ok=True)
+            with open(path + ".new", "w") as fh:
+                fh.write("%s %s\n" % (status, name))
+            os.replace(path + ".new", path)
+        elif os.path.exists(path):
+            os.unlink(path)
+        else:
+            return
+    except OSError:
+        return
+    redraw(panel_signal(app_id), *slot_signals())
+
+
+def player_prop(bus, name, iface, prop):
+    try:
+        res = bus.call_sync(name, "/org/mpris/MediaPlayer2", "org.freedesktop.DBus.Properties",
+                            "Get", GLib.Variant("(ss)", (iface, prop)),
+                            GLib.VariantType("(v)"), Gio.DBusCallFlags.NONE, 2000, None)
+        return res.unpack()[0]
+    except GLib.Error:
+        return None
+
+
+def add_player(bus, name, unique):
+    """A player came onto the bus: whose it is (DesktopEntry, else the
+    end of its bus name) and how it plays now."""
+    entry = player_prop(bus, name, MPRIS, "DesktopEntry") or name[len(MPRIS) + 1:]
+    app = program_of(entry)
+    players[unique] = [name, app]
+    play_mark(app, player_prop(bus, name, MPRIS + ".Player", "PlaybackStatus"), name)
+
+
+def on_props(_bus, sender, _path, _iface, _signal, params, _data):
+    try:
+        iface, changed, _gone = params.unpack()
+    except (TypeError, ValueError):
+        return
+    if iface != MPRIS + ".Player" or "PlaybackStatus" not in changed:
+        return
+    player = players.get(sender)
+    if player:
+        play_mark(player[1], changed["PlaybackStatus"], player[0])
+
+
 def main():
     bus = Gio.bus_get_sync(Gio.BusType.SESSION, None)
+
+    def on_player_owner(_bus, _sender, _path, _iface, _signal, params, _data):
+        name, old, new = params.unpack()
+        if not name.startswith(MPRIS + "."):
+            return
+        if old and old in players:
+            gone = players.pop(old)
+            play_mark(gone[1], "Stopped", gone[0])
+        if new:
+            add_player(bus, name, new)
+
+    bus.signal_subscribe(None, "org.freedesktop.DBus.Properties", "PropertiesChanged",
+                         "/org/mpris/MediaPlayer2", None, Gio.DBusSignalFlags.NONE, on_props,
+                         None)
+    bus.signal_subscribe("org.freedesktop.DBus", "org.freedesktop.DBus", "NameOwnerChanged",
+                         "/org/freedesktop/DBus", None, Gio.DBusSignalFlags.NONE,
+                         on_player_owner, None)
+    # Players already on the bus (b8k-badges restarted with the session).
+    run = os.environ.get("XDG_RUNTIME_DIR")
+    if run:
+        for old in glob.glob(os.path.join(run, "b8k-play", "*")):
+            try:
+                os.unlink(old)
+            except OSError:
+                pass
+    names = bus.call_sync("org.freedesktop.DBus", "/org/freedesktop/DBus", "org.freedesktop.DBus",
+                          "ListNames", None, GLib.VariantType("(as)"), Gio.DBusCallFlags.NONE,
+                          -1, None).unpack()[0]
+    for name in names:
+        if name.startswith(MPRIS + "."):
+            try:
+                unique = bus.call_sync("org.freedesktop.DBus", "/org/freedesktop/DBus",
+                                       "org.freedesktop.DBus", "GetNameOwner",
+                                       GLib.Variant("(s)", (name,)), GLib.VariantType("(s)"),
+                                       Gio.DBusCallFlags.NONE, -1, None).unpack()[0]
+            except GLib.Error:
+                continue
+            add_player(bus, name, unique)
     bus.signal_subscribe(None, "com.canonical.Unity.LauncherEntry", "Update", None, None,
                          Gio.DBusSignalFlags.NONE, on_update, None)
     bus.signal_subscribe("org.freedesktop.DBus", "org.freedesktop.DBus", "NameOwnerChanged",
