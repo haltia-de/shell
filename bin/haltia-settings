@@ -2,13 +2,14 @@
 # SPDX-License-Identifier: GPL-2.0
 """Настройки: what a tablet with Haltia lets one change, in large type.
 
-    haltia-settings [--page network|sound|screen|time|about]
+    haltia-settings [--page network|sound|screen|time|updates|about]
 
 It replaces GNOME Settings (GTK 4, and a hundred packages behind it) with
 the pages that do something here: the network (Wi-Fi through
 NetworkManager), sound (PulseAudio), the screen (brightness and turning),
 date and time (timedated, from openrc-settingsd), touches (the touch
-filter's window) and «О системе». A page opens from the first one, or
+filter's window), updates (haltia-update: what is new, updating with a way
+back, by itself or not) and «О системе». A page opens from the first one, or
 straight from the panel's «Состояние» and «Служебные» (--page).
 
 A new Wi-Fi network's password is asked here and kept with the connection
@@ -40,7 +41,7 @@ try:
 except ImportError:
     dialogs = None
 
-PAGES = ("network", "sound", "screen", "time", "about")
+PAGES = ("network", "sound", "screen", "time", "updates", "about")
 # Time zones offered first: Russia's, west to east; any other by name.
 ZONES = [
     ("Калининград", "Europe/Kaliningrad"), ("Москва", "Europe/Moscow"),
@@ -657,6 +658,248 @@ class DateTime:
             self.refresh()
 
 
+# --- updates ----------------------------------------------------------------
+UPDATE = ["doas", "-n", "/usr/libexec/haltia/haltia-update"]
+
+
+def run_async(args, done):
+    """Runs a command in a thread; done(returncode, output) in the main loop."""
+    import threading
+
+    def work():
+        try:
+            res = subprocess.run(args, capture_output=True, text=True, timeout=1800)
+            out = (res.stdout or "") + (res.stderr or "")
+            code = res.returncode
+        except (OSError, subprocess.SubprocessError) as exc:
+            code, out = 1, str(exc)
+        GLib.idle_add(done, code, out)
+    threading.Thread(target=work, daemon=True).start()
+
+
+def program_name(package):
+    """A package as the person knows it: the program's name from its
+    .desktop file (haltia-text: «Блокнот»), else the package's own name."""
+    if package == "haltia-shell":
+        return "Оболочка Haltia"
+    if package.startswith("haltia-"):
+        rest = package[len("haltia-"):]
+        path = "/usr/share/applications/io.github.haltia_de.%s.desktop" % rest.capitalize()
+        try:
+            with open(path) as fh:
+                names = dict(l.strip().split("=", 1) for l in fh if "=" in l)
+            return names.get("Name[ru]") or names.get("Name") or package
+        except OSError:
+            pass
+    return package
+
+
+class Updates:
+    """haltia-update: what can be updated and what is new in it, updating
+    with a way back, updating by itself, and going back."""
+
+    title = "Обновления"
+
+    def __init__(self, app):
+        self.app = app
+        self.busy = False
+        self.widget, box = page_box()
+        self.state = Gtk.Label(xalign=0, wrap=True)
+        self.state.get_style_context().add_class("note")
+        box.pack_start(self.state, False, False, 0)
+        buttons = Gtk.Box(spacing=16)
+        self.check_btn = Gtk.Button(label="Проверить")
+        self.check_btn.get_style_context().add_class("plain")
+        self.check_btn.connect("clicked", lambda _b: self.check())
+        buttons.pack_start(self.check_btn, False, False, 0)
+        self.update_btn = Gtk.Button(label="Обновить всё")
+        self.update_btn.get_style_context().add_class("action")
+        self.update_btn.connect("clicked", lambda _b: self.upgrade())
+        self.update_btn.set_no_show_all(True)
+        buttons.pack_start(self.update_btn, False, False, 0)
+        box.pack_start(buttons, False, False, 0)
+        self.list = listbox(self.on_row)
+        box.pack_start(self.list, False, False, 0)
+        line = Gtk.Box(spacing=16)
+        text = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+        label = Gtk.Label(label="Обновлять автоматически", xalign=0)
+        label.get_style_context().add_class("note")
+        text.pack_start(label, False, False, 0)
+        hint = Gtk.Label(label="Раз в день, когда экран погашен, а планшет на зарядке",
+                         xalign=0, wrap=True)
+        hint.get_style_context().add_class("sub")
+        text.pack_start(hint, False, False, 0)
+        line.pack_start(text, True, True, 0)
+        self.auto = Gtk.Switch(valign=Gtk.Align.CENTER)
+        self.auto.connect("notify::active", self.on_auto)
+        line.pack_end(self.auto, False, False, 0)
+        box.pack_start(line, False, False, 0)
+        box.pack_start(section("Прошлые обновления"), False, False, 0)
+        self.history = listbox(lambda *_a: None)
+        box.pack_start(self.history, False, False, 0)
+        self.back_btn = Gtk.Button(label="Откатить последнее обновление")
+        self.back_btn.get_style_context().add_class("plain")
+        self.back_btn.get_style_context().add_class("danger")
+        self.back_btn.set_halign(Gtk.Align.START)
+        self.back_btn.connect("clicked", lambda _b: self.rollback())
+        box.pack_start(self.back_btn, False, False, 0)
+        self.items = []
+        self.refresh()
+
+    def summary(self):
+        st = self.status()
+        n = int(st.get("available", 0) or 0)
+        return "есть обновления: %d" % n if n else "всё обновлено"
+
+    def status(self):
+        values = {}
+        for line in run(*UPDATE, "status").splitlines():
+            k, sep, v = line.partition("=")
+            if sep:
+                values[k] = v
+        return values
+
+    def refresh(self):
+        st = self.status()
+        self.auto.handler_block_by_func(self.on_auto)
+        self.auto.set_active(st.get("auto") == "yes")
+        self.auto.handler_unblock_by_func(self.on_auto)
+        when = int(st.get("checked", 0) or 0)
+        if self.busy:
+            return
+        if not st:
+            self.state.set_text("Обновления недоступны: нет службы обновлений.")
+            self.check_btn.set_sensitive(False)
+        elif when:
+            self.state.set_text("Проверено %s. %s" % (
+                time.strftime("%d.%m в %H:%M", time.localtime(when)),
+                "Нажмите «Проверить», чтобы узнать, что вышло." if not self.items else ""))
+        else:
+            self.state.set_text("Ещё не проверяли.")
+        if st.get("pending") == "yes":
+            self.state.set_text(self.state.get_text() + " Последнее обновление проверяется.")
+        for child in self.history.get_children():
+            self.history.remove(child)
+        lines = run(*UPDATE, "history").splitlines()
+        for line in lines[:2]:
+            sid, _sp, what = line.partition(" ")
+            stamp = "%s.%s %s:%s" % (sid[6:8], sid[4:6], sid[8:10], sid[10:12])
+            names = sorted({program_name(c.split()[0]) for c in what.split(", ") if c})
+            row = Gtk.ListBoxRow(activatable=False)
+            row.add(row_box(stamp, ", ".join(names)))
+            self.history.add(row)
+        self.back_btn.set_sensitive(bool(lines))
+        self.history.show_all()
+
+    def set_busy(self, text):
+        self.busy = bool(text)
+        for w in (self.check_btn, self.update_btn, self.back_btn):
+            w.set_sensitive(not text)
+        if text:
+            self.state.set_text(text)
+
+    def check(self):
+        self.set_busy("Ищу обновления…")
+        run_async(UPDATE + ["check"], self.checked)
+
+    def checked(self, code, out):
+        self.set_busy(None)
+        for child in self.list.get_children():
+            self.list.remove(child)
+        self.items = []
+        for line in out.splitlines():
+            parts = line.split()
+            if len(parts) == 3:
+                self.items.append(parts)
+        if code:
+            self.state.set_text("Не удалось проверить: нет сети?")
+        elif not self.items:
+            self.state.set_text("Всё обновлено.")
+        else:
+            self.state.set_text("Можно обновить: %d. Нажмите на строку — что нового." %
+                                len(self.items))
+        system = 0
+        for name, old, new in self.items:
+            if not name.startswith("haltia-"):
+                system += 1
+                continue
+            row = Gtk.ListBoxRow()
+            row.add(row_box(program_name(name), "%s → %s" % (old.split("-r")[0],
+                                                             new.split("-r")[0])))
+            row.package = name
+            self.list.add(row)
+        if system:
+            row = Gtk.ListBoxRow(activatable=False)
+            row.add(row_box("Системные пакеты", "обновится: %d" % system))
+            self.list.add(row)
+        self.update_btn.set_visible(bool(self.items))
+        self.list.show_all()
+        return False
+
+    def on_row(self, _lb, row):
+        self.set_busy("Узнаю, что нового…")
+        run_async(UPDATE + ["changes", row.package],
+                  lambda code, out: self.show_changes(row.package, out))
+
+    def show_changes(self, package, out):
+        self.set_busy(None)
+        self.refresh()
+        lines = [l for l in out.splitlines() if l.strip()]
+        text = "\n".join(lines) if lines else "Описания изменений нет."
+        say(self.app.win, "%s\n\n%s" % (program_name(package), text))
+        return False
+
+    def upgrade(self):
+        if dialogs and not dialogs.ask(self.app.win, "Обновить сейчас? Планшет не выключайте",
+                                       "Обновить"):
+            return
+        self.set_busy("Обновляю… Не выключайте планшет.")
+        run_async(UPDATE + ["upgrade"], self.upgraded)
+
+    def upgraded(self, code, out):
+        self.set_busy(None)
+        last = (out.strip().splitlines() or [""])[-1]
+        messages = {
+            "updated": "Обновлено. Если что-то работает не так — «Откатить последнее обновление».",
+            "nothing to update": "Обновлять нечего.",
+            "battery: charge it first": "Поставьте планшет на зарядку: заряд меньше 30 %.",
+            "storage: not enough room": "Мало места для обновления.",
+            "network: no repository": "Нет сети.",
+            "busy: another update runs": "Обновление уже идёт.",
+            "rolled back": "Обновление не удалось, всё возвращено как было.",
+        }
+        self.state.set_text(messages.get(last, "Не удалось обновить."))
+        self.items = []
+        for child in self.list.get_children():
+            self.list.remove(child)
+        self.update_btn.hide()
+        self.refresh_history_only()
+        return False
+
+    def refresh_history_only(self):
+        text = self.state.get_text()
+        self.refresh()
+        self.state.set_text(text)
+
+    def rollback(self):
+        if dialogs and not dialogs.ask(
+                self.app.win, "Вернуть программы, какими они были до последнего обновления?",
+                "Откатить"):
+            return
+        self.set_busy("Возвращаю прежние версии…")
+        run_async(UPDATE + ["rollback"], self.rolled_back)
+
+    def rolled_back(self, code, out):
+        self.set_busy(None)
+        self.state.set_text("Прежние версии возвращены. Эту версию автообновление пропустит."
+                            if code == 0 else "Откатить не удалось.")
+        self.refresh_history_only()
+        return False
+
+    def on_auto(self, switch, _param):
+        run(*UPDATE, "auto", "on" if switch.get_active() else "off")
+
+
 # --- about ----------------------------------------------------------------
 class About:
     """The device, the system, memory, storage, the battery, the address."""
@@ -753,7 +996,8 @@ class Settings(Gtk.Application):
         self.win.add(self.stack)
         self.entries = []
         for key, cls in (("network", Network), ("sound", Sound), ("screen", Screen),
-                         ("time", DateTime), ("touch", None), ("about", About)):
+                         ("time", DateTime), ("touch", None), ("updates", Updates),
+                         ("about", About)):
             row = Gtk.ListBoxRow()
             title = cls.title if cls else "Касания"
             content = row_box(title, " ")
@@ -767,7 +1011,7 @@ class Settings(Gtk.Application):
     def page(self, key):
         if key not in self.pages:
             cls = {"network": Network, "sound": Sound, "screen": Screen, "time": DateTime,
-                   "about": About}[key]
+                   "updates": Updates, "about": About}[key]
             self.pages[key] = cls(self)
             self.stack.add_named(self.pages[key].widget, key)
             self.pages[key].widget.show_all()

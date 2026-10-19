@@ -1,0 +1,512 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0
+"""Updates with a way back, for Haltia (docs/plan-updates.md). Root; the
+session user runs it through doas without a password (z-haltia-shell.conf).
+
+    haltia-update check              what can be updated: NAME OLD NEW lines
+    haltia-update changes NAME       what is new in it (AppStream releases)
+    haltia-update upgrade [--auto]   update, with a snapshot to go back to
+    haltia-update rollback [ID]      back to a snapshot (the last by default)
+    haltia-update history            the snapshots, newest first
+    haltia-update health             the checks after an update (greenboot's
+                                     scheme); all pass: the update is good
+    haltia-update session-start      a session started (counts restarts)
+    haltia-update boot               at boot (OpenRC local.d): too many boots
+                                     without a good mark roll back
+    haltia-update status             auto=, last check, pending, held
+
+apk does the work. Before an upgrade the versions of all packages are
+written down and the .apk files of the ones about to change are kept
+(from apk's cache, or fetched before the upgrade), so a rollback needs no
+network and works even after a repository dropped the old version. A
+failed apk upgrade rolls back at once. A good upgrade stays "pending"
+until the session has run a minute and the checks in
+/etc/haltia/health/required.d pass; a session that keeps restarting, or a
+system that keeps rebooting, while it is pending rolls back by itself. A
+rollback pins the old version in apk's world and remembers the bad one:
+it is offered again only when a newer version comes out.
+"""
+import fcntl
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import tarfile
+import time
+import xml.etree.ElementTree as ET
+
+STATE = "/var/lib/haltia/update"
+CONF = "/etc/haltia/update.conf"
+LOCK = "/run/haltia/update.lock"
+CACHE = "/var/cache/apk"
+HEALTH = "/etc/haltia/health"
+KEEP = 2  # snapshots kept
+MIN_FREE = 300 * 1024 * 1024
+MIN_CHARGE = 30
+RESTARTS = 3  # session starts within RESTART_WINDOW while pending: roll back
+RESTART_WINDOW = 300
+BOOTS = 2  # boots without a good mark while pending: roll back at the next
+
+
+def log(msg):
+    print(msg, flush=True)
+
+
+def note(msg):
+    """A line in the update log, for history and for the person who looks
+    after the tablet."""
+    os.makedirs(STATE, exist_ok=True)
+    with open(os.path.join(STATE, "log"), "a") as fh:
+        fh.write("%s %s\n" % (time.strftime("%Y-%m-%d %H:%M:%S"), msg))
+
+
+def read_json(path, default):
+    try:
+        with open(path) as fh:
+            return json.load(fh)
+    except (OSError, ValueError):
+        return default
+
+
+def write_json(path, data):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path + ".new", "w") as fh:
+        json.dump(data, fh, ensure_ascii=False, indent=1)
+    os.replace(path + ".new", path)
+
+
+def conf():
+    values = {"auto": "no"}
+    try:
+        with open(CONF) as fh:
+            for line in fh:
+                k, sep, v = line.partition("=")
+                if sep and not k.strip().startswith("#"):
+                    values[k.strip()] = v.strip()
+    except OSError:
+        pass
+    return values
+
+
+def apk(*args, check=False):
+    # Changes wait for apk's lock (another apk, a person in a terminal)
+    # instead of failing on it.
+    if args and args[0] in ("add", "del", "upgrade", "fix"):
+        args = (args[0], "--wait", "120") + tuple(args[1:])
+    res = subprocess.run(["apk"] + list(args), capture_output=True, text=True)
+    if check and res.returncode:
+        raise RuntimeError((res.stderr or res.stdout).strip().splitlines()[-1:] or "apk failed")
+    return res
+
+
+def installed():
+    """{name: version} from apk's database."""
+    found, name = {}, None
+    with open("/lib/apk/db/installed") as fh:
+        for line in fh:
+            if line.startswith("P:"):
+                name = line[2:].strip()
+            elif line.startswith("V:") and name:
+                found[name] = line[2:].strip()
+    return found
+
+
+def upgradable():
+    """[(name, old, new)] that apk upgrade would change now."""
+    out = apk("upgrade", "--simulate").stdout
+    changes = []
+    for m in re.finditer(r"\(\d+/\d+\) (Upgrading|Downgrading|Replacing) (\S+) \((\S+) -> (\S+)\)",
+                         out):
+        changes.append((m.group(2), m.group(3), m.group(4)))
+    return changes
+
+
+def held():
+    """{name: bad version} rolled back from; offered again once newer."""
+    return read_json(os.path.join(STATE, "held.json"), {})
+
+
+def available(name):
+    """The newest version of name the repositories offer, or None."""
+    out = apk("search", "-x", name).stdout.split()
+    for word in out:
+        if word.startswith(name + "-"):
+            return word[len(name) + 1:]
+    return None
+
+
+def newer(a, b):
+    """a newer than b, by apk's own comparison."""
+    return apk("version", "-t", a, b).stdout.strip() == ">"
+
+
+def check():
+    apk("update", "-q")
+    lines = [c for c in upgradable()]
+    for name, bad in held().items():
+        new = available(name)
+        if new and newer(new, bad):
+            lines.append((name, installed().get(name, "?"), new))
+    status = read_json(os.path.join(STATE, "status.json"), {})
+    status.update(checked=int(time.time()), available=len(lines))
+    write_json(os.path.join(STATE, "status.json"), status)
+    for name, old, new in lines:
+        log("%s %s %s" % (name, old, new))
+    return 0
+
+
+def cached(name, version):
+    """The .apk of name-version in apk's cache, or None."""
+    try:
+        for f in os.listdir(CACHE):
+            if f.startswith("%s-%s." % (name, version)) and f.endswith(".apk"):
+                return os.path.join(CACHE, f)
+    except OSError:
+        pass
+    return None
+
+
+def fetch(name, version, into):
+    """name-version's .apk into a folder (from the cache or a repository,
+    tried three times: GitHub Pages fails a TLS handshake now and then)."""
+    os.makedirs(into, exist_ok=True)
+    have = cached(name, version)
+    if have:
+        shutil.copy2(have, into)
+        return True
+    for _attempt in range(3):
+        if apk("fetch", "-q", "-o", into, "%s=%s" % (name, version)).returncode == 0:
+            return True
+        time.sleep(3)
+    return False
+
+
+def changes(name):
+    """The AppStream releases newer than the installed version, from the new
+    package's metainfo: VERSION DATE, then its description's text."""
+    have = installed().get(name)
+    tmp = os.path.join(STATE, "changes")
+    shutil.rmtree(tmp, ignore_errors=True)
+    os.makedirs(tmp)
+    if apk("fetch", "-q", "-o", tmp, name).returncode:
+        return 1
+    for f in os.listdir(tmp):
+        try:
+            with tarfile.open(os.path.join(tmp, f), "r:gz", ignore_zeros=True) as t:
+                for m in t:
+                    if m.isfile() and m.name.startswith("usr/share/metainfo/"):
+                        print_releases(t.extractfile(m).read(), have)
+        except (OSError, tarfile.TarError):
+            pass
+    shutil.rmtree(tmp, ignore_errors=True)
+    return 0
+
+
+def print_releases(xml, have):
+    # Signed packages carry it, but this runs as root: no DTDs or entities.
+    if b"<!DOCTYPE" in xml or b"<!ENTITY" in xml:
+        return
+    try:
+        root = ET.fromstring(xml)
+    except ET.ParseError:
+        return
+    base = (have or "").split("-r")[0]
+    for rel in root.iter("release"):
+        ver = rel.get("version", "")
+        if base and not newer(ver + "-r0", base + "-r0"):
+            continue
+        log("%s %s" % (ver, rel.get("date", "")))
+        desc = rel.find("description")
+        if desc is not None:
+            for el in desc.iter():
+                text = " ".join((el.text or "").split())
+                if text and el.tag in ("p", "li"):
+                    log(("• " if el.tag == "li" else "") + text)
+
+
+def battery_ok():
+    try:
+        out = subprocess.run(["/usr/libexec/haltia/haltia-meter", "battery-info"],
+                             capture_output=True, text=True, timeout=10).stdout.split()
+    except (OSError, subprocess.SubprocessError):
+        return True
+    if len(out) != 2:
+        return True  # no battery: a desktop
+    return out[1] in ("charging", "full") or int(out[0]) >= MIN_CHARGE
+
+
+def enable_cache():
+    """apk keeps what it downloads: the next rollback finds today's files."""
+    os.makedirs(CACHE, exist_ok=True)
+    link = "/etc/apk/cache"
+    if not os.path.exists(link):
+        os.symlink(CACHE, link)
+
+
+def snapshots():
+    try:
+        return sorted((d for d in os.listdir(STATE) if d.isdigit()), reverse=True)
+    except OSError:
+        return []
+
+
+def take_snapshot(changes_):
+    sid = time.strftime("%Y%m%d%H%M%S")
+    path = os.path.join(STATE, sid)
+    os.makedirs(os.path.join(path, "apk"))
+    missing = []
+    for name, old, _new in changes_:
+        if not fetch(name, old, os.path.join(path, "apk")):
+            missing.append(name)
+    write_json(os.path.join(path, "snapshot.json"), {
+        "versions": installed(), "changes": changes_, "missing": missing,
+        "time": int(time.time())})
+    for old in snapshots()[KEEP:]:
+        shutil.rmtree(os.path.join(STATE, old), ignore_errors=True)
+    return sid, missing
+
+
+def upgrade(auto=False):
+    if not battery_ok():
+        log("battery: charge it first")
+        return 3
+    if shutil.disk_usage("/").free < MIN_FREE:
+        log("storage: not enough room")
+        return 3
+    if apk("update", "-q").returncode:
+        log("network: no repository")
+        return 3
+    plan = upgradable()
+    skip = held()
+    plan = [c for c in plan if not (c[0] in skip and c[2] == skip[c[0]])]
+    if not plan:
+        log("nothing to update")
+        return 0
+    enable_cache()
+    sid, missing = take_snapshot(plan)
+    note("upgrade %s: %s%s" % (sid, ", ".join("%s %s→%s" % c for c in plan),
+                               " (no way back for %s)" % ", ".join(missing) if missing else ""))
+    # No sleep while apk works (haltia-sleep reads logind's block inhibitors).
+    # Everything is downloaded into the cache before anything changes, so a
+    # network that fails half way (it did: TLS) leaves the system as it was;
+    # that is tried again, up to three times.
+    for attempt in range(3):
+        res = subprocess.run(["elogind-inhibit", "--what=sleep", "--who=haltia-update",
+                              "--why=Обновление", "--mode=block", "apk", "upgrade", "-q",
+                              "--wait", "120", "--cache-predownload"],
+                             capture_output=True, text=True)
+        if res.returncode == 0 or installed() != read_json(
+                os.path.join(STATE, sid, "snapshot.json"), {}).get("versions"):
+            break
+        note("upgrade %s: download failed, again (%s)" % (sid, (res.stderr or "").strip()[-120:]))
+        time.sleep(10)
+    if res.returncode:
+        note("upgrade %s failed: %s" % (sid, (res.stderr or res.stdout).strip()[-200:]))
+        log("failed, going back")
+        rollback(sid, reason="failed")
+        return 1
+    write_json(os.path.join(STATE, "pending.json"), {"snapshot": sid, "boots": 0,
+                                                     "starts": [], "auto": auto})
+    note("upgrade %s done, pending checks" % sid)
+    log("updated")
+    return 0
+
+
+def rollback(sid=None, reason="asked"):
+    sid = sid or (snapshots()[:1] or [None])[0]
+    if not sid:
+        log("no snapshot")
+        return 2
+    snap = read_json(os.path.join(STATE, sid, "snapshot.json"), None)
+    if not snap:
+        log("no snapshot %s" % sid)
+        return 2
+    want, now = snap["versions"], installed()
+    back = [(n, v) for n, v in want.items() if now.get(n) != v]
+    files = [os.path.join(STATE, sid, "apk", f)
+             for f in os.listdir(os.path.join(STATE, sid, "apk"))]
+    if files:
+        res = apk("add", "--no-network", *files)
+        if res.returncode:
+            note("rollback %s: %s" % (sid, res.stderr.strip()[-200:]))
+            log("rollback failed")
+            return 1
+    # Pin what came back (from a repository when no file was kept), and
+    # remember the bad version: not when the upgrade only failed to install,
+    # which says nothing about the version.
+    bad = held()
+    for name, ver in back:
+        if name in now:
+            apk("add", "%s=%s" % (name, ver) if reason != "failed" else name)
+            if reason != "failed":
+                bad[name] = now[name]
+    write_json(os.path.join(STATE, "held.json"), bad)
+    try:
+        os.unlink(os.path.join(STATE, "pending.json"))
+    except OSError:
+        pass
+    note("rollback %s (%s): %s" % (sid, reason, ", ".join("%s %s" % b for b in back)))
+    log("rolled back")
+    return 0
+
+
+def unhold_newer():
+    """A held package whose next version is out goes back to plain world."""
+    bad = held()
+    for name, ver in list(bad.items()):
+        new = available(name)
+        if new and newer(new, ver):
+            apk("add", name)
+            del bad[name]
+    write_json(os.path.join(STATE, "held.json"), bad)
+
+
+def run_checks(kind):
+    folder = os.path.join(HEALTH, kind)
+    ok = True
+    try:
+        names = sorted(os.listdir(folder))
+    except OSError:
+        return True
+    for name in names:
+        path = os.path.join(folder, name)
+        if not os.access(path, os.X_OK):
+            continue
+        res = subprocess.run([path], capture_output=True, text=True, timeout=120)
+        if res.returncode:
+            note("health %s/%s failed: %s" % (kind, name, (res.stderr or "").strip()[-200:]))
+            ok = False
+    return ok
+
+
+def health():
+    pending = read_json(os.path.join(STATE, "pending.json"), None)
+    required = run_checks("required.d")
+    run_checks("wanted.d")
+    if pending is None:
+        return 0 if required else 1
+    if not required:
+        log("checks failed, going back")
+        return rollback(pending["snapshot"], reason="checks failed")
+    os.unlink(os.path.join(STATE, "pending.json"))
+    note("upgrade %s good" % pending["snapshot"])
+    log("good")
+    return 0
+
+
+def session_start():
+    path = os.path.join(STATE, "pending.json")
+    pending = read_json(path, None)
+    if pending is None:
+        return 0
+    now = int(time.time())
+    starts = [t for t in pending.get("starts", []) if now - t < RESTART_WINDOW] + [now]
+    pending["starts"] = starts
+    write_json(path, pending)
+    if len(starts) >= RESTARTS:
+        log("the session keeps restarting, going back")
+        return rollback(pending["snapshot"], reason="session restarts")
+    return 0
+
+
+def boot():
+    path = os.path.join(STATE, "pending.json")
+    pending = read_json(path, None)
+    if pending is None:
+        return 0
+    pending["boots"] = pending.get("boots", 0) + 1
+    write_json(path, pending)
+    if pending["boots"] > BOOTS:
+        log("boots without a good mark, going back")
+        return rollback(pending["snapshot"], reason="boots")
+    return 0
+
+
+def history():
+    for sid in snapshots():
+        snap = read_json(os.path.join(STATE, sid, "snapshot.json"), {})
+        log("%s %s" % (sid, ", ".join("%s %s→%s" % tuple(c) for c in snap.get("changes", []))))
+    return 0
+
+
+def status():
+    st = read_json(os.path.join(STATE, "status.json"), {})
+    log("auto=%s" % conf().get("auto", "no"))
+    log("checked=%s" % st.get("checked", 0))
+    log("available=%s" % st.get("available", 0))
+    log("pending=%s" % ("yes" if os.path.exists(os.path.join(STATE, "pending.json")) else "no"))
+    log("held=%s" % " ".join("%s=%s" % kv for kv in held().items()))
+    log("snapshots=%d" % len(snapshots()))
+    return 0
+
+
+def set_auto(value):
+    lines = []
+    try:
+        with open(CONF) as fh:
+            lines = [l for l in fh if not l.strip().startswith("auto")]
+    except OSError:
+        lines = ["# haltia-update: auto=yes updates by itself at most once a day, when the\n",
+                 "# screen goes off while charging (haltia-sleep).\n"]
+    lines.append("auto=%s\n" % ("yes" if value else "no"))
+    os.makedirs(os.path.dirname(CONF), exist_ok=True)
+    with open(CONF + ".new", "w") as fh:
+        fh.writelines(lines)
+    os.replace(CONF + ".new", CONF)
+    return 0
+
+
+def main():
+    args = sys.argv[1:]
+    cmd = args[0] if args else ""
+    if os.geteuid() != 0:
+        sys.stderr.write("haltia-update: run as root (doas)\n")
+        return 2
+    # Reading needs no lock (the window asks while an update runs); the
+    # session's and the boot's marks wait for one; the rest refuse to wait.
+    if cmd == "history":
+        return history()
+    if cmd == "status":
+        return status()
+    wait = cmd in ("session-start", "boot")
+    os.makedirs(os.path.dirname(LOCK), exist_ok=True)
+    lock = open(LOCK, "a")
+    try:
+        fcntl.flock(lock, fcntl.LOCK_EX | (0 if wait else fcntl.LOCK_NB))
+    except BlockingIOError:
+        log("busy: another update runs")
+        return 4
+    try:
+        if cmd == "check":
+            return check()
+        if cmd == "changes" and len(args) == 2 and re.fullmatch(r"[A-Za-z0-9._+-]+", args[1]):
+            return changes(args[1])
+        if cmd == "upgrade":
+            unhold_newer()
+            return upgrade(auto="--auto" in args)
+        if cmd == "rollback":
+            sid = args[1] if len(args) > 1 and args[1].isdigit() else None
+            return rollback(sid)
+        if cmd == "history":
+            return history()
+        if cmd == "health":
+            return health()
+        if cmd == "session-start":
+            return session_start()
+        if cmd == "boot":
+            return boot()
+        if cmd == "status":
+            return status()
+        if cmd == "auto" and len(args) == 2 and args[1] in ("on", "off"):
+            return set_auto(args[1] == "on")
+    except RuntimeError as exc:
+        log("error: %s" % exc)
+        return 1
+    sys.stderr.write(__doc__)
+    return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main())

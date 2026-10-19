@@ -63,6 +63,10 @@ done
 install -m 644 "$here"/share/icons/* "$share/"
 # Which xdg-desktop-portal backends Haltia's desktop uses.
 install -D -m 644 "$here/share/haltia-portals.conf" "$root/usr/share/xdg-desktop-portal/haltia-portals.conf"
+# What the shell is and what changed in each release (AppStream; haltia-update
+# shows a coming release's notes from the new package's copy).
+install -D -m 644 "$here/data/io.github.haltia_de.Shell.metainfo.xml" \
+	"$root/usr/share/metainfo/io.github.haltia_de.Shell.metainfo.xml"
 # The session for display managers (tinydm, greetd): haltia-wayland-session.
 install -D -m 644 "$here/share/haltia.desktop" "$root/usr/share/wayland-sessions/haltia.desktop"
 install -D -m 644 "$here/share/io.github.haltia_de.Settings.desktop" \
@@ -153,6 +157,11 @@ start-stop-daemon --start --background \
 	--stdout /var/log/haltia-sleep.log --stderr /var/log/haltia-sleep.log
 EOF
 chmod +x "$root/etc/local.d/haltia-sleep.start"
+# Updates: boots that never reach a good mark roll back (haltia-update).
+printf '#!/bin/sh\n/usr/libexec/haltia/haltia-update boot >>/var/log/haltia-update.log 2>&1\n' \
+	>"$root/etc/local.d/haltia-update.start"
+chmod +x "$root/etc/local.d/haltia-update.start"
+install -D -m 755 "$here/etc/health-session" "$root/etc/haltia/health/required.d/10-session"
 install -d -m 755 "$root/etc/elogind/logind.conf.d"
 printf '[Login]\nHandlePowerKey=ignore\nHandlePowerKeyLongPress=ignore\n' \
 	>"$root/etc/elogind/logind.conf.d/haltia-power-key.conf"
@@ -175,6 +184,9 @@ else
 		echo "permit nopass user cmd ${p}poweroff args off"
 		echo "permit nopass user cmd ${p}poweroff args reboot"
 		echo "permit nopass user cmd ${p}touchguard-conf"
+		if [ "$p" = /usr/libexec/haltia/haltia- ]; then
+			echo "permit nopass user cmd ${p}update"
+		fi
 		if [ "$HALTIA_DOAS" = all ]; then
 			echo "permit nopass user cmd ${p}rootsh"
 		fi

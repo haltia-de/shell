@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- SPDX-License-Identifier: GPL-2.0 -->
+<component type="generic">
+  <id>io.github.haltia_de.Shell</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>GPL-2.0-only</project_license>
+  <name>Haltia</name>
+  <summary>A calm touch desktop that takes care of you</summary>
+  <summary xml:lang="ru">Спокойная сенсорная среда, которая о вас заботится</summary>
+  <description>
+    <p>Haltia's shell: the panel, the home screen, the close button in the corner,
+    the touch filter, the on-screen keyboard, settings and updates.</p>
+    <p xml:lang="ru">Оболочка Haltia: панель, домашний экран, «✕» в углу, защита от
+    случайных касаний, экранная клавиатура, настройки и обновления.</p>
+  </description>
+  <url type="homepage">https://github.com/haltia-de/shell</url>
+  <content_rating type="oars-1.1"/>
+  <developer id="io.github.haltia_de"><name>Mikhail Nevskiy</name></developer>
+  <releases>
+    <release version="2.3.0" date="2026-10-19">
+      <description>
+        <ul>
+          <li>Свои «Настройки»: сеть, звук, экран, дата и время, обновления</li>
+          <li>Обновления с «Что нового» и откатом, по желанию сами</li>
+          <li>Батарея, поворот и вибрация — через стандартные службы</li>
+          <li>Свайп от левого края возвращает спрятанную панель</li>
+          <li>Иконки в едином стиле Haltia</li>
+        </ul>
+      </description>
+    </release>
+    <release version="2.2.0" date="2026-10-19">
+      <description>
+        <ul>
+          <li>Пакеты для aarch64 и x86_64, вход через менеджер входа</li>
+          <li>Настройки GNOME в том же виде, что программы</li>
+        </ul>
+      </description>
+    </release>
+    <release version="2.1.0" date="2026-10-19">
+      <description>
+        <ul>
+          <li>Строка состояния: Wi-Fi, звук и батарея одной кнопкой</li>
+          <li>Знаки проигрывания и непрочитанного в углах кнопок</li>
+          <li>Плавная громкость при удержании кнопки</li>
+        </ul>
+      </description>
+    </release>
+    <release version="2.0.0" date="2026-10-19"/>
+  </releases>
+</component>

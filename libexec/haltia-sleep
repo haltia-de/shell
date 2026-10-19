@@ -139,6 +139,68 @@ def hook(name):
         pass
 
 
+UPDATE = "/usr/libexec/haltia/haltia-update"
+UPDATE_STATE = "/var/lib/haltia/update"
+UPDATE_EVERY = 20 * 3600  # seconds between looks for updates
+
+
+def charging():
+    try:
+        out = subprocess.run(["/usr/libexec/haltia/haltia-meter", "battery-info"],
+                             capture_output=True, text=True, timeout=10).stdout.split()
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return len(out) != 2 or out[1] in ("charging", "full")
+
+
+def updates_when_dark():
+    """At most once in UPDATE_EVERY, when the screen goes off on the charger:
+    look for updates, and with auto=yes (/etc/haltia/update.conf) install
+    them. haltia-update holds a sleep inhibitor while apk works, so the
+    system stays up for it (suspend_due reads the inhibitors)."""
+    if not os.access(UPDATE, os.X_OK) or not charging():
+        return
+    stamp = os.path.join(UPDATE_STATE, "last-look")
+    try:
+        if time.time() - os.path.getmtime(stamp) < UPDATE_EVERY:
+            return
+    except OSError:
+        pass
+    os.makedirs(UPDATE_STATE, exist_ok=True)
+    open(stamp, "w").close()
+    auto = False
+    try:
+        auto = any(line.strip() == "auto=yes" for line in open("/etc/haltia/update.conf"))
+    except OSError:
+        pass
+    cmd = "%s check >/dev/null" % UPDATE
+    if auto:
+        cmd += " && %s upgrade --auto" % UPDATE
+    try:
+        subprocess.Popen(["sh", "-c", cmd + " >>/var/log/haltia-update.log 2>&1"],
+                         start_new_session=True)
+        log("UPDATES %s" % ("auto" if auto else "look"))
+    except OSError as exc:
+        log("UPDATES_FAIL %s" % exc.errno)
+
+
+def updates_when_light():
+    """Updates found while dark and not installed by themselves: say so once,
+    when the person is back (a notification while dark would time out)."""
+    try:
+        with open(os.path.join(UPDATE_STATE, "status.json")) as fh:
+            status = __import__("json").load(fh)
+    except (OSError, ValueError):
+        return
+    told = os.path.join(UPDATE_STATE, "told")
+    if not status.get("available") or os.path.exists(told) and \
+            os.path.getmtime(told) >= status.get("checked", 0):
+        return
+    open(told, "w").close()
+    as_session_user(["notify-send", "-a", "Настройки", "Есть обновления",
+                     "Настройки → Обновления: что нового и «Обновить всё»"])
+
+
 def read_level(path):
     with open(path) as fh:
         return int(fh.read().strip() or "0")
@@ -291,6 +353,7 @@ class Lamp:
         self.since = time.monotonic()
         log("SLEEP")
         hook("screen-off")
+        updates_when_dark()
 
     def wake(self):
         write_level(self.path, saved_level(self.path))
@@ -299,6 +362,7 @@ class Lamp:
         self.asleep = False
         log("WAKE")
         hook("screen-on")
+        updates_when_light()
 
     def suspend_due(self):
         """Seconds until the screen-off timer asks for a system sleep."""

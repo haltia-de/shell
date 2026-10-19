@@ -140,6 +140,13 @@ fi
 # Gestures from the screen's edges (lisgd): a swipe from the left edge
 # brings a hidden panel back.
 /usr/libexec/haltia/haltia-gestures normal
+# Updates (haltia-update): a session that keeps restarting after an update
+# rolls it back; one that has run a minute marks it good, once the checks
+# in /etc/haltia/health pass.
+if [ -x /usr/libexec/haltia/haltia-update ]; then
+	doas -n /usr/libexec/haltia/haltia-update session-start >"$run"/haltia/update.log 2>&1
+	(sleep 60 && doas -n /usr/libexec/haltia/haltia-update health) >>"$run"/haltia/update.log 2>&1 &
+fi
 # What the device or the person adds at session start (haltia-hook).
 /usr/libexec/haltia/haltia-hook session-start
 # Firefox starts only from its button: running without a window it held
