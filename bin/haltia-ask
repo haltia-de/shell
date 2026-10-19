@@ -156,22 +156,15 @@ media)
 status)
 	# The status card on the panel: the charge in the question, the network
 	# by name, brightness and volume on one card, sound off or on.
-	cap= state=
-	[ -r /sys/class/power_supply/battery/capacity ] &&
-		read -r cap </sys/class/power_supply/battery/capacity 2>/dev/null
-	[ -r /sys/class/power_supply/battery/status ] &&
-		read -r state </sys/class/power_supply/battery/status 2>/dev/null
 	title="Состояние"
-	case $cap in
-	'' | *[!0-9]*) ;;
-	*)
-		title="Заряд $cap %"
-		case $state in
-		Charging) title="$title, заряжается" ;;
-		Full) title="$title, заряжен" ;;
+	info=$(/usr/libexec/haltia/haltia-meter battery-info)
+	if [ -n "$info" ]; then
+		title="Заряд ${info%% *} %"
+		case ${info#* } in
+		charging) title="$title, заряжается" ;;
+		full) title="$title, заряжен" ;;
 		esac
-		;;
-	esac
+	fi
 	net=$(nmcli -t -f NAME,TYPE connection show --active 2>/dev/null |
 		awk -F: '$2 ~ /wireless/ { print $1; exit }')
 	case $(pactl get-sink-mute @DEFAULT_SINK@ 2>/dev/null | awk '{ print $2 }') in

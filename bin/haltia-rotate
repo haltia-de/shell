@@ -7,10 +7,13 @@ turned over it turns over too.
     haltia-rotate on|off|toggle   turn following on or off («Служебные»)
     haltia-rotate status          print on or off
 
-It reads the accelerometer of the IIO subsystem (the first device with
-in_accel_x_raw, or accelerometer=<name> in /etc/haltia/device.conf) a few
-times a second, puts it into the screen's frame with the device's
-in_mount_matrix, and turns the output (the first one wlr-randr lists, or
+It asks iio-sensor-proxy (net.hadess.SensorProxy on the system bus, as
+Phosh and GNOME do) a few times a second which way the tablet stands. Where
+that service is missing or will not let this session claim the sensor, it
+reads the accelerometer of the IIO subsystem itself (the first device with
+in_accel_x_raw, or accelerometer=<name> in /etc/haltia/device.conf) and
+puts it into the screen's frame with the device's in_mount_matrix. It turns
+the output (the first one wlr-randr lists, or
 output=<name> there) through wlr-output-management (wlr-randr) once the
 tablet has stood the new way for a second. Lying flat, or half way between
 two ways, it keeps what it has. With the screen off it reads seldom.
@@ -163,6 +166,8 @@ def turn(output, way):
         log("wlr-randr: %s" % (res.stderr.strip() or res.returncode))
         return False
     log("turned %s" % way)
+    # The edge gestures follow the picture.
+    subprocess.call(["/usr/libexec/haltia/haltia-gestures", TRANSFORMS[way]])
     return True
 
 
@@ -216,6 +221,7 @@ def move_panel(orientation):
         log("haltia-apps: %s" % (res.stderr.strip() or res.returncode))
         return False
     log("panel for %s" % orientation)
+    subprocess.call(["/usr/libexec/haltia/haltia-hook", "orientation", orientation])
     return True
 
 
@@ -233,17 +239,59 @@ def enabled():
     return read(SAVED, "on") != "off"
 
 
+class SensorProxy:
+    """The way the tablet stands from iio-sensor-proxy, or None where it is
+    not to be had (no service, no accelerometer, the claim refused)."""
+    WAYS = ("normal", "bottom-up", "left-up", "right-up")
+
+    def __init__(self):
+        self.bus = None
+        try:
+            import gi
+            gi.require_version("Gio", "2.0")
+            from gi.repository import Gio, GLib
+            self.GLib = GLib
+            bus = Gio.bus_get_sync(Gio.BusType.SYSTEM, None)
+            if not self.get(bus, "HasAccelerometer"):
+                return
+            bus.call_sync("net.hadess.SensorProxy", "/net/hadess/SensorProxy",
+                          "net.hadess.SensorProxy", "ClaimAccelerometer", None, None,
+                          Gio.DBusCallFlags.NONE, 3000, None)
+            self.bus = bus
+        except Exception as exc:  # ImportError, GLib.Error
+            log("iio-sensor-proxy: %s" % getattr(exc, "message", exc))
+
+    def get(self, bus, name):
+        v = bus.call_sync("net.hadess.SensorProxy", "/net/hadess/SensorProxy",
+                          "org.freedesktop.DBus.Properties", "Get",
+                          self.GLib.Variant("(ss)", ("net.hadess.SensorProxy", name)),
+                          None, 0, 3000, None)
+        return v.unpack()[0]
+
+    def way(self):
+        try:
+            w = self.get(self.bus, "AccelerometerOrientation")
+        except Exception:
+            return None
+        return w if w in self.WAYS else None
+
+
 def watch():
-    accel = find_accel()
-    if not accel:
-        log("no accelerometer")
-        return 0
     output = output_name()
     if not output:
         log("no output (wlr-randr)")
         return 0
-    matrix = mount_matrix(accel)
-    log("%s (%s), output %s" % (accel, read(os.path.join(accel, "name")), output))
+    proxy = SensorProxy()
+    accel = matrix = None
+    if proxy.bus:
+        log("iio-sensor-proxy, output %s" % output)
+    else:
+        accel = find_accel()
+        if not accel:
+            log("no accelerometer")
+            return 0
+        matrix = mount_matrix(accel)
+        log("%s (%s), output %s" % (accel, read(os.path.join(accel, "name")), output))
     with open(PIDFILE, "w") as fh:
         fh.write("%d\n" % os.getpid())
     changed = [True]
@@ -269,8 +317,11 @@ def watch():
             candidate = None
             time.sleep(DARK_PERIOD)
             continue
-        v = gravity(accel, matrix)
-        way = classify(v) if v else None
+        if proxy.bus:
+            way = proxy.way()
+        else:
+            v = gravity(accel, matrix)
+            way = classify(v) if v else None
         now = time.monotonic()
         if way is None or way == shown:
             candidate = None

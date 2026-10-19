@@ -10,7 +10,8 @@
 #
 # Scenarios: tap, pinch (apart), zoom (together), slowpinch, join (the
 # second finger 15 ms after the first), scroll (two fingers up), palm,
-# three (three small fingers), drag (one finger up), link, wait, and
+# three (three small fingers), drag (one finger up), edge (a swipe right
+# from the left edge), link, wait, and
 # at=X,Y (a tap there, in screen units: 2230 × 1250 for 1280 × 800 px).
 import fcntl
 import glob
@@ -152,6 +153,15 @@ def scenario(name):
             syn()
             ms(20)
         ms(300)
+        up(0)
+        syn()
+    elif name == "edge":  # a swipe right from the left edge (haltia-gestures)
+        down(0, 5, 625)
+        syn()
+        for k in range(1, 21):
+            move(0, 5 + k * 40, 625)
+            syn()
+            ms(15)
         up(0)
         syn()
     elif name == "wait":

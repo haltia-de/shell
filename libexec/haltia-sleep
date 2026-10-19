@@ -131,6 +131,14 @@ def backlight_path():
     return os.path.join(root, name, "brightness")
 
 
+def hook(name):
+    """The system's hooks for name (haltia-hook, /etc/haltia/hooks)."""
+    try:
+        subprocess.call(["/usr/libexec/haltia/haltia-hook", name])
+    except OSError:
+        pass
+
+
 def read_level(path):
     with open(path) as fh:
         return int(fh.read().strip() or "0")
@@ -282,6 +290,7 @@ class Lamp:
         self.asleep = True
         self.since = time.monotonic()
         log("SLEEP")
+        hook("screen-off")
 
     def wake(self):
         write_level(self.path, saved_level(self.path))
@@ -289,6 +298,7 @@ class Lamp:
         self._ungrab_touch()
         self.asleep = False
         log("WAKE")
+        hook("screen-on")
 
     def suspend_due(self):
         """Seconds until the screen-off timer asks for a system sleep."""

@@ -61,6 +61,8 @@ for f in apps.conf panel fuzzel-ask.ini foot.ini phoc.ini mako.conf gtk-4.0.css;
 	install -m 644 "$here/share/$f" "$share/$f"
 done
 install -m 644 "$here"/share/icons/* "$share/"
+# Which xdg-desktop-portal backends Haltia's desktop uses.
+install -D -m 644 "$here/share/haltia-portals.conf" "$root/usr/share/xdg-desktop-portal/haltia-portals.conf"
 # The session for display managers (tinydm, greetd): haltia-wayland-session.
 install -D -m 644 "$here/share/haltia.desktop" "$root/usr/share/wayland-sessions/haltia.desktop"
 install -D -m 644 "$here/share/io.github.haltia_de.TouchSettings.desktop" \

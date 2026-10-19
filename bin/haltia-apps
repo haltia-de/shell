@@ -429,7 +429,7 @@ def status_css():
     rule for every Wi-Fi, volume and battery state together."""
     wifi = ["w%d" % n for n in range(5)] + ["wx"]
     vol = ["v%d" % n for n in range(5)]
-    bat = ["b%d" % n for n in range(5)] + ["c%d" % n for n in range(5)] + ["low"]
+    bat = ["b%d" % n for n in range(5)] + ["c%d" % n for n in range(5)] + ["low", "none"]
     file = {"w": "wifi-p%s.svg", "v": "vol-%s.svg", "b": "bat-b%s.svg", "c": "bat-c%s.svg"}
 
     def icon(cls):
@@ -442,9 +442,11 @@ def status_css():
     for w in wifi:
         for v in vol:
             for b in bat:
+                # none: no battery (a desktop), Wi-Fi and the speaker only.
+                shown = (w, v) if b == "none" else (w, v, b)
                 rules.append(
                     "#custom-status.%s.%s.%s { background-image: %s; }"
-                    % (w, v, b, ", ".join('url("%s/%s")' % (SHARE, icon(c)) for c in (w, v, b))))
+                    % (w, v, b, ", ".join('url("%s/%s")' % (SHARE, icon(c)) for c in shown)))
     # Left edge, middle, right edge: apart, whatever the width.
     rules.append("#custom-status { background-position: 0%% 50%%, 50%% 50%%, 100%% 50%%;"
                  " background-size: %s; }" % ", ".join(["34px 26px"] * 3))

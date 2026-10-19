@@ -15,6 +15,38 @@
 | 6 | **lisgd**: жесты от края экрана (вернуть спрятанную панель свайпом) | язычок «›» | оболочка |
 | 7 | **greetd + phrog** для входа на postmarketOS | tinydm | метапакет `postmarketos-ui-haltia` |
 
+### Что сделано (19 октября 2026, оболочка после 2.2.0)
+
+1. **upower** — `haltia-meter battery-info` берёт заряд у сводного
+   устройства upower (`DisplayDevice`), без него — у первого источника с
+   типом `Battery` в sysfs; без батареи значка нет. Меню «Состояние» берёт
+   оттуда же. upower — зависимость пакета.
+2. **iio-sensor-proxy** — `haltia-rotate` спрашивает положение у службы
+   (`ClaimAccelerometer`, `AccelerometerOrientation`); где её нет или polkit
+   не даёт сеансу датчик — читает его сам, как раньше. Служба — в образе
+   (после установки нужен `udevadm trigger` или перезагрузка).
+3. **feedbackd** — вибрация на уведомление: `fbcli -E message-new-instant
+   -P quiet` из mako (без звука), иначе `haltia-press`. Вибрация на касание
+   остаётся в фильтре касаний: так быстрее. Мотор `regulator-haptic`
+   feedbackd узнаёт сам (`FEEDBACKD_TYPE=vibra`).
+4. **Порталы** — `haltia-portals.conf` (gtk, для снимков и записи экрана
+   wlr) и окружение для D-Bus-активации в `haltia-launcher`. Сами порталы на
+   B8000-H не ставятся: `xdg-desktop-portal` и его gtk-часть занимают около
+   21 МБ и тянут PipeWire, а программам Haltia почти не нужны.
+5. **Хуки** — `haltia-hook ИМЯ`: `/etc/haltia/hooks/ИМЯ` (устройство,
+   администратор), затем `~/.config/haltia/hooks/ИМЯ` (человек; не для
+   root). Точки: `session-start`, `orientation landscape|portrait`,
+   `screen-off`, `screen-on`.
+6. **lisgd** — `haltia-gestures`: свайп вправо от левого края возвращает
+   спрятанную панель; края следуют повороту экрана. lisgd — зависимость
+   пакета.
+7. **greetd** — для postmarketOS без phrog (экран входа Phosh на GTK 4, то
+   есть то, от чего мы уходим): автовход сразу в `haltia-wayland-session`
+   (`initial_session`), без экрана входа. Это настройка образа.
+
+Ещё: прежние `pulseaudio` гасятся при старте сеанса (их было девять);
+часовой пояс планшета — `Europe/Moscow`.
+
 ## Что стоит на планшете (19 октября 2026)
 
 Память: 995 МБ, занято около 180 МБ. Пакетов 711, на диске 1181 МиБ.

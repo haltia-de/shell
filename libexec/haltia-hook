@@ -1,0 +1,27 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-2.0
+# haltia-hook NAME [ARG...]: what the device, the one who looks after the
+# tablet or the person adds to the shell without changing it, as Sxmo's
+# hooks do. Runs /etc/haltia/hooks/NAME, then ~/.config/haltia/hooks/NAME
+# (not for root: the power key's loop runs only the system's), each when it
+# is an executable file, with ARG..., in the background, its output to
+# $XDG_RUNTIME_DIR/haltia/hook-NAME.log (or the caller's for root).
+#
+#   session-start            the session is up (haltia-launcher)
+#   orientation landscape|portrait   the screen turned (haltia-rotate)
+#   screen-off, screen-on    the power key or the idle timer (haltia-sleep)
+set -u
+name=${1:-}
+case $name in
+'' | */* | .*) echo "usage: haltia-hook NAME [ARG...]" >&2; exit 2 ;;
+esac
+shift
+log=/dev/null
+[ -n "${XDG_RUNTIME_DIR:-}" ] && [ -d "$XDG_RUNTIME_DIR/haltia" ] && log=$XDG_RUNTIME_DIR/haltia/hook-$name.log
+for dir in /etc/haltia/hooks ${HOME:+"$HOME/.config/haltia/hooks"}; do
+	[ "$(id -u)" = 0 ] && [ "$dir" != /etc/haltia/hooks ] && continue
+	hook=$dir/$name
+	[ -f "$hook" ] && [ -x "$hook" ] || continue
+	setsid "$hook" "$@" </dev/null >>"$log" 2>&1 &
+done
+exit 0

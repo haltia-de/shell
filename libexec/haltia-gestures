@@ -1,0 +1,39 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-2.0
+# Gestures from the screen's edges (lisgd, as Sxmo has them), on the touch
+# filter's own device (haltia-touchguard touchscreen), which the session
+# also reads:
+#   a swipe right from the left edge brings a hidden panel back (haltia-tab
+#   ends on SIGTERM and shows it).
+#
+#   haltia-gestures [normal|90|180|270]   the output's transform, so the
+#                                          edges follow the picture
+#   haltia-gestures show-panel             the swipe's action
+# haltia-launcher starts it, haltia-rotate again after each turn; a running
+# one of this user is replaced.
+set -u
+# The gesture's action. (busybox's pkill -x matches the whole path, not the
+# name: pidof finds it.)
+if [ "${1:-}" = show-panel ]; then
+	pid=$(pidof haltia-tab) && kill $pid
+	exit 0
+fi
+command -v lisgd >/dev/null || exit 0
+case ${1:-normal} in
+90) o=1 ;;
+180) o=2 ;;
+270) o=3 ;;
+*) o=0 ;;
+esac
+for pid in $(ps -o pid,user,args | awk -v u="$(id -un)" '$2 == u && $3 == "lisgd" { print $1 }'); do
+	kill "$pid" 2>/dev/null
+done
+dev=$(for n in /sys/class/input/event*; do
+	[ "$(cat "$n/device/name" 2>/dev/null)" = "haltia-touchguard touchscreen" ] &&
+		echo "/dev/input/${n##*/}"
+done | sort -V | tail -1)
+[ -n "$dev" ] || exit 0
+run=${XDG_RUNTIME_DIR:-/tmp}
+setsid lisgd -d "$dev" -o "$o" \
+	-g '1,LR,L,*,R,/usr/libexec/haltia/haltia-gestures show-panel' \
+	</dev/null >"$run/haltia/gestures.log" 2>&1 &

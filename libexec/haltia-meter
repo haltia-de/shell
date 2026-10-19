@@ -47,34 +47,50 @@ wifi_class() {
 	echo "$class"
 }
 
+# battery_info: "PERCENT STATE" of the battery, STATE charging, full or
+# discharging; nothing without one. From upower's display device (as GNOME
+# and Phosh show it), else the first power supply of type Battery.
+battery_info() {
+	if command -v upower >/dev/null 2>&1; then
+		upower -i /org/freedesktop/UPower/devices/DisplayDevice 2>/dev/null | awk '
+			/^ *present:/ { present = ($2 == "yes") }
+			/^ *state:/ { state = $2 }
+			/^ *percentage:/ { gsub(/[%,]/, "", $2); pct = int($2) }
+			END {
+				if (!present || state == "" || state == "unknown") exit 1
+				if (state == "charging" || state == "pending-charge") state = "charging"
+				else if (state == "fully-charged") state = "full"
+				else state = "discharging"
+				print pct, state
+			}' && return 0
+	fi
+	for d in /sys/class/power_supply/*; do
+		[ "$(cat "$d/type" 2>/dev/null)" = Battery ] || continue
+		cap=$(cat "$d/capacity" 2>/dev/null)
+		case $(cat "$d/status" 2>/dev/null) in
+		Charging) state=charging ;;
+		Full) state=full ;;
+		*) state=discharging ;;
+		esac
+		case $cap in '' | *[!0-9]*) continue ;; esac
+		echo "$cap $state"
+		return 0
+	done
+	return 1
+}
+
 battery_class() {
-	cap=0
-	status=Unknown
-	if [ -r /sys/class/power_supply/battery/capacity ]; then
-		cap=$(cat /sys/class/power_supply/battery/capacity 2>/dev/null || echo 0)
-	fi
-	case $cap in
-		''|*[!0-9]*) cap=0 ;;
-	esac
-	if [ "$cap" -gt 100 ]; then
-		cap=100
-	fi
-	if [ "$cap" -eq 0 ]; then
-		bars=0
-	else
-		# 1-25, 26-50, 51-75, 76-100 -> 1..4 bars. 0 stays empty.
-		bars=$(( (cap * 4 + 99) / 100 ))
-		if [ "$bars" -gt 4 ]; then
-			bars=4
-		fi
-	fi
-	if [ -r /sys/class/power_supply/battery/status ]; then
-		status=$(cat /sys/class/power_supply/battery/status 2>/dev/null || echo Unknown)
-	fi
+	info=$(battery_info) || { echo none; return; }
+	cap=${info%% *} state=${info#* }
+	[ "$cap" -gt 100 ] && cap=100
+	# 1-25, 26-50, 51-75, 76-100 -> 1..4 bars. 0 stays empty.
+	bars=$(( (cap * 4 + 99) / 100 ))
+	[ "$bars" -gt 4 ] && bars=4
 	# bN is the level. cN is the same level while the supply is charging or
-	# full. low: 15 % or less and not charging, the one red battery.
-	case $status in
-		Charging|Full) class=c$bars ;;
+	# full. low: 15 % or less and not charging, the one red battery. none:
+	# no battery (a desktop), no icon.
+	case $state in
+		charging|full) class=c$bars ;;
 		*) class=b$bars; [ "$cap" -le 15 ] && class=low ;;
 	esac
 	echo "$class"
@@ -101,6 +117,7 @@ volume_class() {
 
 case ${1:-} in
 	status) out status "$(wifi_class)" "$(volume_class)" "$(battery_class)" ;;
+	battery-info) battery_info ;;
 	hide) out hide idle ;;
 	home)
 		# Lit while the home screen is up over the windows (haltia-home).

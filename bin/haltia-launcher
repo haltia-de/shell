@@ -73,13 +73,16 @@ mkdir -p "$gtk4"
 	printf '[Settings]\ngtk-decoration-layout=:\n' >"$gtk4/settings.ini"
 # The brightness chosen last time (haltia-brightness keeps it).
 /usr/bin/haltia-brightness --restore >"$run"/haltia/brightness.log 2>&1
-# Settings starts through D-Bus activation and takes the bus environment.
-dbus-update-activation-environment NO_AT_BRIDGE GTK_A11Y ${GTK_THEME:+GTK_THEME} 2>/dev/null
+# Settings, the portals (xdg-desktop-portal: gtk, wlr) and feedbackd start
+# through D-Bus activation and take the bus environment.
+dbus-update-activation-environment NO_AT_BRIDGE GTK_A11Y ${GTK_THEME:+GTK_THEME} \
+	WAYLAND_DISPLAY XDG_CURRENT_DESKTOP XDG_SESSION_TYPE 2>/dev/null
 # Helpers that need no display outlive the session that started them
-# (setsid): one of each, or a volume key steps two or three times.
-# (busybox's pkill has no -u: ps, for this user only.)
-for pid in $(ps -o pid,user,args | awk -v u="$(id -un)" \
-	'$2 == u && $NF ~ /\/(haltia|b8k)-(volume|rotate)$/ { print $1 }'); do
+# (setsid): one of each, or a volume key steps two or three times. So does
+# the sound server each session's first client spawns: a new one starts on
+# the next pactl. (busybox's pkill has no -u: ps, for this user only.)
+for pid in $(ps -o pid,user,args | awk -v u="$(id -un)" '$2 == u &&
+	($NF ~ /\/(haltia|b8k)-(volume|rotate)$/ || $3 == "/usr/bin/pulseaudio") { print $1 }'); do
 	kill "$pid" 2>/dev/null
 done
 # Volume keys. Without this nothing handles them, and a muted sink at 0%
@@ -134,6 +137,11 @@ if [ -x /usr/libexec/haltia/haltia-keyboard ]; then
 elif [ -x /usr/bin/squeekboard ]; then
 	squeekboard >"$run"/squeekboard.log 2>&1 &
 fi
+# Gestures from the screen's edges (lisgd): a swipe from the left edge
+# brings a hidden panel back.
+/usr/libexec/haltia/haltia-gestures normal
+# What the device or the person adds at session start (haltia-hook).
+/usr/libexec/haltia/haltia-hook session-start
 # Firefox starts only from its button: running without a window it held
 # 300-500 MB, and once its WebExtensions process filled the swap and froze
 # the session.
