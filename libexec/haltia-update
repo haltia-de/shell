@@ -130,7 +130,7 @@ def held():
 
 def available(name):
     """The newest version of name the repositories offer, or None."""
-    out = apk("search", "-x", name).stdout.split()
+    out = apk("search", "-x", "--", name).stdout.split()
     for word in out:
         if word.startswith(name + "-"):
             return word[len(name) + 1:]
@@ -177,7 +177,7 @@ def fetch(name, version, into):
         shutil.copy2(have, into)
         return True
     for _attempt in range(3):
-        if apk("fetch", "-q", "-o", into, "%s=%s" % (name, version)).returncode == 0:
+        if apk("fetch", "-q", "-o", into, "--", "%s=%s" % (name, version)).returncode == 0:
             return True
         time.sleep(3)
     return False
@@ -190,7 +190,7 @@ def changes(name):
     tmp = os.path.join(STATE, "changes")
     shutil.rmtree(tmp, ignore_errors=True)
     os.makedirs(tmp)
-    if apk("fetch", "-q", "-o", tmp, name).returncode:
+    if apk("fetch", "-q", "-o", tmp, "--", name).returncode:
         return 1
     for f in os.listdir(tmp):
         try:
@@ -481,7 +481,9 @@ def main():
     try:
         if cmd == "check":
             return check()
-        if cmd == "changes" and len(args) == 2 and re.fullmatch(r"[A-Za-z0-9._+-]+", args[1]):
+        # A package name, never something apk would read as an option.
+        if cmd == "changes" and len(args) == 2 and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._+-]*",
+                                                                args[1]):
             return changes(args[1])
         if cmd == "upgrade":
             unhold_newer()
