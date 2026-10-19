@@ -1,6 +1,6 @@
 # Maintainer: Mikhail Nevskiy <rensomail@gmail.com>
 pkgname=haltia-shell
-pkgver=2.2.0
+pkgver=2.3.0
 pkgrel=0
 _wvkbd=bbecd996aae5a4dc4bc32bd643d37cefa9f63752
 pkgdesc="Haltia's shell: panel, home screen, close button, touch filter, keyboard"
@@ -8,7 +8,9 @@ url="https://github.com/haltia-de/shell"
 arch="all"
 license="GPL-2.0-only"
 depends="python3 py3-gobject3 gtk+3.0 gtk-layer-shell waybar fuzzel foot mako
-	elogind doas networkmanager pulseaudio-utils grim wlr-randr upower lisgd"
+	elogind doas networkmanager pulseaudio-utils grim wlr-randr upower lisgd
+	dconf hicolor-icon-theme gtk-update-icon-cache adwaita-icon-theme adwaita-fonts-sans
+	font-dejavu glib-networking iso-codes openrc-settingsd polkit-elogind"
 makedepends="wayland-dev wayland-protocols pango-dev cairo-dev libxkbcommon-dev
 	linux-pam-dev linux-headers pkgconf"
 # It takes over the b8k shell (1.x): apk upgrade swaps it in by itself.

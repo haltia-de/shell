@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=Настройки
+Comment=Сеть, звук, экран, дата и время
+Exec=/usr/bin/haltia-settings
+Icon=/usr/share/haltia/settings.svg
+NoDisplay=true

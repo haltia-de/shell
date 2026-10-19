@@ -174,13 +174,14 @@ status)
 	case $(ask "$title" "Сеть: ${net:-нет}" "Яркость и громкость" "$sound" "Отмена") in
 	0)
 		chosen
-		# Settings at its Wi-Fi page: a running one turns to it (GNOME
-		# Settings is one instance), a new one starts there.
-		if /usr/bin/haltia-focus has org.gnome.Settings gnome-control-center >/dev/null 2>&1; then
-			gnome-control-center wifi >/dev/null 2>&1 9>&- &
+		# Настройки at their network page: a running one turns to it (one
+		# instance, GApplication), a new one starts there.
+		if /usr/bin/haltia-focus has io.github.haltia_de.Settings >/dev/null 2>&1; then
+			/usr/bin/haltia-settings --page network >/dev/null 2>&1 9>&- &
 		fi
-		HALTIA_LAUNCH_ARGS=wifi /usr/bin/haltia-launch tap settings 9>&-
+		HALTIA_LAUNCH_ARGS="--page network" /usr/bin/haltia-launch tap settings 9>&-
 		;;
+
 	1) chosen; /usr/bin/haltia-brightness 9>&- & ;;
 	2)
 		chosen

@@ -65,6 +65,10 @@ install -m 644 "$here"/share/icons/* "$share/"
 install -D -m 644 "$here/share/haltia-portals.conf" "$root/usr/share/xdg-desktop-portal/haltia-portals.conf"
 # The session for display managers (tinydm, greetd): haltia-wayland-session.
 install -D -m 644 "$here/share/haltia.desktop" "$root/usr/share/wayland-sessions/haltia.desktop"
+install -D -m 644 "$here/share/io.github.haltia_de.Settings.desktop" \
+	"$root/usr/share/applications/io.github.haltia_de.Settings.desktop"
+# Настройки set the date, time and zone (timedated) without a password.
+install -D -m 644 "$here/share/polkit/50-haltia.rules" "$root/usr/share/polkit-1/rules.d/50-haltia.rules"
 install -D -m 644 "$here/share/io.github.haltia_de.TouchSettings.desktop" \
 	"$root/usr/share/applications/io.github.haltia_de.TouchSettings.desktop"
 # The panel's configuration in the shell's folder (/etc/xdg/waybar is the

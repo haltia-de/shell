@@ -1,0 +1,802 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0
+"""Настройки: what a tablet with Haltia lets one change, in large type.
+
+    haltia-settings [--page network|sound|screen|time|about]
+
+It replaces GNOME Settings (GTK 4, and a hundred packages behind it) with
+the pages that do something here: the network (Wi-Fi through
+NetworkManager), sound (PulseAudio), the screen (brightness and turning),
+date and time (timedated, from openrc-settingsd), touches (the touch
+filter's window) and «О системе». A page opens from the first one, or
+straight from the panel's «Состояние» and «Служебные» (--page).
+
+A new Wi-Fi network's password is asked here and kept with the connection
+for every user (NetworkManager's system connection), so no secret agent
+(nm-applet) is needed afterwards.
+"""
+import os
+import subprocess
+import sys
+import time
+
+import gi
+from gi.repository import GLib
+
+APP_ID = "io.github.haltia_de.Settings"
+GLib.set_prgname(APP_ID)
+
+gi.require_version("Gdk", "3.0")
+gi.require_version("Gtk", "3.0")
+from gi.repository import Gdk, Gio, Gtk  # noqa: E402
+
+try:
+    gi.require_version("NM", "1.0")
+    from gi.repository import NM  # noqa: E402
+except (ImportError, ValueError):
+    NM = None
+try:
+    from haltia_kit import dialogs  # noqa: E402
+except ImportError:
+    dialogs = None
+
+PAGES = ("network", "sound", "screen", "time", "about")
+# Time zones offered first: Russia's, west to east; any other by name.
+ZONES = [
+    ("Калининград", "Europe/Kaliningrad"), ("Москва", "Europe/Moscow"),
+    ("Самара", "Europe/Samara"), ("Екатеринбург", "Asia/Yekaterinburg"),
+    ("Омск", "Asia/Omsk"), ("Новосибирск", "Asia/Novosibirsk"),
+    ("Красноярск", "Asia/Krasnoyarsk"), ("Иркутск", "Asia/Irkutsk"),
+    ("Якутск", "Asia/Yakutsk"), ("Владивосток", "Asia/Vladivostok"),
+    ("Магадан", "Asia/Magadan"), ("Камчатка", "Asia/Kamchatka"),
+]
+
+CSS = b"""
+window, .page { background-color: #e6e6e4; }
+headerbar label.title { font-size: 30px; font-weight: bold; color: #2e3436; }
+list, row { background-color: #f2f2f0; }
+row { padding: 12px 18px; }
+row:hover { background-color: #e8e8e6; }
+row:active { background-color: #c4dcf7; }
+row label.name { font-size: 26px; color: #2e3436; }
+row label.sub { font-size: 19px; color: #5e5c64; }
+row label.mark { font-size: 26px; color: #3584e4; }
+label.section { font-size: 22px; font-weight: bold; color: #5e5c64; }
+label.note { font-size: 22px; color: #5e5c64; }
+label.big { font-size: 56px; font-weight: bold; color: #2e3436; }
+button.action {
+  background-image: none; border: none; box-shadow: none;
+  border-radius: 16px; min-height: 72px; font-size: 24px; padding: 0 24px;
+  background-color: #3584e4; color: #ffffff;
+}
+button.plain {
+  background-image: none; border: 1px solid #c0bfbc; box-shadow: none;
+  border-radius: 16px; min-height: 72px; font-size: 24px; padding: 0 24px;
+  background-color: #f2f2f0; color: #2e3436;
+}
+button.danger { color: #c01c28; }
+switch { min-width: 120px; min-height: 56px; border-radius: 28px; }
+switch:checked { background-color: #3584e4; }
+switch slider { min-width: 52px; min-height: 52px; border-radius: 26px; }
+scale trough { min-height: 20px; border-radius: 10px; }
+scale highlight { background-color: #3584e4; border-radius: 10px; }
+scale slider { min-width: 56px; min-height: 56px; border-radius: 28px; }
+dialog entry { font-size: 26px; min-height: 64px; }
+dialog label { font-size: 24px; }
+dialog button { font-size: 22px; min-height: 60px; padding: 0 24px; }
+"""
+
+
+def run(*args, timeout=10):
+    """A command's output, or "" when it fails."""
+    try:
+        return subprocess.run(list(args), capture_output=True, text=True,
+                              timeout=timeout).stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        return ""
+
+
+def ask_text(parent, title, value=""):
+    if dialogs:
+        return dialogs.text(parent, title, value)
+    return None
+
+
+def say(parent, message):
+    if dialogs:
+        dialogs.info(parent, message)
+
+
+def row_box(name, sub=None, mark=None):
+    """A list row's content: a name, a line under it, a mark on the right."""
+    box = Gtk.Box(spacing=16)
+    text = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+    label = Gtk.Label(label=name, xalign=0)
+    label.get_style_context().add_class("name")
+    text.pack_start(label, False, False, 0)
+    sub_label = Gtk.Label(label=sub or "", xalign=0)
+    sub_label.get_style_context().add_class("sub")
+    sub_label.set_no_show_all(not sub)
+    text.pack_start(sub_label, False, False, 0)
+    box.pack_start(text, True, True, 0)
+    if mark is not None:
+        m = Gtk.Label(label=mark)
+        m.get_style_context().add_class("mark")
+        box.pack_end(m, False, False, 0)
+    box.sub = sub_label
+    return box
+
+
+def section(text):
+    label = Gtk.Label(label=text, xalign=0)
+    label.get_style_context().add_class("section")
+    return label
+
+
+def listbox(on_activate):
+    lb = Gtk.ListBox()
+    lb.set_selection_mode(Gtk.SelectionMode.NONE)
+    lb.connect("row-activated", on_activate)
+    return lb
+
+
+def page_box():
+    box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=16)
+    box.set_border_width(16)
+    box.get_style_context().add_class("page")
+    scroll = Gtk.ScrolledWindow()
+    scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+    scroll.add(box)
+    return scroll, box
+
+
+# --- the network ------------------------------------------------------------
+class Network:
+    """Wi-Fi through NetworkManager: the networks in reach, the one in use,
+    connecting with a password, forgetting one, a hidden one, on and off."""
+
+    title = "Сеть"
+
+    def __init__(self, app):
+        self.app = app
+        self.client = None
+        if NM:
+            try:
+                self.client = NM.Client.new(None)
+            except GLib.Error:
+                self.client = None
+        self.widget, box = page_box()
+        line = Gtk.Box(spacing=16)
+        label = Gtk.Label(label="Wi-Fi", xalign=0)
+        label.get_style_context().add_class("big")
+        line.pack_start(label, True, True, 0)
+        self.switch = Gtk.Switch(valign=Gtk.Align.CENTER)
+        self.switch.connect("notify::active", self.on_switch)
+        line.pack_end(self.switch, False, False, 0)
+        box.pack_start(line, False, False, 0)
+        self.status = Gtk.Label(xalign=0, wrap=True)
+        self.status.get_style_context().add_class("note")
+        box.pack_start(self.status, False, False, 0)
+        box.pack_start(section("Сети рядом"), False, False, 0)
+        self.list = listbox(self.on_row)
+        box.pack_start(self.list, False, False, 0)
+        buttons = Gtk.Box(spacing=16)
+        refresh = Gtk.Button(label="Обновить")
+        refresh.get_style_context().add_class("plain")
+        refresh.connect("clicked", lambda _b: self.scan())
+        buttons.pack_start(refresh, False, False, 0)
+        hidden = Gtk.Button(label="Скрытая сеть…")
+        hidden.get_style_context().add_class("plain")
+        hidden.connect("clicked", lambda _b: self.hidden())
+        buttons.pack_start(hidden, False, False, 0)
+        box.pack_start(buttons, False, False, 0)
+        box.pack_start(section("Сохранённые"), False, False, 0)
+        self.saved = listbox(self.on_saved)
+        box.pack_start(self.saved, False, False, 0)
+        if self.client:
+            self.client.connect("notify::wireless-enabled", lambda *_a: self.refresh())
+            self.client.connect("notify::active-connections", lambda *_a: self.refresh())
+            dev = self.device()
+            if dev:
+                dev.connect("access-point-added", lambda *_a: self.later())
+                dev.connect("access-point-removed", lambda *_a: self.later())
+                dev.connect("notify::state", lambda *_a: self.later())
+        self.pending = None
+        self.refresh()
+
+    def device(self):
+        if not self.client:
+            return None
+        for d in self.client.get_devices():
+            if d.get_device_type() == NM.DeviceType.WIFI:
+                return d
+        return None
+
+    def summary(self):
+        dev = self.device()
+        if not dev:
+            return "нет Wi-Fi"
+        if not self.client.wireless_get_enabled():
+            return "выключен"
+        ap = dev.get_active_access_point()
+        return self.name(ap) if ap else "не подключено"
+
+    @staticmethod
+    def name(ap):
+        ssid = ap.get_ssid()
+        return NM.utils_ssid_to_utf8(ssid.get_data()) if ssid else ""
+
+    def later(self):
+        # Access points come and go in bursts: redraw once they settle.
+        if self.pending is None:
+            self.pending = GLib.timeout_add(500, self._later)
+
+    def _later(self):
+        self.pending = None
+        self.refresh()
+        return False
+
+    def refresh(self):
+        for lb in (self.list, self.saved):
+            for child in lb.get_children():
+                lb.remove(child)
+        dev = self.device()
+        if not dev:
+            self.status.set_text("Wi-Fi не найден.")
+            self.switch.set_sensitive(False)
+            return
+        on = self.client.wireless_get_enabled()
+        self.switch.handler_block_by_func(self.on_switch)
+        self.switch.set_active(on)
+        self.switch.handler_unblock_by_func(self.on_switch)
+        active = dev.get_active_access_point()
+        if not on:
+            self.status.set_text("Wi-Fi выключен.")
+        elif active:
+            self.status.set_text("Подключено к «%s»." % self.name(active))
+        else:
+            self.status.set_text("Не подключено. Выберите сеть.")
+        best = {}
+        for ap in dev.get_access_points() if on else []:
+            n = self.name(ap)
+            if n and (n not in best or ap.get_strength() > best[n].get_strength()):
+                best[n] = ap
+        for n, ap in sorted(best.items(), key=lambda kv: -kv[1].get_strength()):
+            secure = bool(ap.get_wpa_flags() or ap.get_rsn_flags())
+            strength = ap.get_strength()
+            sub = "сигнал %s%s" % ("отличный" if strength >= 70 else "хороший" if strength >= 45
+                                   else "слабый", ", с паролем" if secure else ", открытая")
+            row = Gtk.ListBoxRow()
+            row.add(row_box(n, sub, "✓" if active and self.name(active) == n else ""))
+            row.ap = ap
+            self.list.add(row)
+        for con in self.wifi_connections():
+            row = Gtk.ListBoxRow()
+            row.add(row_box(con.get_id(), "нажмите, чтобы забыть"))
+            row.con = con
+            self.saved.add(row)
+        self.list.show_all()
+        self.saved.show_all()
+
+    def wifi_connections(self):
+        return [c for c in self.client.get_connections()
+                if c.get_connection_type() == "802-11-wireless"] if self.client else []
+
+    def known(self, name):
+        for con in self.wifi_connections():
+            s = con.get_setting_wireless()
+            if s and s.get_ssid() and NM.utils_ssid_to_utf8(s.get_ssid().get_data()) == name:
+                return con
+        return None
+
+    def on_switch(self, switch, _param):
+        if self.client:
+            self.client.dbus_set_property(NM.DBUS_PATH, NM.DBUS_INTERFACE, "WirelessEnabled",
+                                          GLib.Variant("b", switch.get_active()), -1, None,
+                                          None, None)
+
+    def scan(self):
+        dev = self.device()
+        if dev:
+            dev.request_scan_async(None, None, None)
+            self.status.set_text("Ищу сети…")
+            GLib.timeout_add_seconds(4, lambda: self.refresh() or False)
+
+    def on_row(self, _lb, row):
+        ap = row.ap
+        name = self.name(ap)
+        dev = self.device()
+        con = self.known(name)
+        if con:
+            self.client.activate_connection_async(con, dev, None, None, self.activated, name)
+            self.status.set_text("Подключаюсь к «%s»…" % name)
+            return
+        secure = bool(ap.get_wpa_flags() or ap.get_rsn_flags())
+        password = None
+        if secure:
+            password = ask_text(self.app.win, "Пароль сети «%s»" % name)
+            if not password:
+                return
+        self.add(name, password, dev, ap, hidden=False)
+
+    def hidden(self):
+        name = ask_text(self.app.win, "Имя скрытой сети")
+        if not name:
+            return
+        password = ask_text(self.app.win, "Пароль сети «%s» (пусто — без пароля)" % name)
+        self.add(name, password or None, self.device(), None, hidden=True)
+
+    def add(self, name, password, dev, ap, hidden):
+        con = NM.SimpleConnection.new()
+        s_con = NM.SettingConnection.new()
+        s_con.set_property(NM.SETTING_CONNECTION_ID, name)
+        s_con.set_property(NM.SETTING_CONNECTION_TYPE, "802-11-wireless")
+        con.add_setting(s_con)
+        s_wifi = NM.SettingWireless.new()
+        s_wifi.set_property(NM.SETTING_WIRELESS_SSID, GLib.Bytes.new(name.encode()))
+        s_wifi.set_property(NM.SETTING_WIRELESS_HIDDEN, hidden)
+        con.add_setting(s_wifi)
+        if password:
+            s_sec = NM.SettingWirelessSecurity.new()
+            s_sec.set_property(NM.SETTING_WIRELESS_SECURITY_KEY_MGMT, "wpa-psk")
+            s_sec.set_property(NM.SETTING_WIRELESS_SECURITY_PSK, password)
+            con.add_setting(s_sec)
+        self.client.add_and_activate_connection_async(
+            con, dev, ap.get_path() if ap else None, None, self.added, name)
+        self.status.set_text("Подключаюсь к «%s»…" % name)
+
+    def activated(self, client, result, name):
+        self.finished(client.activate_connection_finish, result, name)
+
+    def added(self, client, result, name):
+        self.finished(client.add_and_activate_connection_finish, result, name)
+
+    def finished(self, finish, result, name):
+        try:
+            finish(result)
+        except GLib.Error as exc:
+            self.status.set_text("Не удалось подключиться к «%s»." % name)
+            sys.stderr.write("haltia-settings: %s\n" % exc.message)
+        self.later()
+
+    def on_saved(self, _lb, row):
+        con = row.con
+        if dialogs and dialogs.ask(self.app.win, "Забыть сеть «%s»?" % con.get_id(), "Забыть"):
+            con.delete_async(None, lambda c, r, _d: self.later(), None)
+
+
+# --- sound ----------------------------------------------------------------
+class Sound:
+    """The default sink's volume, mute and which output plays."""
+
+    title = "Звук"
+
+    def __init__(self, app):
+        self.app = app
+        self.widget, box = page_box()
+        box.pack_start(section("Громкость"), False, False, 0)
+        self.scale = Gtk.Scale.new_with_range(Gtk.Orientation.HORIZONTAL, 0, 100, 1)
+        self.scale.set_draw_value(False)
+        self.scale.connect("value-changed", self.on_volume)
+        box.pack_start(self.scale, False, False, 0)
+        line = Gtk.Box(spacing=16)
+        label = Gtk.Label(label="Без звука", xalign=0)
+        label.get_style_context().add_class("note")
+        line.pack_start(label, True, True, 0)
+        self.mute = Gtk.Switch(valign=Gtk.Align.CENTER)
+        self.mute.connect("notify::active", self.on_mute)
+        line.pack_end(self.mute, False, False, 0)
+        box.pack_start(line, False, False, 0)
+        box.pack_start(section("Куда идёт звук"), False, False, 0)
+        self.outputs = listbox(self.on_output)
+        box.pack_start(self.outputs, False, False, 0)
+        self.pending = None
+        self.refresh()
+
+    def summary(self):
+        vol = self.volume()
+        if vol is None:
+            return "нет звука"
+        return "без звука" if self.muted() else "%d %%" % vol
+
+    @staticmethod
+    def volume():
+        out = run("pactl", "get-sink-volume", "@DEFAULT_SINK@")
+        try:
+            return int(out.split("/")[1].strip().rstrip("%"))
+        except (IndexError, ValueError):
+            return None
+
+    @staticmethod
+    def muted():
+        return run("pactl", "get-sink-mute", "@DEFAULT_SINK@").split()[-1:] in (["yes"], ["да"])
+
+    def refresh(self):
+        vol = self.volume()
+        self.scale.handler_block_by_func(self.on_volume)
+        self.scale.set_value(vol or 0)
+        self.scale.handler_unblock_by_func(self.on_volume)
+        self.mute.handler_block_by_func(self.on_mute)
+        self.mute.set_active(self.muted())
+        self.mute.handler_unblock_by_func(self.on_mute)
+        for child in self.outputs.get_children():
+            self.outputs.remove(child)
+        default = run("pactl", "get-default-sink")
+        desc, name = {}, None
+        for line in run("pactl", "list", "sinks").splitlines():
+            line = line.strip()
+            if line.startswith("Name:") or line.startswith("Имя:"):
+                name = line.split(":", 1)[1].strip()
+            elif (line.startswith("Description:") or line.startswith("Описание:")) and name:
+                desc[name] = line.split(":", 1)[1].strip()
+        for name, text in desc.items():
+            row = Gtk.ListBoxRow()
+            row.add(row_box(text, None, "✓" if name == default else ""))
+            row.sink = name
+            self.outputs.add(row)
+        self.outputs.show_all()
+
+    def signal_panel(self):
+        subprocess.call(["/usr/bin/haltia-panel-signal", "10"], stderr=subprocess.DEVNULL)
+
+    def on_volume(self, scale):
+        if self.pending is None:
+            self.pending = GLib.timeout_add(120, self.apply_volume)
+
+    def apply_volume(self):
+        self.pending = None
+        level = int(self.scale.get_value())
+        run("pactl", "set-sink-volume", "@DEFAULT_SINK@", "%d%%" % level)
+        if level > 0 and self.muted():
+            run("pactl", "set-sink-mute", "@DEFAULT_SINK@", "0")
+            self.mute.handler_block_by_func(self.on_mute)
+            self.mute.set_active(False)
+            self.mute.handler_unblock_by_func(self.on_mute)
+        self.signal_panel()
+        return False
+
+    def on_mute(self, switch, _param):
+        run("pactl", "set-sink-mute", "@DEFAULT_SINK@", "1" if switch.get_active() else "0")
+        self.signal_panel()
+
+    def on_output(self, _lb, row):
+        run("pactl", "set-default-sink", row.sink)
+        self.refresh()
+
+
+# --- the screen ---------------------------------------------------------------
+class Screen:
+    """Brightness (the shell's card) and turning with the tablet."""
+
+    title = "Экран"
+
+    def __init__(self, app):
+        self.app = app
+        self.widget, box = page_box()
+        bright = Gtk.Button(label="Яркость и громкость…")
+        bright.get_style_context().add_class("plain")
+        bright.set_halign(Gtk.Align.START)
+        bright.connect("clicked", lambda _b: subprocess.Popen(["/usr/bin/haltia-brightness"]))
+        box.pack_start(bright, False, False, 0)
+        line = Gtk.Box(spacing=16)
+        text = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+        label = Gtk.Label(label="Поворачивать экран", xalign=0)
+        label.get_style_context().add_class("note")
+        text.pack_start(label, False, False, 0)
+        hint = Gtk.Label(label="Экран следует за планшетом: на боку — книжная ориентация",
+                         xalign=0, wrap=True)
+        hint.get_style_context().add_class("sub")
+        text.pack_start(hint, False, False, 0)
+        line.pack_start(text, True, True, 0)
+        self.rotate = Gtk.Switch(valign=Gtk.Align.CENTER)
+        self.rotate.set_active(run("/usr/bin/haltia-rotate", "status") != "off")
+        self.rotate.connect("notify::active", lambda s, _p: run(
+            "/usr/bin/haltia-rotate", "on" if s.get_active() else "off"))
+        line.pack_end(self.rotate, False, False, 0)
+        box.pack_start(line, False, False, 0)
+
+    def summary(self):
+        return "поворот %s" % ("выключен" if run("/usr/bin/haltia-rotate", "status") == "off"
+                               else "включён")
+
+    def refresh(self):
+        pass
+
+
+# --- date and time --------------------------------------------------------
+class DateTime:
+    """The time zone, the time from the network or set by hand (timedated)."""
+
+    title = "Дата и время"
+    BUS = ("org.freedesktop.timedate1", "/org/freedesktop/timedate1",
+           "org.freedesktop.timedate1")
+
+    def __init__(self, app):
+        self.app = app
+        try:
+            self.bus = Gio.bus_get_sync(Gio.BusType.SYSTEM, None)
+        except GLib.Error:
+            self.bus = None
+        self.widget, box = page_box()
+        self.clock = Gtk.Label(xalign=0)
+        self.clock.get_style_context().add_class("big")
+        box.pack_start(self.clock, False, False, 0)
+        self.date = Gtk.Label(xalign=0)
+        self.date.get_style_context().add_class("note")
+        box.pack_start(self.date, False, False, 0)
+        self.rows = listbox(self.on_row)
+        box.pack_start(self.rows, False, False, 0)
+        self.zone_row = Gtk.ListBoxRow()
+        self.zone_box = row_box("Часовой пояс", "")
+        self.zone_row.add(self.zone_box)
+        self.zone_row.kind = "zone"
+        self.rows.add(self.zone_row)
+        self.set_row = Gtk.ListBoxRow()
+        self.set_row.add(row_box("Поставить время вручную", "когда время берётся не из сети"))
+        self.set_row.kind = "set"
+        self.rows.add(self.set_row)
+        line = Gtk.Box(spacing=16)
+        label = Gtk.Label(label="Время из интернета", xalign=0)
+        label.get_style_context().add_class("note")
+        line.pack_start(label, True, True, 0)
+        self.ntp = Gtk.Switch(valign=Gtk.Align.CENTER)
+        self.ntp.connect("notify::active", self.on_ntp)
+        line.pack_end(self.ntp, False, False, 0)
+        box.pack_start(line, False, False, 0)
+        self.note = Gtk.Label(xalign=0, wrap=True)
+        self.note.get_style_context().add_class("note")
+        box.pack_start(self.note, False, False, 0)
+        GLib.timeout_add_seconds(10, self.tick)
+        self.refresh()
+
+    def prop(self, name):
+        if not self.bus:
+            return None
+        try:
+            v = self.bus.call_sync(self.BUS[0], self.BUS[1], "org.freedesktop.DBus.Properties",
+                                   "Get", GLib.Variant("(ss)", (self.BUS[2], name)), None,
+                                   0, 3000, None)
+            return v.unpack()[0]
+        except GLib.Error:
+            return None
+
+    def call(self, method, args):
+        try:
+            self.bus.call_sync(self.BUS[0], self.BUS[1], self.BUS[2], method, args, None,
+                               0, 10000, None)
+            return True
+        except (GLib.Error, AttributeError) as exc:
+            self.note.set_text("Не получилось: нет прав или нет службы времени.")
+            sys.stderr.write("haltia-settings: %s: %s\n" % (method, getattr(exc, "message", exc)))
+            return False
+
+    def summary(self):
+        zone = self.prop("Timezone") or ""
+        return dict((z, n) for n, z in ZONES).get(zone, zone) or "—"
+
+    def tick(self):
+        now = time.localtime()
+        self.clock.set_text(time.strftime("%H:%M", now))
+        months = ("января", "февраля", "марта", "апреля", "мая", "июня", "июля", "августа",
+                  "сентября", "октября", "ноября", "декабря")
+        days = ("понедельник", "вторник", "среда", "четверг", "пятница", "суббота",
+                "воскресенье")
+        self.date.set_text("%s, %d %s %d" % (days[now.tm_wday], now.tm_mday,
+                                             months[now.tm_mon - 1], now.tm_year))
+        return True
+
+    def refresh(self):
+        self.tick()
+        self.zone_box.sub.set_text(self.summary())
+        self.zone_box.sub.show()
+        ntp = bool(self.prop("NTP"))
+        self.ntp.handler_block_by_func(self.on_ntp)
+        self.ntp.set_active(ntp)
+        self.ntp.handler_unblock_by_func(self.on_ntp)
+        self.set_row.set_sensitive(not ntp)
+
+    def pick_zone(self, zone):
+        """A name from ZONES or «Другой…», from a list that scrolls (twelve
+        zones do not fit a dialog of buttons), or None."""
+        dialog = Gtk.Dialog(title="Часовой пояс", transient_for=self.app.win, modal=True)
+        dialog.get_style_context().add_class("haltia-dialog")
+        dialog.set_default_size(640, 620)
+        dialog.add_button("Отмена", Gtk.ResponseType.CANCEL)
+        scroll = Gtk.ScrolledWindow(vexpand=True)
+        scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        chosen = []
+        lb = listbox(lambda _lb, r: (chosen.append(r.name),
+                                     dialog.response(Gtk.ResponseType.OK)))
+        for name, z in ZONES + [("Другой…", None)]:
+            r = Gtk.ListBoxRow()
+            r.add(row_box(name, None, "✓" if z and z == zone else ""))
+            r.name = name
+            lb.add(r)
+        scroll.add(lb)
+        dialog.get_content_area().pack_start(scroll, True, True, 0)
+        dialog.show_all()
+        res = dialog.run()
+        dialog.destroy()
+        return chosen[0] if res == Gtk.ResponseType.OK and chosen else None
+
+    def on_ntp(self, switch, _param):
+        if self.call("SetNTP", GLib.Variant("(bb)", (switch.get_active(), False))):
+            self.note.set_text("")
+        self.refresh()
+
+    def on_row(self, _lb, row):
+        if row.kind == "zone":
+            zone = self.prop("Timezone")
+            name = self.pick_zone(zone)
+            if name is None:
+                return
+            if name == "Другой…":
+                zone = ask_text(self.app.win, "Пояс, например Europe/Berlin", zone or "")
+                if not zone or not os.path.exists("/usr/share/zoneinfo/" + zone):
+                    return
+            else:
+                zone = dict(ZONES)[name]
+            if self.call("SetTimezone", GLib.Variant("(sb)", (zone, False))):
+                os.environ["TZ"] = zone
+                time.tzset()
+                self.note.set_text("")
+            self.refresh()
+        elif row.kind == "set":
+            now = time.localtime()
+            value = ask_text(self.app.win, "Дата и время: ДД.ММ.ГГГГ ЧЧ:ММ",
+                             time.strftime("%d.%m.%Y %H:%M", now))
+            if not value:
+                return
+            try:
+                t = time.mktime(time.strptime(value.strip(), "%d.%m.%Y %H:%M"))
+            except ValueError:
+                say(self.app.win, "Не понял дату. Пример: 19.10.2026 15:30")
+                return
+            if self.call("SetTime", GLib.Variant("(xbb)", (int(t * 1000000), False, False))):
+                self.note.set_text("")
+            self.refresh()
+
+
+# --- about ----------------------------------------------------------------
+class About:
+    """The device, the system, memory, storage, the battery, the address."""
+
+    title = "О системе"
+
+    def __init__(self, app):
+        self.app = app
+        self.widget, box = page_box()
+        self.list = listbox(lambda *_a: None)
+        box.pack_start(self.list, False, False, 0)
+        self.refresh()
+
+    def summary(self):
+        return ""
+
+    def refresh(self):
+        for child in self.list.get_children():
+            self.list.remove(child)
+        model = ""
+        for path in ("/proc/device-tree/model", "/sys/class/dmi/id/product_name"):
+            try:
+                with open(path) as fh:
+                    model = fh.read().strip("\0\n ")
+                    break
+            except OSError:
+                pass
+        shell = run("apk", "info", "-e", "-v", "haltia-shell").splitlines()
+        mem = run("free", "-m").splitlines()
+        disk = run("df", "-h", "/").splitlines()
+        battery = run("/usr/libexec/haltia/haltia-meter", "battery-info")
+        addr = run("nmcli", "-g", "IP4.ADDRESS", "device", "show", "wlan0").split("|")[0]
+        items = [("Устройство", model or "—"),
+                 ("Оболочка", shell[0].replace("haltia-shell-", "Haltia ") if shell else "—")]
+        if len(mem) > 1:
+            parts = mem[1].split()
+            items.append(("Память", "занято %s из %s МБ" % (parts[2], parts[1])))
+        if len(disk) > 1:
+            parts = disk[1].split()
+            items.append(("Место", "свободно %s из %s" % (parts[3], parts[1])))
+        if battery:
+            pct, state = battery.split()
+            items.append(("Батарея", "%s %%%s" % (pct, {"charging": ", заряжается",
+                                                       "full": ", заряжена"}.get(state, ""))))
+        if addr:
+            items.append(("Адрес в сети", addr.split("/")[0]))
+        for name, value in items:
+            row = Gtk.ListBoxRow(activatable=False)
+            row.add(row_box(name, value))
+            self.list.add(row)
+        self.list.show_all()
+
+
+# --- the window ---------------------------------------------------------------
+class Settings(Gtk.Application):
+    def __init__(self):
+        super().__init__(application_id=APP_ID,
+                         flags=Gio.ApplicationFlags.HANDLES_COMMAND_LINE)
+        self.win = None
+        self.pages = {}
+
+    def do_command_line(self, line):
+        args = line.get_arguments()[1:]
+        page = None
+        if len(args) == 2 and args[0] == "--page" and args[1] in PAGES:
+            page = args[1]
+        self.setup()
+        self.show(page)
+        self.win.present()
+        return 0
+
+    def setup(self):
+        if self.win:
+            return
+        provider = Gtk.CssProvider()
+        provider.load_from_data(CSS)
+        Gtk.StyleContext.add_provider_for_screen(
+            Gdk.Screen.get_default(), provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+        self.win = Gtk.ApplicationWindow(application=self, title="Настройки")
+        self.win.set_default_size(1160, 800)
+        self.header = Gtk.HeaderBar(title="Настройки")
+        self.back = Gtk.Button(label="←")
+        self.back.connect("clicked", lambda _b: self.show(None))
+        self.back.set_no_show_all(True)
+        self.header.pack_start(self.back)
+        self.win.set_titlebar(self.header)
+        self.stack = Gtk.Stack()
+        self.stack.set_transition_type(Gtk.StackTransitionType.NONE)
+        scroll, box = page_box()
+        self.menu = listbox(self.on_menu)
+        box.pack_start(self.menu, False, False, 0)
+        self.stack.add_named(scroll, "menu")
+        self.win.add(self.stack)
+        self.entries = []
+        for key, cls in (("network", Network), ("sound", Sound), ("screen", Screen),
+                         ("time", DateTime), ("touch", None), ("about", About)):
+            row = Gtk.ListBoxRow()
+            title = cls.title if cls else "Касания"
+            content = row_box(title, " ")
+            row.add(content)
+            row.key = key
+            row.content = content
+            self.menu.add(row)
+            self.entries.append(row)
+        self.win.show_all()
+
+    def page(self, key):
+        if key not in self.pages:
+            cls = {"network": Network, "sound": Sound, "screen": Screen, "time": DateTime,
+                   "about": About}[key]
+            self.pages[key] = cls(self)
+            self.stack.add_named(self.pages[key].widget, key)
+            self.pages[key].widget.show_all()
+        return self.pages[key]
+
+    def show(self, key):
+        if key is None:
+            for row in self.entries:
+                if row.key == "touch":
+                    text = "защита от случайных касаний"
+                else:
+                    text = self.page(row.key).summary()
+                row.content.sub.set_text(text)
+                row.content.sub.set_visible(bool(text))
+            self.stack.set_visible_child_name("menu")
+            self.header.set_title("Настройки")
+            self.back.hide()
+            return
+        page = self.page(key)
+        page.refresh()
+        self.stack.set_visible_child_name(key)
+        self.header.set_title(page.title)
+        self.back.show()
+
+    def on_menu(self, _lb, row):
+        if row.key == "touch":
+            subprocess.Popen(["/usr/bin/haltia-launch", "tap", "touch"])
+            return
+        self.show(row.key)
+
+
+if __name__ == "__main__":
+    sys.exit(Settings().run(sys.argv))
