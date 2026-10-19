@@ -31,7 +31,13 @@
 LauncherEntry, запреты сна logind, XDG autostart. Решение и словарь — в
 репозитории устройства: `docs/adr/0001-three-layers.md`, `CONTEXT.md`.
 
-Установка: пакет Alpine `haltia-shell` (заменяет `b8k-shell`) из
+Сеанс под менеджером входа (tinydm в postmarketOS, greetd и другие) —
+`/usr/share/wayland-sessions/haltia.desktop` → `haltia-wayland-session`:
+композитор из `compositor=` в `/etc/haltia/device.conf`, иначе `phoc`, с
+`/usr/share/haltia/phoc.ini` и `haltia-launcher`.
+
+Установка: пакет Alpine `haltia-shell` (armv7, aarch64, x86_64; заменяет
+`b8k-shell`) из
 репозитория Haltia (https://haltia-de.github.io/packages/) или выпусков
 GitHub, подписан
 ключом проекта ([haltia-de/ci](https://github.com/haltia-de/ci)); его собирает

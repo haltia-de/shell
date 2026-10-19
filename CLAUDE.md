@@ -10,6 +10,10 @@ Layout: `bin/` (what a person, a program or the device runs, installed to /usr/b
 
 There is no test suite. CI (`.github/workflows/session.yml`, `ci/headless-session.sh`) starts the session under headless phoc with pixman in x86_64 Alpine and keeps a screenshot: a tie to the B8000-H shows up there. Otherwise verify on the tablet (see the device repository's CLAUDE.md, "Working on a connected tablet").
 
+## Sessions and architectures
+
+The package builds for armv7, aarch64 and x86_64 (release.yml, haltia-de/ci). B8000-H images start the session themselves (desktop.start: haltia-session, phoc-gpu). Display managers (tinydm, greetd) use `/usr/share/wayland-sessions/haltia.desktop` → `haltia-wayland-session`: the compositor from `compositor=` in `/etc/haltia/device.conf`, else `phoc`, with `/usr/share/haltia/phoc.ini` (or `HALTIA_PHOC_CONFIG`) and `-E haltia-launcher`, through `dbus-run-session` when there is no session bus; it sets `XDG_CURRENT_DESKTOP=Haltia:GNOME` unless the desktop already names GNOME (GNOME Settings needs it). The session CI starts it this way.
+
 ## Working on the tablet
 
 - **Gotchas:**

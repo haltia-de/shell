@@ -1,5 +1,13 @@
 # Оболочка планшета
 
+Сеанс запускает устройство. Образы B8000-H — сами (`desktop.start`:
+`haltia-session`, `phoc-gpu`). Под менеджером входа (tinydm в postmarketOS,
+greetd) — запись `/usr/share/wayland-sessions/haltia.desktop`, которая
+запускает `haltia-wayland-session`: композитор из `compositor=` в
+`/etc/haltia/device.conf`, иначе `phoc`, с `/usr/share/haltia/phoc.ini` и
+`haltia-launcher`, через `dbus-run-session`, если шины сеанса ещё нет.
+Пакет собирается для armv7, aarch64 и x86_64.
+
 Вместо Phosh сессия запускает композитор phoc (`phoc-gpu`, рисует на SGX544) с
 одной программой — `haltia-launcher`. Он поднимает экранную клавиатуру,
 наблюдатель окон и панель waybar шириной 120 px у левого края. Больше ничего

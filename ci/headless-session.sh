@@ -2,8 +2,9 @@
 # SPDX-License-Identifier: GPL-2.0
 # The shell's session under headless phoc (wlroots' headless backend,
 # pixman rendering) on whatever Alpine this runs in, x86_64 in CI: builds
-# the C parts natively, installs everything, starts phoc with haltia-launcher
-# as the session user, waits for the panel and the home screen, and takes
+# the C parts natively, installs everything, starts the session as a display
+# manager would (haltia-wayland-session: phoc with haltia-launcher) as the
+# session user, waits for the panel and the home screen, and takes
 # a screenshot. Anything tied to the B8000-H (its backlight, touchscreen,
 # power key, paths of its own) shows up here as a failure or in the
 # picture, not on the next tablet (ADR 0004, lenovo-b8000h-linux).
@@ -42,7 +43,8 @@ INI
 su user -s /bin/sh -c "
 	export XDG_RUNTIME_DIR=$run HOME=/home/user LANG=ru_RU.UTF-8
 	export WLR_BACKENDS=headless WLR_RENDERER=pixman WLR_LIBINPUT_NO_DEVICES=1
-	exec dbus-run-session -- phoc -C /tmp/phoc-ci.ini -E /usr/bin/haltia-launcher
+	export HALTIA_PHOC_CONFIG=/tmp/phoc-ci.ini
+	exec /usr/bin/haltia-wayland-session
 " >"$out/session.log" 2>&1 &
 session=$!
 

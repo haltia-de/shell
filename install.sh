@@ -61,6 +61,8 @@ for f in apps.conf panel fuzzel-ask.ini foot.ini phoc.ini mako.conf gtk-4.0.css;
 	install -m 644 "$here/share/$f" "$share/$f"
 done
 install -m 644 "$here"/share/icons/* "$share/"
+# The session for display managers (tinydm, greetd): haltia-wayland-session.
+install -D -m 644 "$here/share/haltia.desktop" "$root/usr/share/wayland-sessions/haltia.desktop"
 install -D -m 644 "$here/share/io.github.haltia_de.TouchSettings.desktop" \
 	"$root/usr/share/applications/io.github.haltia_de.TouchSettings.desktop"
 # The panel's configuration in the shell's folder (/etc/xdg/waybar is the

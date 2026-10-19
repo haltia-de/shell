@@ -1,0 +1,33 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-2.0
+# Haltia's session as a display manager starts it (tinydm on postmarketOS,
+# greetd and others), from /usr/share/wayland-sessions/haltia.desktop: the
+# person is logged in already, so this only runs the compositor with the
+# shell in it. B8000-H images start the session themselves (their
+# desktop.start, haltia-session), not through this.
+#
+# The compositor is compositor= in /etc/haltia/device.conf (a command line,
+# as the device needs it), else phoc. HALTIA_PHOC_CONFIG names another
+# phoc.ini (the session CI's headless output).
+set -u
+conf=/etc/haltia/device.conf
+compositor=
+[ -r "$conf" ] && compositor=$(sed -n 's/^[ \t]*compositor[ \t]*=[ \t]*//p' "$conf" | tail -1)
+# One the system lacks (or none) means phoc.
+if [ -z "$compositor" ] || ! command -v "${compositor%% *}" >/dev/null 2>&1; then
+	compositor=phoc
+fi
+export XDG_SESSION_TYPE=wayland
+# GNOME Settings runs only where the desktop names GNOME.
+case ${XDG_CURRENT_DESKTOP:-} in
+*GNOME*) ;;
+*) export XDG_CURRENT_DESKTOP=Haltia:GNOME ;;
+esac
+export XDG_SESSION_DESKTOP=${XDG_SESSION_DESKTOP:-haltia}
+config=${HALTIA_PHOC_CONFIG:-/usr/share/haltia/phoc.ini}
+# shellcheck disable=SC2086
+if [ -z "${DBUS_SESSION_BUS_ADDRESS:-}" ] && command -v dbus-run-session >/dev/null; then
+	exec dbus-run-session -- $compositor -C "$config" -E /usr/bin/haltia-launcher
+fi
+# shellcheck disable=SC2086
+exec $compositor -C "$config" -E /usr/bin/haltia-launcher

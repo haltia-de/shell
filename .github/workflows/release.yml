@@ -1,5 +1,6 @@
 # The release (ADR 0002 in haltia-de/device-lenovo-b8000h): a vX.Y.Z tag
-# builds the signed Alpine package and puts it into the GitHub release.
+# builds the signed Alpine package for armv7, aarch64 and x86_64 and puts
+# it into the GitHub release.
 name: release
 on:
   push:
@@ -10,5 +11,5 @@ jobs:
   apk:
     uses: haltia-de/ci/.github/workflows/apk.yml@v1
     with:
-      arch: armv7
+      arch: armv7 aarch64 x86_64
     secrets: inherit

@@ -1,0 +1,6 @@
+[Desktop Entry]
+Type=Application
+Name=Haltia
+Comment=A calm touch desktop
+Exec=/usr/bin/haltia-wayland-session
+DesktopNames=Haltia;GNOME
