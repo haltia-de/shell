@@ -9,3 +9,11 @@ sort-directories-first=true
 show-size-column=false
 show-type-column=false
 sidebar-width=300
+
+# The shell's GTK theme for every GTK 3 program, however it starts: the
+# session exports GTK_THEME=Haltia, but a program started by D-Bus
+# activation, from a terminal or by another service may not have it, and
+# GTK then takes this key (it said Adwaita: the header's room for «✕» was
+# gone).
+[org.gnome.desktop.interface]
+gtk-theme='Haltia'

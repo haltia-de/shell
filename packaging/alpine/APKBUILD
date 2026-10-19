@@ -1,6 +1,6 @@
 # Maintainer: Mikhail Nevskiy <rensomail@gmail.com>
 pkgname=haltia-shell
-pkgver=2.3.0
+pkgver=2.3.1
 pkgrel=0
 _wvkbd=bbecd996aae5a4dc4bc32bd643d37cefa9f63752
 pkgdesc="Haltia's shell: panel, home screen, close button, touch filter, keyboard"
