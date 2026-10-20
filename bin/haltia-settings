@@ -88,7 +88,8 @@ button.step {
   border-radius: 14px; min-height: 64px; min-width: 64px; font-size: 28px; padding: 0;
   background-color: #f2f2f0; color: #2e3436;
 }
-label.mono { font-family: monospace; font-size: 17px; color: #2e3436; }
+textview.reading, textview.reading text { background-color: #e6e6e4; color: #2e3436;
+  font-size: 24px; }
 label.notes { font-size: 24px; color: #2e3436; }
 progressbar trough { min-height: 16px; border-radius: 8px; }
 progressbar progress { min-height: 16px; border-radius: 8px; background-color: #3584e4; }
@@ -166,6 +167,37 @@ def listbox(on_activate):
     lb.set_selection_mode(Gtk.SelectionMode.NONE)
     lb.connect("row-activated", on_activate)
     return lb
+
+
+def reading_view():
+    """(scrolled window, text view) for a long text to read: a TextView
+    measures its own height, where wrapped labels in a scrolled page were
+    measured at another width and a long text did not scroll to its end."""
+    view = Gtk.TextView(editable=False, cursor_visible=False,
+                        wrap_mode=Gtk.WrapMode.WORD_CHAR)
+    view.get_style_context().add_class("reading")
+    for side in ("left", "right", "top", "bottom"):
+        getattr(view, "set_%s_margin" % side)(16)
+    buf = view.get_buffer()
+    buf.create_tag("head", weight=700, foreground="#5e5c64", pixels_above_lines=16,
+                   pixels_below_lines=8)
+    buf.create_tag("item", pixels_below_lines=12)
+    buf.create_tag("note", foreground="#5e5c64")
+    buf.create_tag("mono", family="monospace", scale=0.75)
+    scroll = Gtk.ScrolledWindow()
+    scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+    scroll.add(view)
+    return scroll, view
+
+
+def set_reading(view, parts):
+    """The view's text: (text, tag) pieces, each its own paragraph."""
+    buf = view.get_buffer()
+    buf.set_text("")
+    for n, (text, tag) in enumerate(parts):
+        end = buf.get_end_iter()
+        buf.insert_with_tags_by_name(end, ("\n" if n else "") + text, tag)
+    view.get_parent().get_vadjustment().set_value(0)
 
 
 def page_box():
@@ -1117,7 +1149,7 @@ class Helper:
         self.list = listbox(lambda *_a: None)
         box.pack_start(self.list, False, False, 0)
         # The subpages: the touch page (the whole window), the log, going back.
-        self.log_page, self.log_box = page_box()
+        self.log_page, self.log_view = reading_view()
         self.back_page, self.back_box = page_box()
         self.subpages = {"log": self.log_page, "rollback": self.back_page}
         self.refresh()
@@ -1183,14 +1215,8 @@ class Helper:
         self.app.open_subpage("helper/touch", "Касания", wide=True)
 
     def open_log(self):
-        for child in self.log_box.get_children():
-            self.log_box.remove(child)
         lines = run(*UPDATE, "log", timeout=20).splitlines() or ["Журнал пуст."]
-        label = Gtk.Label(label="\n".join(lines), xalign=0, wrap=True, selectable=True)
-        label.get_style_context().add_class("mono")
-        label.set_line_wrap_mode(2)
-        self.log_box.pack_start(label, False, False, 0)
-        self.log_box.show_all()
+        set_reading(self.log_view, [("\n".join(lines), "mono")])
         self.app.open_subpage("helper/log", "Журнал обновлений")
 
     def open_rollback(self):
@@ -1423,7 +1449,7 @@ class Updates:
         # «Что нового» of one program: its releases, then «Обновить».
         notes = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
         notes.get_style_context().add_class("page")
-        scroll, self.notes_box = page_box()
+        scroll, self.notes_view = reading_view()
         notes.pack_start(scroll, True, True, 0)
         bottom = Gtk.Box(spacing=16)
         bottom.set_border_width(16)
@@ -1637,11 +1663,7 @@ class Updates:
         if prog["name"] == "system" or self.busy:
             return
         self.notes_for = prog
-        for child in self.notes_box.get_children():
-            self.notes_box.remove(child)
-        wait = Gtk.Label(label="Узнаю, что нового…", xalign=0)
-        wait.get_style_context().add_class("note")
-        self.notes_box.pack_start(wait, False, False, 0)
+        set_reading(self.notes_view, [("Узнаю, что нового…", "note")])
         self.notes_btn.set_label("Обновить «%s»" % prog["label"])
         self.notes_btn.set_sensitive(True)
         self.subpages["notes"].show_all()
@@ -1651,15 +1673,13 @@ class Updates:
     def show_notes(self, code, out):
         if self.app.stack.get_visible_child_name() != "updates/notes":
             return False
-        for child in self.notes_box.get_children():
-            self.notes_box.remove(child)
         lines = [l for l in out.splitlines() if l.strip()]
         if not lines:
-            text = "Не удалось узнать: нет сети?" if code else \
-                "Автор не описал, что изменилось в этой версии."
-            label = Gtk.Label(label=text, xalign=0, wrap=True)
-            label.get_style_context().add_class("note")
-            self.notes_box.pack_start(label, False, False, 0)
+            set_reading(self.notes_view, [(
+                "Не удалось узнать: нет сети?" if code else
+                "Автор не описал, что изменилось в этой версии.", "note")])
+            return False
+        parts = []
         for line in lines:
             # haltia-update's "VERSION DATE" line starts a release.
             head = re.fullmatch(r"(\d+(?:\.\d+)+\S*)(?: (\d{4}-\d\d-\d\d)?)?", line)
@@ -1667,15 +1687,10 @@ class Updates:
                 text = "Версия %s" % head.group(1)
                 if head.group(2):
                     text += " · %s" % release_date(head.group(2))
-                label = Gtk.Label(label=text, xalign=0, wrap=True)
-                label.get_style_context().add_class("section")
-                label.set_margin_top(8)
+                parts.append((text, "head"))
             else:
-                label = Gtk.Label(label=line, xalign=0, wrap=True)
-                label.get_style_context().add_class("notes")
-                label.set_line_wrap_mode(2)  # Pango.WrapMode.WORD_CHAR
-            self.notes_box.pack_start(label, False, False, 0)
-        self.notes_box.show_all()
+                parts.append((line, "item"))
+        set_reading(self.notes_view, parts)
         return False
 
     def back(self):

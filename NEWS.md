@@ -1,5 +1,15 @@
 # Что нового · What's new
 
+## 2.6.2 (2026-10-20)
+
+### Русский
+
+- «Что нового» и журнал обновлений листаются до конца, если текст не помещается на экране
+
+### English
+
+- What's new and the update log scroll to their end when the text does not fit the screen
+
 ## 2.6.1 (2026-10-20)
 
 ### Русский

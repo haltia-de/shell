@@ -17,6 +17,16 @@
   <content_rating type="oars-1.1"/>
   <developer id="io.github.haltia_de"><name>Mikhail Nevskiy</name></developer>
   <releases>
+    <release version="2.6.2" date="2026-10-20">
+      <description>
+        <ul>
+          <li>What's new and the update log scroll to their end when the text does not fit the screen</li>
+        </ul>
+        <ul>
+          <li xml:lang="ru">«Что нового» и журнал обновлений листаются до конца, если текст не помещается на экране</li>
+        </ul>
+      </description>
+    </release>
     <release version="2.6.1" date="2026-10-20">
       <description>
         <ul>
