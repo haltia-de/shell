@@ -1,5 +1,17 @@
 # Что нового · What's new
 
+## 2.9.1 (2026-10-20)
+
+### Русский
+
+- Панель после включения появляется быстрее: регулятор громкости, поворот экрана, Сообщения и остальное фоновое запускаются, когда она уже на экране
+- Уведомления снова ощутимо вибрируют
+
+### English
+
+- The panel shows sooner after the tablet starts: volume keys, turning, Messages and the other background parts start once it is on the screen
+- Notifications buzz noticeably again
+
 ## 2.9.0 (2026-10-20)
 
 ### Русский

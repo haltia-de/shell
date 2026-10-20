@@ -6,6 +6,14 @@
 # The keyboard stays hidden until a text field is focused.
 run=${XDG_RUNTIME_DIR:-$HOME/.cache}
 mkdir -p "$run/haltia"
+# Seconds since boot at each step, in $run/haltia/start.log: what a slow
+# start spent its time on.
+stamp() {
+	read -r up _ </proc/uptime
+	echo "$up $1" >>"$run/haltia/start.log"
+}
+: >"$run/haltia/start.log"
+stamp start
 # The shell's own settings move from ~/.config/b8k (shell 1.x) to
 # ~/.config/haltia, file by file: the programs move theirs (haltia-kit).
 mkdir -p "$HOME/.config/haltia"
@@ -34,6 +42,7 @@ if [ -x /usr/bin/haltia-apps ] && /usr/bin/haltia-apps >"$run"/haltia/apps.log 2
 	[ -s "$run"/haltia/waybar.json ] && [ -s "$run"/haltia/style.css ]; then
 	panel=yes
 fi
+stamp apps
 # The home screen: every program as a tile, on the background layer right
 # of the panel; the panel's home button raises it over the windows.
 if [ -x /usr/libexec/haltia/haltia-home ]; then
@@ -110,8 +119,10 @@ mkdir -p "$gtk4"
 	printf '/* Haltia (haltia-launcher): remove the line below to style GTK 4 yourself. */\n@import url("file:///usr/share/haltia/gtk-4.0.css");\n' >"$gtk4/gtk.css"
 [ -e "$gtk4/settings.ini" ] ||
 	printf '[Settings]\ngtk-decoration-layout=:\n' >"$gtk4/settings.ini"
-# The brightness chosen last time (haltia-brightness keeps it).
-/usr/bin/haltia-brightness --restore >"$run"/haltia/brightness.log 2>&1
+# The brightness chosen last time (haltia-brightness keeps it). In the
+# background: its GTK import takes 1.5-3 s here, and the panel waits for
+# nothing it does.
+/usr/bin/haltia-brightness --restore >"$run"/haltia/brightness.log 2>&1 &
 # Settings, the portals (xdg-desktop-portal: gtk, wlr) and feedbackd start
 # through D-Bus activation and take the bus environment.
 dbus-update-activation-environment NO_AT_BRIDGE GTK_A11Y ${GTK_THEME:+GTK_THEME} \
@@ -124,21 +135,6 @@ for pid in $(ps -o pid,user,args | awk -v u="$(id -un)" '$2 == u &&
 	($NF ~ /\/(haltia|b8k)-(volume|rotate|portal)$/ || $3 == "/usr/bin/pulseaudio") { print $1 }'); do
 	kill "$pid" 2>/dev/null
 done
-# The portal's stand-in, after the one of the last session has gone (it
-# held the bus name): with this session's environment.
-if [ -f "$run/dbus-1/services/org.freedesktop.portal.Desktop.service" ]; then
-	setsid /usr/libexec/haltia/haltia-portal >"$run"/haltia/portal.log 2>&1 &
-fi
-# Volume keys. Without this nothing handles them, and a muted sink at 0%
-# has no way back.
-if [ -x /usr/libexec/haltia/haltia-volume ]; then
-	setsid /usr/libexec/haltia/haltia-volume >"$run"/haltia/volume.log 2>&1 &
-fi
-# The screen follows the tablet: portrait on its side, turned over upside
-# down (off in Настройки → Экран).
-if [ -x /usr/bin/haltia-rotate ] && command -v wlr-randr >/dev/null; then
-	setsid /usr/bin/haltia-rotate >"$run"/haltia/rotate.log 2>&1 &
-fi
 if [ -x /usr/bin/haltia-focus ]; then
 	setsid /usr/bin/haltia-focus watch >"$run"/haltia/focus-watch.log 2>&1 &
 fi
@@ -150,33 +146,11 @@ if command -v mako >/dev/null && ! pgrep -x -u "$(id -u)" mako >/dev/null; then
 	/usr/libexec/haltia/haltia-mako config && mako_conf=$run/haltia/mako.conf
 	setsid mako -c "$mako_conf" >"$run"/mako.log 2>&1 &
 fi
-# Counts on buttons from programs' Unity LauncherEntry signals.
-if [ -x /usr/libexec/haltia/haltia-badges ]; then
-	setsid /usr/libexec/haltia/haltia-badges >"$run"/haltia/badges.log 2>&1 &
-fi
 # Wi-Fi passwords: NetworkManager asks a secret agent, which GNOME keeps
 # in its shell. Without one, a tap on a protected network in Settings
 # does nothing. The session restarts with waybar; one agent is enough.
 if command -v nm-applet >/dev/null && ! pgrep -x -u "$(id -u)" nm-applet >/dev/null; then
 	setsid nm-applet >"$run"/nm-applet.log 2>&1 &
-fi
-# Сообщения (MAX) live in the background: messages buzz and the button
-# counts them with no window open. (Until the program brings an XDG
-# autostart file of its own; haltia-messenger was b8k-max.)
-max=
-for m in /usr/bin/haltia-messenger /usr/bin/b8k-max /usr/local/bin/b8k-max; do
-	[ -x "$m" ] && max=$m && break
-done
-if [ -n "$max" ] && { [ -s "$HOME/.local/share/haltia-messenger/web.db" ] ||
-	[ -s "$HOME/.local/share/b8k-max/web.db" ]; } &&
-	[ ! -e /etc/xdg/autostart/io.github.haltia_de.Messenger.desktop ] &&
-	[ ! -e /etc/xdg/autostart/io.github.trudenboy.Max.desktop ]; then
-	setsid "$max" --background >"$run"/haltia/messenger.log 2>&1 &
-fi
-# Programs started in the background the standard way: XDG autostart
-# entries marked X-Haltia-Autostart=true, and one's own ~/.config/autostart.
-if [ -x /usr/bin/haltia-apps ]; then
-	/usr/bin/haltia-apps autostart >"$run"/haltia/autostart.log 2>&1
 fi
 if [ -x /usr/libexec/haltia/haltia-keyboard ]; then
 	pidof haltia-wvkbd >/dev/null 2>&1 || \
@@ -188,18 +162,75 @@ fi
 # brings a hidden panel back.
 /usr/libexec/haltia/haltia-gestures normal
 # Updates (haltia-update): a session that keeps restarting after an update
-# rolls it back; one that has run a minute marks it good, once the checks
-# in /etc/haltia/health pass.
-if [ -x /usr/libexec/haltia/haltia-update ]; then
+# rolls it back. Counted before the panel, which may be what fails; only
+# while an update waits for its good mark (pending.json), as a Python start
+# through doas costs half a second.
+if [ -x /usr/libexec/haltia/haltia-update ] && [ -e /var/lib/haltia/update/pending.json ]; then
 	doas -n /usr/libexec/haltia/haltia-update session-start >"$run"/haltia/update.log 2>&1
-	# Then what it did by itself (going back at boot or just now, updating
-	# while the screen was off) as notifications that open «Обновления».
-	(sleep 60; doas -n /usr/libexec/haltia/haltia-update health
-		/usr/libexec/haltia/haltia-update-notify) >>"$run"/haltia/update.log 2>&1 &
-	/usr/libexec/haltia/haltia-update-notify >>"$run"/haltia/update.log 2>&1 &
 fi
+# What the panel need not wait for starts once it is up: each of these is
+# Python with GObject, 1-3 s of a core and the flash after a boot, which
+# the panel's own start had to share. The launcher becomes waybar (exec
+# below), so its comm says when the panel is starting; two more seconds let
+# it draw first.
+after_panel() {
+	while [ "$(cat /proc/$$/comm 2>/dev/null)" != waybar ]; do
+		[ -d /proc/$$ ] || return
+		sleep 0.2
+	done
+	stamp panel
+	sleep 2
+	# The portal's stand-in, after the one of the last session has gone (it
+	# held the bus name): with this session's environment.
+	if [ -f "$run/dbus-1/services/org.freedesktop.portal.Desktop.service" ]; then
+		setsid /usr/libexec/haltia/haltia-portal >"$run"/haltia/portal.log 2>&1 &
+	fi
+	# Volume keys. Without this nothing handles them, and a muted sink at 0%
+	# has no way back.
+	if [ -x /usr/libexec/haltia/haltia-volume ]; then
+		setsid /usr/libexec/haltia/haltia-volume >"$run"/haltia/volume.log 2>&1 &
+	fi
+	# The screen follows the tablet: portrait on its side, turned over upside
+	# down (off in Настройки → Экран).
+	if [ -x /usr/bin/haltia-rotate ] && command -v wlr-randr >/dev/null; then
+		setsid /usr/bin/haltia-rotate >"$run"/haltia/rotate.log 2>&1 &
+	fi
+	# Counts on buttons from programs' Unity LauncherEntry signals.
+	if [ -x /usr/libexec/haltia/haltia-badges ]; then
+		setsid /usr/libexec/haltia/haltia-badges >"$run"/haltia/badges.log 2>&1 &
+	fi
+	# Сообщения (MAX) live in the background: messages buzz and the button
+	# counts them with no window open. (Until the program brings an XDG
+	# autostart file of its own; haltia-messenger was b8k-max.)
+	max=
+	for m in /usr/bin/haltia-messenger /usr/bin/b8k-max /usr/local/bin/b8k-max; do
+		[ -x "$m" ] && max=$m && break
+	done
+	if [ -n "$max" ] && { [ -s "$HOME/.local/share/haltia-messenger/web.db" ] ||
+		[ -s "$HOME/.local/share/b8k-max/web.db" ]; } &&
+		[ ! -e /etc/xdg/autostart/io.github.haltia_de.Messenger.desktop ] &&
+		[ ! -e /etc/xdg/autostart/io.github.trudenboy.Max.desktop ]; then
+		setsid "$max" --background >"$run"/haltia/messenger.log 2>&1 &
+	fi
+	# Programs started in the background the standard way: XDG autostart
+	# entries marked X-Haltia-Autostart=true, and one's own ~/.config/autostart.
+	if [ -x /usr/bin/haltia-apps ]; then
+		/usr/bin/haltia-apps autostart >"$run"/haltia/autostart.log 2>&1
+	fi
+	# A session that has run a minute marks an update good, once the checks
+	# in /etc/haltia/health pass; then what haltia-update did by itself
+	# (going back at boot or just now, updating while the screen was off)
+	# as notifications that open «Обновления».
+	if [ -x /usr/libexec/haltia/haltia-update ]; then
+		(sleep 60; doas -n /usr/libexec/haltia/haltia-update health
+			/usr/libexec/haltia/haltia-update-notify) >>"$run"/haltia/update.log 2>&1 &
+		/usr/libexec/haltia/haltia-update-notify >>"$run"/haltia/update.log 2>&1 &
+	fi
+}
+after_panel </dev/null >/dev/null 2>&1 &
 # What the device or the person adds at session start (haltia-hook).
 /usr/libexec/haltia/haltia-hook session-start
+stamp waybar
 # Firefox starts only from its button: running without a window it held
 # 300-500 MB, and once its WebExtensions process filled the swap and froze
 # the session.

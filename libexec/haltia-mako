@@ -13,8 +13,8 @@
 #                        (haltia-launcher before mako starts; Настройки,
 #                        then makoctl reload)
 #   haltia-mako buzz     mako's on-notify: buzz, unless switched off or quiet
-#                        now (feedbackd's message-new-instant without sound,
-#                        else haltia-press)
+#                        now (haltia-press: feedbackd accepts the event on
+#                        the B8000-H but the motor hardly turns)
 set -u
 conf=$HOME/.config/haltia/notifications
 value() {
@@ -50,8 +50,7 @@ buzz)
 			{ [ "$hour" -ge "$from" ] || [ "$hour" -lt "$to" ]; } && exit 0
 		fi
 	fi
-	fbcli -E message-new-instant -P quiet -A io.github.haltia_de.Shell </dev/null >/dev/null 2>&1 ||
-		/usr/libexec/haltia/haltia-press notify
+	exec /usr/libexec/haltia/haltia-press notify
 	;;
 *)
 	echo "usage: haltia-mako config|buzz" >&2
