@@ -8,6 +8,8 @@
 #   haltia-ask pin <id>          (a long press on a home screen tile)
 #   haltia-ask media <id>        (a tap on the button of a program in front
 #                             that plays: pause or go on, stop)
+#   haltia-ask restart <label>   (haltia-restart after an update: start the
+#                             program again now? exit 0 for yes)
 #   haltia-ask status            (the status card on the panel: the network,
 #                             brightness and volume, sound off or on)
 #   haltia-ask service           (the old «Служебные» tile, gone with 2.6: Settings, the touch
@@ -27,9 +29,14 @@ for a in "$run/haltia/apps.conf" "$run/b8k/apps.conf"; do
 	[ -f "$a" ] && APPS=$a && break
 done
 
-# One question at a time; a second tap while one is open does nothing.
+# One question at a time; a second tap while one is open does nothing. The
+# question after an update waits its turn instead: it must not count as yes.
 exec 9>"$run/haltia/ask.lock" || exit 1
-flock -n 9 || exit 0
+if [ "${1:-}" = restart ]; then
+	flock 9 || exit 1
+else
+	flock -n 9 || exit 0
+fi
 
 # A value of one section of apps.conf.
 conf() {
@@ -197,6 +204,10 @@ close-front)
 	# Only the window in front is asked to close (a program's other
 	# windows stay), but a hang stops the whole program.
 	close_program "${id:-$app}" "${label:-$app}" "$app"
+	;;
+restart)
+	[ "$(ask "Вышла новая версия «${2:-}». Перезапустить сейчас?" "Перезапустить" "Потом")" = 0 ] || exit 1
+	chosen
 	;;
 media)
 	id=${2:-}

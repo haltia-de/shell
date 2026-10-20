@@ -1,5 +1,19 @@
 # Что нового · What's new
 
+## 2.9.0 (2026-10-20)
+
+### Русский
+
+- После обновления новые версии начинают работать сразу: программы в фоне (Сообщения) перезапускаются сами, о программах с открытым окном оболочка спрашивает
+- После автообновления программа с открытым окном перезапускается, когда её закроют; в Обновлениях видно, что ещё ждёт перезапуска
+- Новые программы и их настройки из обновления видны без перезапуска планшета
+
+### English
+
+- After an update the new versions start at once: programs in the background (Messages) restart by themselves, the shell asks about programs with a window open
+- After updating by itself, a program with a window open restarts when it is closed; Updates shows what still waits for it
+- New programs and their settings from an update show without restarting the tablet
+
 ## 2.8.0 (2026-10-20)
 
 ### Русский

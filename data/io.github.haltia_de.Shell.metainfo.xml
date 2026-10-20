@@ -17,6 +17,20 @@
   <content_rating type="oars-1.1"/>
   <developer id="io.github.haltia_de"><name>Mikhail Nevskiy</name></developer>
   <releases>
+    <release version="2.9.0" date="2026-10-20">
+      <description>
+        <ul>
+          <li>After an update the new versions start at once: programs in the background (Messages) restart by themselves, the shell asks about programs with a window open</li>
+          <li>After updating by itself, a program with a window open restarts when it is closed; Updates shows what still waits for it</li>
+          <li>New programs and their settings from an update show without restarting the tablet</li>
+        </ul>
+        <ul>
+          <li xml:lang="ru">После обновления новые версии начинают работать сразу: программы в фоне (Сообщения) перезапускаются сами, о программах с открытым окном оболочка спрашивает</li>
+          <li xml:lang="ru">После автообновления программа с открытым окном перезапускается, когда её закроют; в Обновлениях видно, что ещё ждёт перезапуска</li>
+          <li xml:lang="ru">Новые программы и их настройки из обновления видны без перезапуска планшета</li>
+        </ul>
+      </description>
+    </release>
     <release version="2.8.0" date="2026-10-20">
       <description>
         <ul>

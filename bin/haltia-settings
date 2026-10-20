@@ -1329,6 +1329,47 @@ def css_provider(css):
 
 # --- updates ----------------------------------------------------------------
 UPDATE = ["doas", "-n", "/usr/libexec/haltia/haltia-update"]
+RESTART = "/usr/libexec/haltia/haltia-restart"
+
+
+def session_started():
+    """When the panel (the session) started, epoch seconds, or 0."""
+    try:
+        pid = int(subprocess.run(["pidof", "waybar"], capture_output=True, text=True,
+                                 timeout=5).stdout.split()[0])
+        with open("/proc/stat") as fh:
+            btime = next(int(x.split()[1]) for x in fh if x.startswith("btime "))
+        with open("/proc/%d/stat" % pid) as fh:
+            stat = fh.read()
+        ticks = int(stat[stat.rindex(")") + 2:].split()[19])
+        return btime + ticks / os.sysconf("SC_CLK_TCK")
+    except (OSError, ValueError, IndexError, StopIteration, subprocess.SubprocessError):
+        return 0
+
+
+def shell_updated_since_start(st):
+    """The shell was updated (and not taken back) after this session began:
+    its panel and session take the new version at the next start."""
+    begun = session_started()
+    return bool(begun) and any(
+        entry.get("time", 0) > begun and any(p["name"] == "haltia-shell" and
+                                             not p.get("rolled_back")
+                                             for p in entry.get("programs", []))
+        for entry in st.get("history", []))
+
+
+def group(name):
+    """The package a subpackage belongs to, as haltia-update counts them."""
+    return re.sub(r"-(pyc|lang|doc|openrc|ru)$", "", name)
+
+
+def restart_after(packages):
+    """The updated programs take up their new versions; a question for
+    those with a window (haltia-restart --ask)."""
+    if packages and os.access(RESTART, os.X_OK):
+        subprocess.Popen([RESTART, "--ask", *sorted(set(packages))], start_new_session=True,
+                         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                         stderr=subprocess.DEVNULL)
 MONTHS = ("января", "февраля", "марта", "апреля", "мая", "июня", "июля", "августа",
           "сентября", "октября", "ноября", "декабря")
 STAGES = {"index": "Узнаю, что вышло…", "snapshot": "Сохраняю прежние версии…",
@@ -1425,6 +1466,7 @@ class Updates:
         self.busy = False
         self.st = {}
         self.watch = None
+        self.restart_pkgs = ()
         self.notes_for = None
         # The list is the page; «Что нового» a page of its own in the window's
         # stack (subpages), as a stack inside the page showed black edges.
@@ -1565,6 +1607,12 @@ class Updates:
             "Ещё не проверяли."
         if st.get("pending"):
             when_ += " Последнее обновление проверяется."
+        # What has not taken up its new version yet (haltia-restart).
+        old = [x for x in run(RESTART, "pending").splitlines() if x.strip()]
+        if shell_updated_since_start(st):
+            old.append("оболочка (полностью — после перезапуска планшета)")
+        if old:
+            when_ += " Заработают после перезапуска: %s." % ", ".join(old)
         self.state.set_text(when_)
 
     def fill_list(self):
@@ -1647,11 +1695,12 @@ class Updates:
             if names is None or row.prog["name"] in names:
                 row.button.set_label(text)
 
-    def start(self, args, label, targets=()):
+    def start(self, args, label, targets=(), packages=()):
         """Runs haltia-update with its progress shown; the state is read
         again when it ends. targets: the programs in the list it updates
         (None: all), marked as waiting, then as being updated."""
         self.targets = targets
+        self.restart_pkgs = packages  # what to start again after; None: the newest update's
         if targets != ():
             self.mark(targets, "Ждёт…")
         self.busy = True
@@ -1678,6 +1727,14 @@ class Updates:
         self.leave_notes()
         self.refresh()
         self.state.set_text(RESULTS.get(last, "Не получилось." if code else "Готово."))
+        if code == 0 and last in ("updated", "rolled back"):
+            packages = self.restart_pkgs
+            if packages is None:  # everything: what the newest update changed
+                history = self.st.get("history", [])
+                packages = [n for p in (history[0]["programs"] if history else [])
+                            for n in p["packages"]]
+            restart_after([group(n) for n in packages])
+        self.restart_pkgs = ()
 
     def check(self):
         self.start(["check"], "Ищу обновления…")
@@ -1688,24 +1745,25 @@ class Updates:
                                            "Обновить всё сейчас? Планшет не выключайте",
                                            "Обновить"):
                 return
-            self.start(["upgrade"], "Обновляю всё…", None)
+            self.start(["upgrade"], "Обновляю всё…", None, None)
             return
         names = sorted({p[0] for p in prog["packages"]})
-        self.start(["upgrade"] + names, "Обновляю «%s»…" % prog["label"], {prog["name"]})
+        self.start(["upgrade"] + names, "Обновляю «%s»…" % prog["label"], {prog["name"]}, names)
 
     def rollback(self, entry, prog):
         what = "Вернуть прежние системные компоненты?" if prog["name"] == "system" else \
             "Вернуть «%s» версии %s?" % (prog["label"], prog.get("old", ""))
         if dialogs and not dialogs.ask(self.app.win, what, "Вернуть"):
             return
-        self.start(["rollback", entry["id"]] + prog["packages"], "Возвращаю прежнюю версию…")
+        self.start(["rollback", entry["id"]] + prog["packages"], "Возвращаю прежнюю версию…",
+                   packages=prog["packages"])
 
     def rollback_last(self):
         if dialogs and not dialogs.ask(
                 self.app.win, "Вернуть программы, какими они были до последнего обновления?",
                 "Вернуть"):
             return
-        self.start(["rollback"], "Возвращаю прежние версии…")
+        self.start(["rollback"], "Возвращаю прежние версии…", packages=None)
 
     def on_auto(self, switch, _param):
         run(*UPDATE, "auto", "on" if switch.get_active() else "off")

@@ -1,0 +1,281 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0
+"""After an update, the session takes up the new versions.
+
+    haltia-restart [--ask] PACKAGE...   (Настройки with --ask after
+                                         «Обновить» or «Вернуть»;
+                                         haltia-update-notify without it
+                                         after updating by itself)
+    haltia-restart pending              the labels of programs still running
+                                        their old version, one a line
+    haltia-restart closed APP_ID...     (haltia-focus) windows closed: a
+                                        pending program left without one is
+                                        started again in the background
+
+The files on disk are new, the running programs are not: apps.conf is
+built again (haltia-apps reload: a new .desktop file or key counts at
+once), and each updated program that runs is started again:
+
+  - one without a window (Сообщения in the background, autostart entries):
+    at once, silently, as «✕» does after a hang (haltia-stop, which starts
+    it again in the background);
+  - one with a window: with --ask, a question («Сообщения обновились.
+    Перезапустить сейчас?»), then it is stopped and opened again; without
+    it, it is left alone and listed in $XDG_RUNTIME_DIR/haltia/
+    restart-pending until it ends (Настройки → Обновления shows it); when
+    its last window closes and it stays in the background, it is started
+    again then;
+  - the shell itself: only its helpers without windows (volume keys,
+    turning, the panel's marks, the portal's stand-in); the panel and the
+    session take the new version at the next start, as restarting waybar
+    closes every program.
+
+py3-haltia-kit counts as every program of the .desktop files.
+"""
+import importlib.machinery
+import importlib.util
+import os
+import subprocess
+import sys
+import time
+
+HERE = os.path.dirname(os.path.realpath(__file__))
+
+
+def load_stop():
+    path = os.path.join(HERE, "haltia-stop")
+    if not os.path.exists(path):
+        path = "/usr/libexec/haltia/haltia-stop"
+    loader = importlib.machinery.SourceFileLoader("haltia_stop", path)
+    spec = importlib.util.spec_from_loader("haltia_stop", loader)
+    module = importlib.util.module_from_spec(spec)
+    loader.exec_module(module)
+    return module
+
+
+stop = load_stop()
+RUN = os.path.join(stop.runtime(), "haltia")
+PENDING = os.path.join(RUN, "restart-pending")
+# The shell's helpers that hold no window: (command, its arguments, log, when).
+HELPERS = (
+    ("/usr/libexec/haltia/haltia-volume", (), "volume.log", None),
+    ("/usr/bin/haltia-rotate", (), "rotate.log", "wlr-randr"),
+    ("/usr/libexec/haltia/haltia-badges", (), "badges.log", None),
+    ("/usr/libexec/haltia/haltia-portal", (), "portal.log",
+     os.path.join(stop.runtime(), "dbus-1/services/org.freedesktop.portal.Desktop.service")),
+)
+
+
+def log(text):
+    sys.stderr.write("haltia-restart: %s\n" % text)
+    sys.stderr.flush()
+
+
+def sections():
+    """{id: fields} of the session's apps.conf."""
+    out, sid = {}, None
+    path = stop.apps_conf()
+    if not path:
+        return out
+    with open(path, encoding="utf-8", errors="replace") as fh:
+        for line in fh:
+            line = line.strip()
+            if line.startswith("["):
+                sid = line.strip("[] \t")
+                out[sid] = {}
+            elif sid and "=" in line and not line.startswith("#"):
+                key, _sep, value = line.partition("=")
+                out[sid][key.strip()] = value.strip()
+    return out
+
+
+def ids_of(packages, known):
+    """The programs (apps.conf sections) the packages hold: their .desktop
+    files; the shared library holds every program of a .desktop file."""
+    ids = set()
+    for pkg in packages:
+        if pkg == "py3-haltia-kit":
+            ids |= {sid for sid in known if "." in sid}
+            continue
+        try:
+            out = subprocess.run(["apk", "info", "-L", pkg], capture_output=True, text=True,
+                                 timeout=30).stdout
+        except (OSError, subprocess.SubprocessError):
+            continue
+        for line in out.splitlines():
+            if line.startswith("usr/share/applications/") and line.endswith(".desktop"):
+                sid = os.path.basename(line)[:-len(".desktop")]
+                if sid in known:
+                    ids.add(sid)
+    return ids
+
+
+def windows():
+    try:
+        out = subprocess.run(["/usr/bin/haltia-focus", "list"], capture_output=True,
+                             text=True, timeout=10).stdout
+    except (OSError, subprocess.SubprocessError):
+        return set()
+    return set(out.split())
+
+
+def boot_time():
+    with open("/proc/stat") as fh:
+        for line in fh:
+            if line.startswith("btime "):
+                return int(line.split()[1])
+    return 0
+
+
+def started(pid, btime=None):
+    """When a process started (epoch seconds), or None."""
+    try:
+        with open("/proc/%d/stat" % pid) as fh:
+            stat = fh.read()
+        ticks = int(stat[stat.rindex(")") + 2:].split()[19])
+    except (OSError, ValueError, IndexError):
+        return None
+    return (btime if btime is not None else boot_time()) + ticks / os.sysconf("SC_CLK_TCK")
+
+
+def ask(label):
+    try:
+        res = subprocess.run(["/usr/bin/haltia-ask", "restart", label], timeout=600)
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return res.returncode == 0
+
+
+def restart_helpers():
+    procs = stop.processes()
+    for command, args, logname, when in HELPERS:
+        if not os.path.exists(command):
+            continue
+        if when and not (os.path.exists(when) or any(
+                os.access(os.path.join(d, when), os.X_OK)
+                for d in os.environ.get("PATH", "/usr/bin").split(":"))):
+            continue
+        name = os.path.basename(command)
+        old = [pid for pid, (_pp, names) in procs.items() if name in names]
+        if not old:
+            continue  # not running here: nothing to bring up to date
+        stop.stop(old)
+        with open(os.path.join(RUN, logname), "a") as out:
+            subprocess.Popen([command, *args], stdin=subprocess.DEVNULL, stdout=out,
+                             stderr=out, start_new_session=True)
+        log("%s started again" % name)
+
+
+def remember(sid, label):
+    lines = read_pending()
+    lines = [x for x in lines if x[0] != sid] + [(sid, label, int(time.time()))]
+    os.makedirs(RUN, exist_ok=True)
+    with open(PENDING + ".new", "w") as fh:
+        for s, lbl, t in lines:
+            fh.write("%s\t%s\t%d\n" % (s, lbl, t))
+    os.replace(PENDING + ".new", PENDING)
+
+
+def read_pending():
+    out = []
+    try:
+        with open(PENDING, encoding="utf-8") as fh:
+            for line in fh:
+                parts = line.rstrip("\n").split("\t")
+                if len(parts) == 3 and parts[2].isdigit():
+                    out.append((parts[0], parts[1], int(parts[2])))
+    except OSError:
+        pass
+    return out
+
+
+def pending():
+    """The programs still running their old version: a process of theirs
+    started before the update; the others leave the list."""
+    known = sections()
+    btime = boot_time()
+    still = []
+    for sid, label, when in read_pending():
+        app_ids = known.get(sid, {}).get("app_ids", "").split()
+        pids = stop.program(sid, app_ids)
+        if any((started(p, btime) or when) < when for p in pids):
+            still.append((sid, label, when))
+    os.makedirs(RUN, exist_ok=True)
+    with open(PENDING + ".new", "w") as fh:
+        for s, lbl, t in still:
+            fh.write("%s\t%s\t%d\n" % (s, lbl, t))
+    os.replace(PENDING + ".new", PENDING)
+    for _sid, label, _when in still:
+        print(label)
+    return 0
+
+
+def closed(app_ids):
+    """Windows with these app ids have closed (haltia-focus): a pending
+    program left with no window but still running is started again in the
+    background now."""
+    known = sections()
+    shown = windows()
+    left = []
+    for sid, label, when in read_pending():
+        ids = known.get(sid, {}).get("app_ids", "").split()
+        if not set(ids) & set(app_ids) or shown & set(ids):
+            left.append((sid, label, when))
+            continue
+        if stop.program(sid, ids):
+            subprocess.run(["/usr/libexec/haltia/haltia-stop", sid, *ids],
+                           stdout=subprocess.DEVNULL, timeout=60)
+            log("%s started again in the background, its window closed" % sid)
+    with open(PENDING + ".new", "w") as fh:
+        for s, lbl, t in left:
+            fh.write("%s\t%s\t%d\n" % (s, lbl, t))
+    os.replace(PENDING + ".new", PENDING)
+    return 0
+
+
+def restart(packages, asking):
+    subprocess.run(["/usr/bin/haltia-apps", "reload"], stdout=subprocess.DEVNULL,
+                   stderr=subprocess.DEVNULL, timeout=60)
+    if "haltia-shell" in packages:
+        restart_helpers()
+    known = sections()
+    shown = windows()
+    for sid in sorted(ids_of(packages, known)):
+        fields = known[sid]
+        app_ids = fields.get("app_ids", "").split()
+        if not stop.program(sid, app_ids):
+            continue  # not running: it starts new next time
+        label = fields.get("label", sid)
+        if not shown & set(app_ids):
+            subprocess.run(["/usr/libexec/haltia/haltia-stop", sid, *app_ids],
+                           stdout=subprocess.DEVNULL, timeout=60)
+            log("%s started again in the background" % sid)
+        elif asking and ask(label):
+            subprocess.run(["/usr/libexec/haltia/haltia-stop", sid, *app_ids],
+                           stdout=subprocess.DEVNULL, timeout=60)
+            subprocess.Popen(["/usr/bin/haltia-launch", "open", sid], start_new_session=True,
+                             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                             stderr=subprocess.DEVNULL)
+            log("%s opened again" % sid)
+        else:
+            remember(sid, label)
+            log("%s keeps its old version until it is closed" % sid)
+    return 0
+
+
+def main():
+    args = sys.argv[1:]
+    if args == ["pending"]:
+        return pending()
+    if args[:1] == ["closed"]:
+        return closed(args[1:])
+    asking = "--ask" in args
+    packages = [a for a in args if not a.startswith("-")]
+    if not packages:
+        sys.stderr.write(__doc__)
+        return 2
+    return restart(packages, asking)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

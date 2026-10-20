@@ -687,11 +687,13 @@ def tell(kind, names):
 
 
 def news():
-    """What happened by itself and was not told yet: KIND <tab> labels."""
+    """What happened by itself and was not told yet: KIND <tab> labels <tab>
+    the packages (for haltia-restart)."""
     path = os.path.join(STATE, "news.json")
     items = [n for n in read_json(path, []) if not n.get("told")]
     for item in items:
-        log("%s\t%s" % (item["kind"], ", ".join(sorted({label(n) for n in item["names"]}))))
+        log("%s\t%s\t%s" % (item["kind"], ", ".join(sorted({label(n) for n in item["names"]})),
+                             " ".join(sorted(set(item["names"])))))
     if items:
         write_json(path, [dict(n, told=True) for n in read_json(path, [])])
     return 0

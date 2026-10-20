@@ -4,7 +4,8 @@
 
 Without arguments: what haltia-update did by itself since it was last
 asked (haltia-update news through doas): «Обновлены: Музыка, Видео» after
-updating by itself, «Обновление не прижилось» after going back by itself.
+updating by itself, «Обновление не прижилось» after going back by itself;
+the programs it changed take up their new versions (haltia-restart).
 With TITLE and BODY: that one notification (haltia-sleep's «Есть
 обновления»).
 
@@ -35,13 +36,23 @@ def items():
     except (OSError, subprocess.SubprocessError):
         return []
     found = []
+    changed = set()
     for line in out.splitlines():
-        kind, _tab, names = line.partition("\t")
+        kind, _tab, rest = line.partition("\t")
+        names, _tab, packages = rest.partition("\t")
+        if kind in ("updated", "rolled back"):
+            changed.update(packages.split())
         if kind == "updated":
             found.append(("Обновлены: %s" % names, "Нажмите, чтобы узнать, что нового"))
         elif kind == "rolled back":
             found.append(("Обновление не прижилось",
                           "Вернул прежнюю версию: %s" % names))
+    if changed:
+        # The new versions start: programs in the background at once, ones
+        # with a window when they are next opened (haltia-restart).
+        subprocess.Popen(["/usr/libexec/haltia/haltia-restart", *sorted(changed)],
+                         start_new_session=True, stdin=subprocess.DEVNULL,
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     return found
 
 
