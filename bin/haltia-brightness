@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-2.0
 # Brightness and volume: two large sliders on one card, opened from the
-# panel's status card («Состояние») and from «Служебные».
+# panel's status card («Состояние»); Настройки → Экран has the same slider.
 # The chosen level is kept in ~/.config/haltia/brightness; --restore sets it
 # again at session start (haltia-launcher) without opening the window.
 # The level goes through logind (Session.SetBrightness), so no root is

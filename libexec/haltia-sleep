@@ -47,6 +47,11 @@ LEVEL_PATH = "/run/haltia/sleep/level"
 LONG_PRESS = 1.0  # seconds held before the power menu opens
 SUSPEND_AFTER = 30.0  # seconds with the screen off before a system sleep
 IDLE_OFF = 600.0  # seconds without any input before the screen goes off
+# Настройки → Экран, read from the session user's ~/.config/haltia/screen:
+#   off_after=SECONDS     instead of IDLE_OFF
+#   charging=on           the screen stays on while the tablet charges
+SCREEN_CONF = ".config/haltia/screen"
+SCREEN_CHECK = 30.0  # seconds between looks at that file and the charger
 RESCAN_SEC = 30.0  # how often the input devices are looked at again
 SUSPEND_HOOK = "/usr/lib/haltia/hooks/suspend"
 POWER_STATE = "/sys/power/state"
@@ -143,6 +148,36 @@ UPDATE = "/usr/libexec/haltia/haltia-update"
 UPDATE_STATE = "/var/lib/haltia/update"
 UPDATE_NOTIFY = "/usr/libexec/haltia/haltia-update-notify"
 UPDATE_EVERY = 20 * 3600  # seconds between looks for updates
+
+
+_screen = {"at": -SCREEN_CHECK, "off": IDLE_OFF, "keep": False, "charging": False}
+
+
+def idle_off():
+    """Seconds without input before the screen goes off, as Настройки set
+    it (IDLE_OFF otherwise); None while it stays on (charging, when asked)."""
+    now = time.monotonic()
+    if now - _screen["at"] >= SCREEN_CHECK:
+        _screen["at"] = now
+        off, keep = IDLE_OFF, False
+        found = session_env()
+        if found:
+            try:
+                home = pwd.getpwuid(found[1]).pw_dir
+                with open(os.path.join(home, SCREEN_CONF)) as fh:
+                    for line in fh:
+                        key, sep, val = line.partition("=")
+                        key, val = key.strip(), val.strip()
+                        if sep and key == "off_after" and val.isdigit() and int(val) >= 30:
+                            off = float(val)
+                        elif sep and key == "charging":
+                            keep = val == "on"
+            except (OSError, KeyError):
+                pass
+        _screen.update(off=off, keep=keep, charging=keep and charging())
+    if _screen["keep"] and _screen["charging"]:
+        return None
+    return _screen["off"]
 
 
 def charging():
@@ -638,8 +673,9 @@ def listen():
                 log("ACTIVITY_RESCAN %d" % len(activity))
             due = lamp.suspend_due()
             idle = None
-            if not lamp.asleep:
-                idle = max(0.0, last_input + IDLE_OFF - time.monotonic())
+            off_after = idle_off()
+            if not lamp.asleep and off_after is not None:
+                idle = max(0.0, last_input + off_after - time.monotonic())
             # At least every RESCAN_SEC, to notice new devices.
             waits = [t for t in (due, idle, RESCAN_SEC) if t is not None]
             ready = select.select([power] + activity, [], [], min(waits))[0]
@@ -654,7 +690,7 @@ def listen():
                     left = lamp.suspend_due()
                     if left is not None and left <= 0:
                         lamp.suspend()
-                elif time.monotonic() - last_input >= IDLE_OFF:
+                elif off_after is not None and time.monotonic() - last_input >= off_after:
                     if awake_held("screen"):
                         last_input = time.monotonic()  # a video is playing
                     else:

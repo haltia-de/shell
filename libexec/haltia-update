@@ -15,6 +15,8 @@ session user runs it through doas without a password (z-haltia-shell.conf).
                                      default), or only these packages of it
     haltia-update history            the snapshots, newest first
     haltia-update state              everything the window shows, as JSON
+    haltia-update log                the update log's last lines, newest
+                                     first (Настройки → «Для помощника»)
     haltia-update news               what happened by itself since last
                                      asked (updated, rolled back): KIND
                                      <tab> LABELS lines, for a notification
@@ -205,9 +207,23 @@ def unhold_checksums():
         note("world: checksum holds of Haltia packages dropped")
 
 
+def update_index():
+    """apk update, once more after a few seconds: right after the
+    repository is published, Pages may serve an index and a signature that
+    do not match yet. The cause goes to the log."""
+    for attempt in range(2):
+        res = apk("update", "-q")
+        if res.returncode == 0:
+            return True
+        note("index: %s" % (res.stderr or res.stdout).strip()[-200:])
+        if attempt == 0:
+            time.sleep(8)
+    return False
+
+
 def check():
     unhold_checksums()
-    apk("update", "-q")
+    update_index()
     lines = [c for c in upgradable()]
     for name, bad in held().items():
         new = available(name)
@@ -463,7 +479,7 @@ def upgrade(auto=False, names=()):
         return 3
     unhold_checksums()
     stage("index")
-    if apk("update", "-q").returncode:
+    if not update_index():
         log("network: no repository")
         return 3
     plan = upgradable(names)
@@ -780,6 +796,15 @@ def main():
         return status()
     if cmd == "state":
         return state()
+    if cmd == "log":
+        try:
+            with open(os.path.join(STATE, "log")) as fh:
+                lines = fh.read().splitlines()[-200:]
+        except OSError:
+            lines = []
+        for line in reversed(lines):
+            log(line)
+        return 0
     wait = cmd in ("session-start", "boot")
     os.makedirs(os.path.dirname(LOCK), exist_ok=True)
     lock = open(LOCK, "a")

@@ -12,6 +12,8 @@
     haltia-apps autostart  start the XDG autostart entries meant for this shell
                         (haltia-launcher, once per session)
     haltia-apps autostart NAME.desktop   only that one (haltia-stop)
+    haltia-apps programs   the programs one may place, as JSON (Настройки →
+                        «Панель и домашний экран»)
 
 Four sources, later ones winning:
   /usr/share/haltia/apps.conf  the system programs the shell shows
@@ -27,9 +29,12 @@ Four sources, later ones winning:
                                   for /usr/share/applications/gimp.desktop,
                                   when pinned by that id
 and the pinned buttons from top to bottom, one id per line:
-~/.config/haltia/panel, or else /usr/share/haltia/panel. Every program is
-on the home screen (haltia-home) anyway; under the pinned ones the panel has
-slots for programs that are open but not pinned (haltia-launch slot N).
+~/.config/haltia/panel, or else /usr/share/haltia/panel. The home screen
+(haltia-home) shows every program but the ones marked home = no, in the
+order of ~/.config/haltia/home when there is one (one id per line; "-ID"
+keeps a program off it; ids it does not name follow in their own order).
+Under the pinned ones the panel has slots for programs that are open but
+not pinned (haltia-launch slot N). Настройки write both files.
 
 Written to $XDG_RUNTIME_DIR/haltia/:
   apps.conf    every program, with "signal" set from its place on the
@@ -66,6 +71,7 @@ def user_file(name):
 
 USER_APPS = user_file("apps.conf")
 USER_PANEL = user_file("panel")
+USER_HOME = os.path.expanduser("~/.config/haltia/home")
 # The shell's panel, in its own folder: /etc/xdg/waybar belongs to waybar.
 WAYBAR_CONFIG = "/usr/share/haltia/waybar/config"
 WAYBAR_STYLE = "/usr/share/haltia/waybar/style.css"
@@ -285,6 +291,50 @@ def panel_ids(apps, replaced=None):
     return []
 
 
+def read_home():
+    """[(id, shown)] from ~/.config/haltia/home, in its order."""
+    found = []
+    try:
+        with open(USER_HOME, encoding="utf-8") as fh:
+            for line in fh:
+                word = line.split("#", 1)[0].strip()
+                if word:
+                    found.append((word.lstrip("-"), not word.startswith("-")))
+    except OSError:
+        pass
+    return found
+
+
+def home_order(apps, order, replaced):
+    """The home screen as one set it: the ids of the home file first, in its
+    order, off it where it says so ("-ID"); then the rest in their own."""
+    listed = []
+    for app_id, shown in read_home():
+        app_id = replaced.get(app_id, RENAMED.get(app_id, app_id))
+        if app_id in apps and app_id not in listed:
+            listed.append(app_id)
+            if not shown:
+                apps[app_id]["home"] = "no"
+    return listed + [i for i in order if i not in listed]
+
+
+def placeable(apps, order):
+    """The programs one may place: all but the built-in ones kept off the
+    home screen (the terminal, the touch settings), with where they are."""
+    base = read_conf(SYSTEM)
+    pinned = set(i for i in panel_ids(apps, ALIASES) if i in apps)
+    shown_home = {i: s for i, s in read_home()}
+    found = []
+    for app_id in order:
+        if base.has_section(app_id) and base[app_id].get("home", "") == "no":
+            continue
+        fields = apps[app_id]
+        found.append({"id": app_id, "label": fields.get("label", app_id),
+                      "icon": fields.get("icon", ""), "pinned": app_id in pinned,
+                      "home": shown_home.get(app_id, fields.get("home") != "no")})
+    return found
+
+
 def css_class(app_id):
     """The class haltia-launch gives a slot showing this program."""
     return "id-" + re.sub(r"[^A-Za-z0-9_-]", "-", app_id)
@@ -339,6 +389,7 @@ def build():
                          % (MAX_BUTTONS - MIN_SLOTS))
         panel = panel[:MAX_BUTTONS - MIN_SLOTS]
 
+    order = home_order(apps, order, replaced)
     ALIASES.clear()
     ALIASES.update(replaced)
     gen = signals()
@@ -599,6 +650,13 @@ def main():
     cmd = sys.argv[1] if len(sys.argv) > 1 else ""
     if cmd == "autostart":
         autostart(sys.argv[2] if len(sys.argv) > 2 else None)
+        return 0
+    if cmd == "programs":
+        apps, order, panel, _slots = build()
+        items = placeable(apps, order)
+        for item in items:  # the panel's order, as the buttons stand
+            item["place"] = panel.index(item["id"]) if item["id"] in panel else -1
+        print(json.dumps(items, ensure_ascii=False))
         return 0
     if cmd in ("pin", "unpin") and len(sys.argv) > 2:
         if not pin(sys.argv[2], cmd == "pin"):

@@ -1,0 +1,60 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-2.0
+# The notifications as Настройки set them (~/.config/haltia/notifications):
+#
+#   vibrate=on|off       a notification buzzes the motor (on)
+#   timeout=SECONDS      how long one stays; 0: until it is tapped (12)
+#   quiet=on|off         no buzz at night (off)
+#   quiet_from=HOUR      from this hour (22)
+#   quiet_to=HOUR        to this one (8)
+#
+#   haltia-mako config   write $XDG_RUNTIME_DIR/haltia/mako.conf from the
+#                        shell's /usr/share/haltia/mako.conf and that file
+#                        (haltia-launcher before mako starts; Настройки,
+#                        then makoctl reload)
+#   haltia-mako buzz     mako's on-notify: buzz, unless switched off or quiet
+#                        now (feedbackd's message-new-instant without sound,
+#                        else haltia-press)
+set -u
+conf=$HOME/.config/haltia/notifications
+value() {
+	v=$(sed -n "s/^[ \t]*$1[ \t]*=[ \t]*//p" "$conf" 2>/dev/null | tail -1)
+	echo "${v:-$2}"
+}
+
+case ${1:-} in
+config)
+	run=${XDG_RUNTIME_DIR:-$HOME/.cache}/haltia
+	mkdir -p "$run"
+	timeout=$(value timeout 12)
+	case $timeout in '' | *[!0-9]*) timeout=12 ;; esac
+	# mako takes milliseconds; 0 keeps a notification until it is tapped.
+	# Only the top part, before the first [criteria] section: a critical
+	# one stays until tapped whatever is set here.
+	awk -v ms=$((timeout * 1000)) '
+		/^\[/ { top = 1 }
+		!top && /^default-timeout=/ { $0 = "default-timeout=" ms }
+		!top && /^on-notify=/ { $0 = "on-notify=exec /usr/libexec/haltia/haltia-mako buzz" }
+		{ print }' /usr/share/haltia/mako.conf >"$run/mako.conf.new" &&
+		mv "$run/mako.conf.new" "$run/mako.conf"
+	;;
+buzz)
+	[ "$(value vibrate on)" = on ] || exit 0
+	if [ "$(value quiet off)" = on ]; then
+		from=$(value quiet_from 22) to=$(value quiet_to 8)
+		hour=$(date +%H) hour=${hour#0}
+		case "$from$to" in *[!0-9]*) from=22 to=8 ;; esac
+		if [ "$from" -le "$to" ]; then
+			[ "$hour" -ge "$from" ] && [ "$hour" -lt "$to" ] && exit 0
+		else
+			{ [ "$hour" -ge "$from" ] || [ "$hour" -lt "$to" ]; } && exit 0
+		fi
+	fi
+	fbcli -E message-new-instant -P quiet -A io.github.haltia_de.Shell </dev/null >/dev/null 2>&1 ||
+		/usr/libexec/haltia/haltia-press notify
+	;;
+*)
+	echo "usage: haltia-mako config|buzz" >&2
+	exit 2
+	;;
+esac

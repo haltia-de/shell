@@ -1,5 +1,5 @@
 #!/bin/sh
-# The terminal (in «Служебные») runs a root shell (haltia-rootsh). The device
+# The terminal (Настройки → «Для помощника») runs a root shell (haltia-rootsh). The device
 # may allow it without a password by a doas rule (install.sh writes one
 # unless HALTIA_DOAS says otherwise); without that rule doas asks for the
 # password, and when that fails too (no rule for this user, or no password

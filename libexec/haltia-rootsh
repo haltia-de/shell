@@ -1,5 +1,5 @@
 #!/bin/sh
-# A root login shell for the terminal of «Служебные» (haltia-term).
+# A root login shell for the terminal of Настройки → «Для помощника» (haltia-term).
 # --check only tells haltia-term that doas allows it.
 [ "${1:-}" = --check ] && exit 0
 cd /root 2>/dev/null || cd /

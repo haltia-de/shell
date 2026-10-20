@@ -100,7 +100,7 @@ if [ -x /usr/libexec/haltia/haltia-volume ]; then
 	setsid /usr/libexec/haltia/haltia-volume >"$run"/haltia/volume.log 2>&1 &
 fi
 # The screen follows the tablet: portrait on its side, turned over upside
-# down (off in «Служебные»).
+# down (off in Настройки → Экран).
 if [ -x /usr/bin/haltia-rotate ] && command -v wlr-randr >/dev/null; then
 	setsid /usr/bin/haltia-rotate >"$run"/haltia/rotate.log 2>&1 &
 fi
@@ -110,7 +110,10 @@ fi
 # Notifications (org.freedesktop.Notifications): large cards at the top
 # that buzz once; a tap opens what they are about.
 if command -v mako >/dev/null && ! pgrep -x -u "$(id -u)" mako >/dev/null; then
-	setsid mako -c /usr/share/haltia/mako.conf >"$run"/mako.log 2>&1 &
+	# The shell's notifications as Настройки set them (haltia-mako).
+	mako_conf=/usr/share/haltia/mako.conf
+	/usr/libexec/haltia/haltia-mako config && mako_conf=$run/haltia/mako.conf
+	setsid mako -c "$mako_conf" >"$run"/mako.log 2>&1 &
 fi
 # Counts on buttons from programs' Unity LauncherEntry signals.
 if [ -x /usr/libexec/haltia/haltia-badges ]; then

@@ -10,7 +10,7 @@
 #                             that plays: pause or go on, stop)
 #   haltia-ask status            (the status card on the panel: the network,
 #                             brightness and volume, sound off or on)
-#   haltia-ask service           (the «Служебные» tile: Settings, the touch
+#   haltia-ask service           (the old «Служебные» tile, gone with 2.6: Settings, the touch
 #                             settings, brightness, sound off or on,
 #                             turning with the tablet on or off, the
 #                             terminal)

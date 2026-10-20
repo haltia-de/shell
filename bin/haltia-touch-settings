@@ -11,6 +11,11 @@
 # keeps the screen grabbed). Unless «Оставить» is tapped within 15 s, the
 # values go back to what was kept: a filter that no longer takes the
 # finger undoes itself. Closing the window undoes what was not kept, too.
+#
+# Настройки (haltia-settings) show the same as a page of «Для помощника»:
+# Setup(embedded=True).widget, with enter() when the page opens and leave()
+# when it goes. Its style is scoped to the class .touch, so it leaves the
+# rest of the window alone.
 import fcntl
 import os
 import re
@@ -122,47 +127,46 @@ SNAP = ("ms", "count")  # fractions take any value a drag leaves
 LABELS = {k: t for _g, rows in GROUPS for k, t, _h, _u in rows}
 
 CSS = b"""
-.page { background-color: #e6e6e4; }
-.group { color: #2e3436; font-size: 26px; font-weight: bold; }
-.title { color: #2e3436; font-size: 24px; }
-.hint { color: #77767b; font-size: 18px; }
-.value { color: #2e3436; font-size: 26px; font-weight: bold; }
-.row {
+.touch .page { background-color: #e6e6e4; }
+.touch .group { color: #2e3436; font-size: 26px; font-weight: bold; }
+.touch .title { color: #2e3436; font-size: 24px; }
+.touch .hint { color: #77767b; font-size: 18px; }
+.touch .value { color: #2e3436; font-size: 26px; font-weight: bold; }
+.touch .row {
   background-color: #f2f2f0;
   border: 1px solid #c0bfbc;
   border-radius: 12px;
 }
-button.step {
+.touch button.step {
   color: #2e3436;
   font-size: 34px;
   min-width: 72px;
   min-height: 72px;
   border-radius: 12px;
 }
-button.action { font-size: 24px; min-height: 72px; border-radius: 12px; padding: 0 24px; }
-button.keep { background: #3584e4; color: #ffffff; border-color: #1c71d8; }
-scale trough { min-height: 20px; border-radius: 10px; }
-scale highlight { background-color: #3584e4; border-radius: 10px; }
-scale slider { min-width: 56px; min-height: 56px; border-radius: 28px; }
-switch { min-width: 140px; min-height: 64px; border-radius: 32px; }
-switch:checked { background-color: #3584e4; }
-switch slider { min-width: 60px; min-height: 60px; border-radius: 30px; }
-.banner {
+.touch button.action { font-size: 24px; min-height: 72px; border-radius: 12px; padding: 0 24px; }
+.touch button.keep { background: #3584e4; color: #ffffff; border-color: #1c71d8; }
+.touch scale trough { min-height: 20px; border-radius: 10px; }
+.touch scale highlight { background-color: #3584e4; border-radius: 10px; }
+.touch scale slider { min-width: 56px; min-height: 56px; border-radius: 28px; }
+.touch switch { min-width: 140px; min-height: 64px; border-radius: 32px; }
+.touch switch:checked { background-color: #3584e4; }
+.touch switch slider { min-width: 60px; min-height: 60px; border-radius: 30px; }
+.touch .banner {
   background-color: #c4dcf7;
   border-radius: 12px;
 }
-.banner label { color: #2e3436; font-size: 22px; }
-.field {
+.touch .banner label { color: #2e3436; font-size: 22px; }
+.touch .field {
   background-color: #f2f2f0;
   border: 2px dashed #c0bfbc;
   border-radius: 12px;
 }
-.feed label { font-size: 20px; color: #2e3436; }
-.feed .ok { color: #26a269; }
-.feed .drop { color: #c64600; }
-.feed .palm { color: #c01c28; }
-.feed .quiet { color: #77767b; }
-"""
+.touch .feed label { font-size: 20px; color: #2e3436; }
+.touch .feed .ok { color: #26a269; }
+.touch .feed .drop { color: #c64600; }
+.touch .feed .palm { color: #c01c28; }
+.touch .feed .quiet { color: #77767b; }"""
 
 
 def read_conf(path):
@@ -263,7 +267,8 @@ FEED = [
 
 
 class Setup:
-    def __init__(self):
+    def __init__(self, embedded=False):
+        self.embedded = embedded
         self.ranges = read_ranges()
         self.defaults = read_conf(DEFAULTS)
         current = read_conf(CONF)
@@ -279,10 +284,11 @@ class Setup:
         self.countdown = None
         self.left = 0
         self.log = None
+        self.renew = None
         self.taps = []  # (x, y, alpha) of what reached the window
         self.build()
-        self.open_log()
-        GLib.timeout_add_seconds(LOG_RENEW_S, self.renew_log)
+        if not embedded:
+            self.enter()
 
     # The window.
 
@@ -292,16 +298,20 @@ class Setup:
         Gtk.StyleContext.add_provider_for_screen(
             Gdk.Screen.get_default(), provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
 
-        win = self.win = Gtk.Window(title="Касания")
-        header = Gtk.HeaderBar(title="Касания")
-        win.set_titlebar(header)
-        win.connect("delete-event", self.on_close)
-
+        # Everything in a box of class .touch, the scope of the style.
+        self.widget = Gtk.Box()
+        self.widget.get_style_context().add_class("touch")
         page = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=20)
         page.get_style_context().add_class("page")
         for side in ("start", "end", "top", "bottom"):
             getattr(page, "set_margin_" + side)(16)
-        win.add(page)
+        self.widget.pack_start(page, True, True, 0)
+        if not self.embedded:
+            win = self.win = Gtk.Window(title="Касания")
+            header = Gtk.HeaderBar(title="Касания")
+            win.set_titlebar(header)
+            win.connect("delete-event", self.on_close)
+            win.add(self.widget)
 
         # Left: the settings.
         left = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=16)
@@ -378,7 +388,8 @@ class Setup:
         self.feed.get_style_context().add_class("feed")
         right.pack_start(self.feed, True, True, 0)
 
-        win.show_all()
+        if not self.embedded:
+            self.win.show_all()
 
     def row(self, key, title, hint, unit):
         lo, hi = self.ranges[key]
@@ -507,14 +518,40 @@ class Setup:
             self.countdown = None
         self.banner.hide()
 
-    def on_close(self, *_args):
+    def enter(self):
+        """The page is on screen: the filter tells its decisions."""
+        if self.log is None:
+            self.open_log()
+        if self.renew is None:
+            self.renew = GLib.timeout_add_seconds(LOG_RENEW_S, self.renew_log)
+
+    def leave(self):
+        """The page goes: what was not kept goes back, the filter stops
+        telling."""
         if self.pending is not None:
             GLib.source_remove(self.pending)
             self.pending = None
+        if self.countdown is not None:
+            GLib.source_remove(self.countdown)
+            self.countdown = None
+            self.hide_banner()
         if self.applied != self.kept:
             helper("set", *("%s=%d" % kv for kv in self.kept.items()))
+            self.applied = dict(self.kept)
+            self.set_all(self.kept)
+            if self.pending is not None:  # set_all's own change: nothing to send
+                GLib.source_remove(self.pending)
+                self.pending = None
+        if self.renew is not None:
+            GLib.source_remove(self.renew)
+            self.renew = None
         if self.log is not None:
             helper("log", "off")
+            self.log.close()
+            self.log = None
+
+    def on_close(self, *_args):
+        self.leave()
         Gtk.main_quit()
         return False
 
@@ -578,6 +615,8 @@ class Setup:
         return True
 
     def read_log(self):
+        if self.log is None:
+            return False  # the page went (leave)
         try:
             if os.fstat(self.log.fileno()).st_size < self.log.tell():
                 self.log.seek(0)  # the log was rotated or truncated

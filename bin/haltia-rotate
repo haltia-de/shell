@@ -4,7 +4,7 @@
 turned over it turns over too.
 
     haltia-rotate                 watch the accelerometer (haltia-launcher runs it)
-    haltia-rotate on|off|toggle   turn following on or off («Служебные»)
+    haltia-rotate on|off|toggle   turn following on or off (Настройки → Экран)
     haltia-rotate status          print on or off
 
 It asks iio-sensor-proxy (net.hadess.SensorProxy on the system bus, as

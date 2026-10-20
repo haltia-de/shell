@@ -1,16 +1,18 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-2.0
-"""Настройки: what a tablet with Haltia lets one change, in large type.
+"""Настройки: everything one sets on a tablet with Haltia, in large type.
 
-    haltia-settings [--page network|sound|screen|time|updates|about]
+    haltia-settings [--page network|sound|screen|places|notify|time|updates|about]
 
-It replaces GNOME Settings (GTK 4, and a hundred packages behind it) with
-the pages that do something here: the network (Wi-Fi through
-NetworkManager), sound (PulseAudio), the screen (brightness and turning),
-date and time (timedated, from openrc-settingsd), touches (the touch
-filter's window), updates (haltia-update: what is new, updating with a way
-back, by itself or not) and «О системе». A page opens from the first one, or
-straight from the panel's «Состояние» and «Служебные» (--page).
+Two panes in landscape (the sections on the left, the chosen one on the
+right), one at a time on a portrait screen. The sections: the network (Wi-Fi
+through NetworkManager), sound and vibration (PulseAudio, the touch
+filter's buzz), the screen (brightness, turning, when it goes off), the
+panel and the home screen (which programs, in which order), notifications
+(mako through haltia-mako), date and time (timedated, from
+openrc-settingsd), updates (haltia-update) and «О системе». A long press on
+«О системе» shows «Для помощника»: the touch filter's values, the terminal,
+the update log, going back to any kept update, and hiding programs.
 
 A new Wi-Fi network's password is asked here and kept with the connection
 for every user (NetworkManager's system connection), so no secret agent
@@ -42,7 +44,10 @@ try:
 except ImportError:
     dialogs = None
 
-PAGES = ("network", "sound", "screen", "time", "updates", "about")
+PAGES = ("network", "sound", "screen", "places", "notify", "time", "updates", "about")
+TOUCH_CONF = "/etc/haltia/touchguard.conf"
+BUZZ_MS = 70  # the touch filter's buzz when it is on (its default)
+CONFIG = os.path.expanduser("~/.config/haltia")
 # Time zones offered first: Russia's, west to east; any other by name.
 ZONES = [
     ("Калининград", "Europe/Kaliningrad"), ("Москва", "Europe/Moscow"),
@@ -67,6 +72,23 @@ label.section { font-size: 22px; font-weight: bold; color: #5e5c64; }
 label.note { font-size: 22px; color: #5e5c64; }
 label.big { font-size: 56px; font-weight: bold; color: #2e3436; }
 label.headline { font-size: 34px; font-weight: bold; color: #2e3436; }
+.sidebar, .sidebar row { background-color: #f2f2f0; }
+.sidebar row { padding: 14px 18px; border-bottom: 1px solid #e0dfdc; }
+.sidebar row.chosen { background-color: #c4dcf7; }
+.sidebar row label.name { font-size: 24px; }
+.sidebar row label.sub { font-size: 17px; }
+button.choice {
+  background-image: none; border: 1px solid #c0bfbc; box-shadow: none;
+  border-radius: 16px; min-height: 64px; min-width: 96px; font-size: 22px; padding: 0 18px;
+  background-color: #f2f2f0; color: #2e3436;
+}
+button.choice.on { background-color: #3584e4; border-color: #3584e4; color: #ffffff; }
+button.step {
+  background-image: none; border: 1px solid #c0bfbc; box-shadow: none;
+  border-radius: 14px; min-height: 64px; min-width: 64px; font-size: 28px; padding: 0;
+  background-color: #f2f2f0; color: #2e3436;
+}
+label.mono { font-family: monospace; font-size: 17px; color: #2e3436; }
 label.notes { font-size: 24px; color: #2e3436; }
 progressbar trough { min-height: 16px; border-radius: 8px; }
 progressbar progress { min-height: 16px; border-radius: 8px; background-color: #3584e4; }
@@ -160,6 +182,80 @@ def page_box():
     scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
     scroll.add(outer)
     return scroll, box
+
+
+def switch_line(box, title, hint, on_toggle):
+    """A line with a title, a hint under it and a switch on the right."""
+    line = Gtk.Box(spacing=16)
+    text = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+    label = Gtk.Label(label=title, xalign=0)
+    label.get_style_context().add_class("note")
+    text.pack_start(label, False, False, 0)
+    if hint:
+        sub = Gtk.Label(label=hint, xalign=0, wrap=True)
+        sub.get_style_context().add_class("sub")
+        text.pack_start(sub, False, False, 0)
+    line.pack_start(text, True, True, 0)
+    sw = Gtk.Switch(valign=Gtk.Align.CENTER)
+    sw.connect("notify::active", on_toggle)
+    line.pack_end(sw, False, False, 0)
+    box.pack_start(line, False, False, 0)
+    sw.line = line
+    return sw
+
+
+def set_quietly(switch, handler, value):
+    """A switch shown in a state without calling its handler."""
+    switch.handler_block_by_func(handler)
+    switch.set_active(bool(value))
+    switch.handler_unblock_by_func(handler)
+
+
+class Choices(Gtk.Box):
+    """A row of large buttons, one of them chosen (blue)."""
+
+    def __init__(self, options, on_pick):
+        super().__init__(spacing=12)
+        self.buttons = {}
+        self.on_pick = on_pick
+        for value, text in options:
+            b = Gtk.Button(label=text)
+            b.get_style_context().add_class("choice")
+            b.connect("clicked", lambda _b, v=value: self.pick(v))
+            self.pack_start(b, False, False, 0)
+            self.buttons[value] = b
+
+    def show_value(self, value):
+        for v, b in self.buttons.items():
+            ctx = b.get_style_context()
+            (ctx.add_class if v == value else ctx.remove_class)("on")
+
+    def pick(self, value):
+        self.show_value(value)
+        self.on_pick(value)
+
+
+def read_keys(path):
+    """KEY=VALUE lines of a small settings file."""
+    values = {}
+    try:
+        with open(path) as fh:
+            for line in fh:
+                key, sep, val = line.partition("=")
+                if sep and not key.strip().startswith("#"):
+                    values[key.strip()] = val.strip()
+    except OSError:
+        pass
+    return values
+
+
+def write_keys(path, values, comment):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path + ".new", "w") as fh:
+        fh.write("# %s\n" % comment)
+        for key, val in values.items():
+            fh.write("%s=%s\n" % (key, val))
+    os.replace(path + ".new", path)
 
 
 # --- the network ------------------------------------------------------------
@@ -379,9 +475,10 @@ class Network:
 
 # --- sound ----------------------------------------------------------------
 class Sound:
-    """The default sink's volume, mute and which output plays."""
+    """The default sink's volume, mute and which output plays; the buzz of a
+    tap (the touch filter's buzz_ms)."""
 
-    title = "Звук"
+    title = "Звук и вибрация"
 
     def __init__(self, app):
         self.app = app
@@ -402,6 +499,10 @@ class Sound:
         box.pack_start(section("Куда идёт звук"), False, False, 0)
         self.outputs = listbox(self.on_output)
         box.pack_start(self.outputs, False, False, 0)
+        box.pack_start(section("Вибрация"), False, False, 0)
+        self.buzz = switch_line(box, "При касании",
+                                "Короткий толчок, когда палец коснулся экрана",
+                                self.on_buzz)
         self.pending = None
         self.refresh()
 
@@ -431,6 +532,7 @@ class Sound:
         self.mute.handler_block_by_func(self.on_mute)
         self.mute.set_active(self.muted())
         self.mute.handler_unblock_by_func(self.on_mute)
+        set_quietly(self.buzz, self.on_buzz, self.buzz_ms() > 0)
         for child in self.outputs.get_children():
             self.outputs.remove(child)
         default = run("pactl", "get-default-sink")
@@ -475,44 +577,118 @@ class Sound:
         run("pactl", "set-default-sink", row.sink)
         self.refresh()
 
+    @staticmethod
+    def buzz_ms():
+        """The touch filter's buzz on a tap, in ms (0: none)."""
+        for path in (TOUCH_CONF, "/usr/share/haltia/touchguard.conf"):
+            try:
+                with open(path) as fh:
+                    for line in fh:
+                        key, sep, val = line.partition("=")
+                        if sep and key.strip() == "buzz_ms":
+                            return int(val.split("#")[0].strip())
+            except (OSError, ValueError):
+                continue
+        return BUZZ_MS
+
+    def on_buzz(self, switch, _param):
+        run("doas", "-n", "/usr/libexec/haltia/haltia-touchguard-conf", "set",
+            "buzz_ms=%d" % (BUZZ_MS if switch.get_active() else 0))
+
 
 # --- the screen ---------------------------------------------------------------
 class Screen:
-    """Brightness (the shell's card) and turning with the tablet."""
+    """Brightness, turning with the tablet, and when the screen goes off by
+    itself (haltia-sleep reads ~/.config/haltia/screen)."""
 
     title = "Экран"
+    CONF = os.path.join(CONFIG, "screen")
+    OFF = ((60, "1 мин"), (120, "2 мин"), (300, "5 мин"), (600, "10 мин"), (1800, "30 мин"))
 
     def __init__(self, app):
         self.app = app
+        self.light = brightness_module()
         self.widget, box = page_box()
-        bright = Gtk.Button(label="Яркость и громкость…")
-        bright.get_style_context().add_class("plain")
-        bright.set_halign(Gtk.Align.START)
-        bright.connect("clicked", lambda _b: subprocess.Popen(["/usr/bin/haltia-brightness"]))
-        box.pack_start(bright, False, False, 0)
-        line = Gtk.Box(spacing=16)
-        text = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
-        label = Gtk.Label(label="Поворачивать экран", xalign=0)
-        label.get_style_context().add_class("note")
-        text.pack_start(label, False, False, 0)
-        hint = Gtk.Label(label="Экран следует за планшетом: на боку — книжная ориентация",
-                         xalign=0, wrap=True)
-        hint.get_style_context().add_class("sub")
-        text.pack_start(hint, False, False, 0)
-        line.pack_start(text, True, True, 0)
-        self.rotate = Gtk.Switch(valign=Gtk.Align.CENTER)
-        self.rotate.set_active(run("/usr/bin/haltia-rotate", "status") != "off")
-        self.rotate.connect("notify::active", lambda s, _p: run(
-            "/usr/bin/haltia-rotate", "on" if s.get_active() else "off"))
-        line.pack_end(self.rotate, False, False, 0)
-        box.pack_start(line, False, False, 0)
+        self.scale = None
+        self.pending = None
+        if self.light:
+            box.pack_start(section("Яркость"), False, False, 0)
+            top = self.light.read_int(self.light.SYSFS + "/max_brightness", 255)
+            self.scale = Gtk.Scale.new_with_range(Gtk.Orientation.HORIZONTAL,
+                                                  max(1, top // 20), top, 1)
+            self.scale.set_draw_value(False)
+            self.scale.connect("value-changed", self.on_light)
+            box.pack_start(self.scale, False, False, 0)
+        self.rotate = switch_line(box, "Поворачивать экран",
+                                  "Экран следует за планшетом: на боку — книжная ориентация",
+                                  self.on_rotate)
+        box.pack_start(section("Экран гаснет, если не касаться"), False, False, 0)
+        self.off = Choices(self.OFF, self.on_off)
+        box.pack_start(self.off, False, False, 0)
+        self.charging = switch_line(box, "Не гасить на зарядке",
+                                    "Пока планшет заряжается, экран горит", self.on_charging)
+        self.refresh()
+
+    def settings(self):
+        values = read_keys(self.CONF)
+        off = int(values.get("off_after", "600")) if values.get("off_after", "").isdigit() else 600
+        return off, values.get("charging") == "on"
+
+    def save(self, off, charging):
+        write_keys(self.CONF, {"off_after": off, "charging": "on" if charging else "off"},
+                   "Настройки → Экран (haltia-sleep reads it)")
 
     def summary(self):
-        return "поворот %s" % ("выключен" if run("/usr/bin/haltia-rotate", "status") == "off"
-                               else "включён")
+        off, charging = self.settings()
+        text = "гаснет через %d мин" % (off // 60)
+        return text + (", на зарядке горит" if charging else "")
 
     def refresh(self):
-        pass
+        set_quietly(self.rotate, self.on_rotate,
+                    run("/usr/bin/haltia-rotate", "status") != "off")
+        off, charging = self.settings()
+        self.off.show_value(off)
+        set_quietly(self.charging, self.on_charging, charging)
+        if self.scale is not None:
+            now = self.light.read_int(self.light.SYSFS + "/brightness", 0)
+            self.scale.handler_block_by_func(self.on_light)
+            self.scale.set_value(now)
+            self.scale.handler_unblock_by_func(self.on_light)
+
+    @staticmethod
+    def on_rotate(switch, _param):
+        run("/usr/bin/haltia-rotate", "on" if switch.get_active() else "off")
+
+    def on_off(self, value):
+        self.save(value, self.settings()[1])
+
+    def on_charging(self, switch, _param):
+        self.save(self.settings()[0], switch.get_active())
+
+    def on_light(self, _scale):
+        if self.pending is None:
+            self.pending = GLib.timeout_add(80, self.apply_light)
+
+    def apply_light(self):
+        self.pending = None
+        level = int(self.scale.get_value())
+        try:
+            self.light.Brightness().set(level)
+            self.light.save(level)
+        except Exception as exc:  # logind refused, or the module changed
+            sys.stderr.write("haltia-settings: brightness: %s\n" % exc)
+        return False
+
+
+def brightness_module():
+    """haltia-brightness as a module (its Brightness through logind, its
+    saved level), or None where it cannot load."""
+    try:
+        from importlib.machinery import SourceFileLoader
+        mod = SourceFileLoader("haltia_brightness", "/usr/bin/haltia-brightness").load_module()
+        return mod if mod.BACKLIGHT else None
+    except Exception:  # no layer shell, no backlight: no slider
+        return None
 
 
 # --- date and time --------------------------------------------------------
@@ -667,6 +843,411 @@ class DateTime:
             if self.call("SetTime", GLib.Variant("(xbb)", (int(t * 1000000), False, False))):
                 self.note.set_text("")
             self.refresh()
+
+
+# --- the panel and the home screen ----------------------------------------------
+PANEL_ROOM = 3  # pinned buttons that fit beside two slots for open programs
+
+
+class Programs:
+    """Where each program is: on the panel, on the home screen, in which
+    order (haltia-apps programs), and writing it back (~/.config/haltia/panel
+    and home, then haltia-apps reload)."""
+
+    def __init__(self):
+        self.items = []
+        self.pending = None
+        self.load()
+
+    def load(self):
+        import json
+        try:
+            self.items = json.loads(run("/usr/bin/haltia-apps", "programs", timeout=20) or "[]")
+        except ValueError:
+            self.items = []
+        return self.items
+
+    def pinned(self):
+        return [i for i in self.items if i["pinned"]]
+
+    def save(self):
+        os.makedirs(CONFIG, exist_ok=True)
+        # The panel keeps its own order; a newly pinned one goes last.
+        panel = sorted(self.pinned(), key=lambda i: (i.get("place", -1) < 0,
+                                                     i.get("place", -1)))
+        for n, item in enumerate(panel):
+            item["place"] = n
+        with open(os.path.join(CONFIG, "panel.new"), "w") as fh:
+            fh.write("# Настройки → «Панель и домашний экран»: the pinned buttons.\n")
+            fh.write("".join(i["id"] + "\n" for i in panel))
+        os.replace(os.path.join(CONFIG, "panel.new"), os.path.join(CONFIG, "panel"))
+        with open(os.path.join(CONFIG, "home.new"), "w") as fh:
+            fh.write("# Настройки → «Панель и домашний экран»: the home screen's order;"
+                     " -ID: not on it.\n")
+            fh.write("".join(("" if i["home"] else "-") + i["id"] + "\n" for i in self.items))
+        os.replace(os.path.join(CONFIG, "home.new"), os.path.join(CONFIG, "home"))
+        # Several taps in a row make one reload.
+        if self.pending is not None:
+            GLib.source_remove(self.pending)
+        self.pending = GLib.timeout_add(700, self.reload)
+
+    def reload(self):
+        self.pending = None
+        subprocess.Popen(["/usr/bin/haltia-apps", "reload"], stdout=subprocess.DEVNULL,
+                         stderr=subprocess.DEVNULL)
+        return False
+
+
+def icon_image(path, size=48):
+    try:
+        from gi.repository import GdkPixbuf
+        return Gtk.Image.new_from_pixbuf(GdkPixbuf.Pixbuf.new_from_file_at_size(path, size, size))
+    except (GLib.Error, TypeError, ImportError):
+        return Gtk.Image()
+
+
+class Places:
+    """Each program on the panel, on the home screen, and their order. One
+    cannot take a program off both here (it could not be opened then): only
+    «Для помощника» hides one."""
+
+    title = "Панель и домашний экран"
+
+    def __init__(self, app):
+        self.app = app
+        self.widget, box = page_box()
+        self.hint = Gtk.Label(xalign=0, wrap=True)
+        self.hint.get_style_context().add_class("note")
+        box.pack_start(self.hint, False, False, 0)
+        self.list = listbox(lambda *_a: None)
+        box.pack_start(self.list, False, False, 0)
+        self.refresh()
+
+    def summary(self):
+        pinned = [i["label"] for i in self.app.programs.pinned()]
+        return "на панели: %s" % ", ".join(pinned) if pinned else "на панели ничего"
+
+    def refresh(self):
+        self.app.programs.load()
+        self.fill()
+
+    def shown(self):
+        return [i for i in self.app.programs.items if i["pinned"] or i["home"]]
+
+    def fill(self):
+        for child in self.list.get_children():
+            self.list.remove(child)
+        items = self.shown()
+        full = len(self.app.programs.pinned()) >= PANEL_ROOM
+        self.hint.set_text(
+            "На панели помещаются %d программы%s. Убрать программу совсем можно только в "
+            "разделе «Для помощника»." % (PANEL_ROOM, " — сейчас мест нет" if full else ""))
+        for n, item in enumerate(items):
+            row = Gtk.ListBoxRow(activatable=False)
+            line = Gtk.Box(spacing=12)
+            line.pack_start(icon_image(item["icon"]), False, False, 0)
+            name = Gtk.Label(label=item["label"], xalign=0)
+            name.get_style_context().add_class("name")
+            line.pack_start(name, True, True, 0)
+            up = button("↑", "step", lambda i=item: self.move(i, -1))
+            up.set_sensitive(n > 0)
+            down = button("↓", "step", lambda i=item: self.move(i, 1))
+            down.set_sensitive(n < len(items) - 1)
+            line.pack_start(up, False, False, 0)
+            line.pack_start(down, False, False, 0)
+            pin = self.toggle(line, "На панели", item["pinned"],
+                              lambda sw, i=item: self.set_place(i, "pinned", sw))
+            home = self.toggle(line, "Дома", item["home"],
+                               lambda sw, i=item: self.set_place(i, "home", sw))
+            # Never off both; Настройки always on the home screen (the way
+            # back to everything); no more pinned than fit.
+            pin.set_sensitive(item["home"] and (item["pinned"] or not full))
+            home.set_sensitive(item["pinned"] and item["id"] != "settings")
+            row.add(line)
+            self.list.add(row)
+        self.list.show_all()
+
+    @staticmethod
+    def toggle(line, text, on, changed):
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+        label = Gtk.Label(label=text)
+        label.get_style_context().add_class("sub")
+        box.pack_start(label, False, False, 0)
+        sw = Gtk.Switch(halign=Gtk.Align.CENTER)
+        sw.set_active(on)
+        sw.connect("notify::active", lambda s, _p: changed(s))
+        box.pack_start(sw, False, False, 0)
+        line.pack_start(box, False, False, 0)
+        return sw
+
+    def set_place(self, item, key, switch):
+        item[key] = switch.get_active()
+        if key == "pinned" and not item["pinned"]:
+            item["place"] = -1
+        self.app.programs.save()
+        GLib.idle_add(lambda: self.fill() and False)
+
+    def move(self, item, step):
+        items = self.app.programs.items
+        shown = self.shown()
+        n = shown.index(item)
+        if not 0 <= n + step < len(shown):
+            return
+        other = shown[n + step]
+        a, b = items.index(item), items.index(other)
+        items[a], items[b] = items[b], items[a]
+        # Neighbours on the panel swap there too.
+        if item["pinned"] and other["pinned"]:
+            item["place"], other["place"] = other["place"], item["place"]
+        self.app.programs.save()
+        self.fill()
+
+
+# --- notifications --------------------------------------------------------------
+class Notify:
+    """How a notification behaves (haltia-mako reads ~/.config/haltia/
+    notifications): the buzz, how long it stays, quiet at night."""
+
+    title = "Уведомления"
+    CONF = os.path.join(CONFIG, "notifications")
+    STAY = ((5, "5 с"), (12, "12 с"), (30, "30 с"), (0, "До нажатия"))
+
+    def __init__(self, app):
+        self.app = app
+        self.widget, box = page_box()
+        self.vibrate = switch_line(box, "Вибрация", "Короткий толчок, когда пришло уведомление",
+                                   self.on_switch)
+        box.pack_start(section("Сколько показывать"), False, False, 0)
+        self.stay = Choices(self.STAY, lambda v: self.set("timeout", v))
+        box.pack_start(self.stay, False, False, 0)
+        self.quiet = switch_line(box, "Не беспокоить ночью",
+                                 "Уведомления приходят без вибрации", self.on_switch)
+        hours = Gtk.Box(spacing=12)
+        self.hour_from = self.hour(hours, "с", "quiet_from")
+        self.hour_to = self.hour(hours, "до", "quiet_to")
+        self.hours = hours
+        box.pack_start(hours, False, False, 0)
+        self.refresh()
+
+    def hour(self, box, text, key):
+        label = Gtk.Label(label=text)
+        label.get_style_context().add_class("note")
+        box.pack_start(label, False, False, 0)
+        box.pack_start(button("−", "step", lambda: self.step(key, -1)), False, False, 0)
+        value = Gtk.Label()
+        value.get_style_context().add_class("headline")
+        value.set_width_chars(5)
+        box.pack_start(value, False, False, 0)
+        box.pack_start(button("+", "step", lambda: self.step(key, 1)), False, False, 0)
+        return value
+
+    def values(self):
+        v = read_keys(self.CONF)
+        out = {"vibrate": v.get("vibrate", "on"), "timeout": v.get("timeout", "12"),
+               "quiet": v.get("quiet", "off"), "quiet_from": v.get("quiet_from", "22"),
+               "quiet_to": v.get("quiet_to", "8")}
+        for key, default in (("timeout", "12"), ("quiet_from", "22"), ("quiet_to", "8")):
+            if not out[key].isdigit():
+                out[key] = default
+        return out
+
+    def set(self, key, value):
+        v = self.values()
+        v[key] = str(value)
+        write_keys(self.CONF, v, "Настройки → Уведомления (haltia-mako reads it)")
+        if key == "timeout":
+            # mako takes a new timeout only from its config.
+            run("/usr/libexec/haltia/haltia-mako", "config")
+            run("makoctl", "reload")
+        self.refresh()
+
+    def step(self, key, d):
+        self.set(key, (int(self.values()[key]) + d) % 24)
+
+    def on_switch(self, switch, _param):
+        self.set("vibrate" if switch is self.vibrate else "quiet",
+                 "on" if switch.get_active() else "off")
+
+    def summary(self):
+        v = self.values()
+        parts = ["с вибрацией" if v["vibrate"] == "on" else "без вибрации"]
+        if v["quiet"] == "on":
+            parts.append("ночью тихо")
+        return ", ".join(parts)
+
+    def refresh(self):
+        v = self.values()
+        set_quietly(self.vibrate, self.on_switch, v["vibrate"] == "on")
+        set_quietly(self.quiet, self.on_switch, v["quiet"] == "on")
+        self.stay.show_value(int(v["timeout"]))
+        self.hour_from.set_text("%s:00" % v["quiet_from"])
+        self.hour_to.set_text("%s:00" % v["quiet_to"])
+        self.hours.set_sensitive(v["quiet"] == "on")
+
+
+# --- for whoever looks after the tablet -------------------------------------------
+class Helper:
+    """What the person needs not see: the touch filter's values, the
+    terminal, the update log, going back to any kept update, and programs
+    hidden altogether. Shown after a long press on «О системе», until the
+    window closes."""
+
+    title = "Для помощника"
+
+    def __init__(self, app):
+        self.app = app
+        self.touch = None
+        self.widget, box = page_box()
+        self.menu = listbox(self.on_menu)
+        for key, name, sub in (
+                ("touch", "Касания", "пороги фильтра случайных касаний и проверка"),
+                ("term", "Терминал", "командная строка с правами администратора"),
+                ("log", "Журнал обновлений", "что и когда обновлялось и откатывалось"),
+                ("rollback", "Вернуть обновление целиком", "любое из сохранённых")):
+            row = Gtk.ListBoxRow()
+            row.add(row_box(name, sub, "›"))
+            row.key = key
+            self.menu.add(row)
+        box.pack_start(self.menu, False, False, 0)
+        box.pack_start(section("Программы"), False, False, 0)
+        hint = Gtk.Label(label="Выключенная программа не видна ни на панели, ни на домашнем "
+                         "экране", xalign=0, wrap=True)
+        hint.get_style_context().add_class("sub")
+        box.pack_start(hint, False, False, 0)
+        self.list = listbox(lambda *_a: None)
+        box.pack_start(self.list, False, False, 0)
+        # The subpages: the touch page (the whole window), the log, going back.
+        self.log_page, self.log_box = page_box()
+        self.back_page, self.back_box = page_box()
+        self.subpages = {"log": self.log_page, "rollback": self.back_page}
+        self.refresh()
+
+    def summary(self):
+        return ""
+
+    def refresh(self):
+        self.app.programs.load()
+        for child in self.list.get_children():
+            self.list.remove(child)
+        for item in self.app.programs.items:
+            if item["id"] == "settings":
+                continue  # the way back to all of this
+            row = Gtk.ListBoxRow(activatable=False)
+            line = Gtk.Box(spacing=12)
+            line.pack_start(icon_image(item["icon"]), False, False, 0)
+            name = Gtk.Label(label=item["label"], xalign=0)
+            name.get_style_context().add_class("name")
+            line.pack_start(name, True, True, 0)
+            sw = Gtk.Switch(valign=Gtk.Align.CENTER)
+            sw.set_active(item["pinned"] or item["home"])
+            sw.connect("notify::active", lambda s, _p, i=item: self.show_program(i, s))
+            line.pack_end(sw, False, False, 0)
+            row.add(line)
+            self.list.add(row)
+        self.list.show_all()
+
+    def show_program(self, item, switch):
+        if switch.get_active():
+            item["home"] = True
+        else:
+            item["home"] = item["pinned"] = False
+            item["place"] = -1
+        self.app.programs.save()
+
+    def on_menu(self, _lb, row):
+        if row.key == "term":
+            subprocess.Popen(["/usr/bin/haltia-launch", "tap", "term"])
+        elif row.key == "touch":
+            self.open_touch()
+        elif row.key == "log":
+            self.open_log()
+        elif row.key == "rollback":
+            self.open_rollback()
+
+    def open_touch(self):
+        if self.touch is None:
+            try:
+                from importlib.machinery import SourceFileLoader
+                mod = SourceFileLoader("haltia_touch",
+                                       "/usr/bin/haltia-touch-settings").load_module()
+                Gtk.StyleContext.add_provider_for_screen(
+                    Gdk.Screen.get_default(), css_provider(mod.CSS),
+                    Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+                self.touch = mod.Setup(embedded=True)
+            except Exception as exc:  # the touch filter's helper is missing
+                say(self.app.win, "Касания недоступны: %s" % exc)
+                return
+            self.app.stack.add_named(self.touch.widget, "helper/touch")
+            self.touch.widget.show_all()
+        self.touch.enter()
+        self.app.open_subpage("helper/touch", "Касания", wide=True)
+
+    def open_log(self):
+        for child in self.log_box.get_children():
+            self.log_box.remove(child)
+        lines = run(*UPDATE, "log", timeout=20).splitlines() or ["Журнал пуст."]
+        label = Gtk.Label(label="\n".join(lines), xalign=0, wrap=True, selectable=True)
+        label.get_style_context().add_class("mono")
+        label.set_line_wrap_mode(2)
+        self.log_box.pack_start(label, False, False, 0)
+        self.log_box.show_all()
+        self.app.open_subpage("helper/log", "Журнал обновлений")
+
+    def open_rollback(self):
+        import json
+        for child in self.back_box.get_children():
+            self.back_box.remove(child)
+        try:
+            history = json.loads(run(*UPDATE, "state", timeout=20) or "{}").get("history", [])
+        except ValueError:
+            history = []
+        if not history:
+            self.back_box.pack_start(row_box("Сохранённых обновлений нет"), False, False, 0)
+        lb = listbox(lambda *_a: None)
+        for entry in history:
+            row = Gtk.ListBoxRow(activatable=False)
+            line = Gtk.Box(spacing=16)
+            names = ", ".join(p["label"] for p in entry["programs"])
+            line.pack_start(row_box(when(entry["time"]).capitalize(), names), True, True, 0)
+            b = button("Вернуть всё", "plain", lambda e=entry: self.rollback(e))
+            b.get_style_context().add_class("danger")
+            line.pack_end(b, False, False, 0)
+            row.add(line)
+            lb.add(row)
+        self.back_box.pack_start(lb, False, False, 0)
+        self.back_box.show_all()
+        self.app.open_subpage("helper/rollback", "Вернуть обновление целиком")
+
+    def rollback(self, entry):
+        if dialogs and not dialogs.ask(
+                self.app.win, "Вернуть всё, что изменило обновление %s?" % when(entry["time"]),
+                "Вернуть"):
+            return
+        run_async(UPDATE + ["rollback", entry["id"]],
+                  lambda code, out: (say(self.app.win, "Возвращено." if code == 0 else
+                                         "Не получилось: %s" % out.strip()[-200:]),
+                                     self.open_rollback()) and False)
+
+    def back(self):
+        """«←» from a subpage: back to this page (the touch page undoes
+        what was not kept)."""
+        name = self.app.stack.get_visible_child_name()
+        if name == "helper/touch" and self.touch:
+            self.touch.leave()
+        if name and name.startswith("helper/"):
+            self.app.show("helper")
+            return True
+        return False
+
+    def closing(self):
+        if self.touch:
+            self.touch.leave()
+
+
+def css_provider(css):
+    provider = Gtk.CssProvider()
+    provider.load_from_data(css)
+    return provider
 
 
 # --- updates ----------------------------------------------------------------
@@ -1064,8 +1645,7 @@ class Updates:
         self.notes_btn.set_label("Обновить «%s»" % prog["label"])
         self.notes_btn.set_sensitive(True)
         self.subpages["notes"].show_all()
-        self.app.stack.set_visible_child_name("updates/notes")
-        self.app.header.set_title("%s: что нового" % prog["label"])
+        self.app.open_subpage("updates/notes", "%s: что нового" % prog["label"])
         run_async(UPDATE + ["changes", prog["name"]], self.show_notes)
 
     def show_notes(self, code, out):
@@ -1107,8 +1687,7 @@ class Updates:
 
     def leave_notes(self):
         if self.app.stack.get_visible_child_name() == "updates/notes":
-            self.app.stack.set_visible_child_name("updates")
-            self.app.header.set_title(self.title)
+            self.app.show("updates")
         self.notes_for = None
 
 
@@ -1167,12 +1746,27 @@ class About:
 
 
 # --- the window ---------------------------------------------------------------
+SIDEBAR = 360  # px, the list of sections beside a page
+NARROW = 1000  # px: a screen narrower than this (portrait) shows one at a time
+SECTIONS = (("network", "Network"), ("sound", "Sound"), ("screen", "Screen"),
+            ("places", "Places"), ("notify", "Notify"), ("time", "DateTime"),
+            ("updates", "Updates"), ("about", "About"))
+
+
 class Settings(Gtk.Application):
+    """The sections on the left, the chosen one on the right; on a portrait
+    screen the list, then a section in its place. A long press on «О
+    системе» shows «Для помощника» until the window closes."""
+
     def __init__(self):
         super().__init__(application_id=APP_ID,
                          flags=Gio.ApplicationFlags.HANDLES_COMMAND_LINE)
         self.win = None
         self.pages = {}
+        self.current = None
+        self.wide_sub = False
+        self.narrow = False
+        self.programs = None
 
     def do_command_line(self, line):
         args = line.get_arguments()[1:]
@@ -1180,89 +1774,180 @@ class Settings(Gtk.Application):
         if len(args) == 2 and args[0] == "--page" and args[1] in PAGES:
             page = args[1]
         self.setup()
-        self.show(page)
+        self.show(page or self.current or ("network" if not self.narrow else None))
         self.win.present()
         return 0
 
     def setup(self):
         if self.win:
             return
-        provider = Gtk.CssProvider()
-        provider.load_from_data(CSS)
         Gtk.StyleContext.add_provider_for_screen(
-            Gdk.Screen.get_default(), provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+            Gdk.Screen.get_default(), css_provider(CSS), Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+        self.programs = Programs()
         self.win = Gtk.ApplicationWindow(application=self, title="Настройки")
         self.win.set_default_size(1160, 800)
+        self.win.connect("delete-event", self.on_close)
         self.header = Gtk.HeaderBar(title="Настройки")
         self.back = Gtk.Button(label="←")
         self.back.connect("clicked", lambda _b: self.go_back())
         self.back.set_no_show_all(True)
         self.header.pack_start(self.back)
         self.win.set_titlebar(self.header)
+
+        body = Gtk.Box()
+        body.get_style_context().add_class("page")
+        self.side = Gtk.ScrolledWindow()
+        self.side.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        self.side.set_size_request(SIDEBAR, -1)
+        self.side.get_style_context().add_class("sidebar")
+        self.menu = listbox(self.on_menu)
+        self.menu.get_style_context().add_class("sidebar")
+        self.side.add(self.menu)
+        body.pack_start(self.side, False, False, 0)
+        self.line = Gtk.Separator(orientation=Gtk.Orientation.VERTICAL)
+        body.pack_start(self.line, False, False, 0)
         self.stack = Gtk.Stack()
         self.stack.set_transition_type(Gtk.StackTransitionType.NONE)
-        scroll, box = page_box()
-        self.menu = listbox(self.on_menu)
-        box.pack_start(self.menu, False, False, 0)
-        self.stack.add_named(scroll, "menu")
-        self.win.add(self.stack)
-        self.entries = []
-        for key, cls in (("network", Network), ("sound", Sound), ("screen", Screen),
-                         ("time", DateTime), ("touch", None), ("updates", Updates),
-                         ("about", About)):
-            row = Gtk.ListBoxRow()
-            title = cls.title if cls else "Касания"
-            content = row_box(title, " ")
-            row.add(content)
-            row.key = key
-            row.content = content
-            self.menu.add(row)
-            self.entries.append(row)
+        # Each page as wide as itself: the touch page's two columns would
+        # keep every page from fitting a portrait screen.
+        self.stack.set_hhomogeneous(False)
+        self.stack.set_vhomogeneous(False)
+        body.pack_start(self.stack, True, True, 0)
+        self.win.add(body)
+        self.entries = {}
+        for key, _cls in SECTIONS:
+            self.add_entry(key)
+        # The long press that shows «Для помощника».
+        self.press = Gtk.GestureLongPress.new(self.menu)
+        self.press.connect("pressed", self.on_long_press)
+        # One column on a narrow screen: decided by the screen, as the list
+        # beside a page would keep the window itself from getting narrow.
+        screen = Gdk.Screen.get_default()
+        screen.connect("size-changed", lambda *_a: self.on_size())
+        screen.connect("monitors-changed", lambda *_a: self.on_size())
         self.win.show_all()
+        self.on_size()
+
+    def add_entry(self, key):
+        row = Gtk.ListBoxRow()
+        content = row_box(self.page(key).title, " ")
+        row.add(content)
+        row.key = key
+        row.content = content
+        self.menu.add(row)
+        row.show_all()
+        self.entries[key] = row
+        self.update_entry(key)
+
+    def update_entry(self, key):
+        text = self.pages[key].summary()
+        sub = self.entries[key].content.sub
+        sub.set_text(text)
+        sub.set_visible(bool(text))
 
     def page(self, key):
         if key not in self.pages:
-            cls = {"network": Network, "sound": Sound, "screen": Screen, "time": DateTime,
-                   "updates": Updates, "about": About}[key]
-            self.pages[key] = cls(self)
+            cls = dict(SECTIONS + (("helper", "Helper"),))[key]
+            self.pages[key] = globals()[cls](self)
             self.stack.add_named(self.pages[key].widget, key)
             self.pages[key].widget.show_all()
             for name, widget in getattr(self.pages[key], "subpages", {}).items():
                 self.stack.add_named(widget, "%s/%s" % (key, name))
+                widget.show_all()  # a stack shows only a visible child
         return self.pages[key]
 
+    # --- what shows ----------------------------------------------------------
     def show(self, key):
+        """A section (None: the list alone, on a narrow window)."""
+        self.wide_sub = False
+        if self.current in self.entries and self.current != key:
+            self.update_entry(self.current)  # what was changed there
         if key is None:
-            for row in self.entries:
-                if row.key == "touch":
-                    text = "защита от случайных касаний"
-                else:
-                    text = self.page(row.key).summary()
-                row.content.sub.set_text(text)
-                row.content.sub.set_visible(bool(text))
-            self.stack.set_visible_child_name("menu")
+            self.current = None
             self.header.set_title("Настройки")
-            self.back.hide()
-            return
-        page = self.page(key)
-        page.refresh()
-        self.stack.set_visible_child_name(key)
-        self.header.set_title(page.title)
-        self.back.show()
+        else:
+            page = self.page(key)
+            page.refresh()
+            self.current = key
+            self.stack.set_visible_child_name(key)
+            self.header.set_title(page.title)
+            self.menu.select_row(self.entries[key]) if key in self.entries else None
+        for k, row in self.entries.items():
+            ctx = row.get_style_context()
+            (ctx.add_class if k == key else ctx.remove_class)("chosen")
+        self.chrome()
+
+    def open_subpage(self, name, title, wide=False):
+        """A page inside a section (Обновления → «Что нового», Касания);
+        wide: the whole window, without the list."""
+        self.wide_sub = wide
+        self.stack.set_visible_child_name(name)
+        self.header.set_title(title)
+        self.chrome()
+
+    def chrome(self):
+        """The list, the page and «←» as the window's width and the page
+        ask: «←» on a subpage, and on a section of a narrow window."""
+        sub = "/" in (self.stack.get_visible_child_name() or "")
+        alone = self.narrow and self.current is None
+        self.side.set_visible(alone or not (self.narrow or self.wide_sub))
+        self.line.set_visible(not self.narrow and not self.wide_sub)
+        self.stack.set_visible(not alone)
+        self.back.set_visible(sub or (self.narrow and self.current is not None))
+        # Alone, the list takes the whole width.
+        for prop in ("expand", "fill"):
+            self.side.get_parent().child_set_property(self.side, prop, alone)
+        self.side.set_size_request(-1 if self.narrow else SIDEBAR, -1)
+
+    def on_size(self):
+        display = Gdk.Display.get_default()
+        monitor = display.get_monitor_at_window(self.win.get_window()) \
+            if self.win.get_window() else display.get_monitor(0)
+        narrow = monitor is not None and monitor.get_geometry().width < NARROW
+        if narrow != self.narrow:
+            self.narrow = narrow
+            GLib.idle_add(self.relayout)
+
+    def relayout(self):
+        # Wide again with only the list shown: the first section beside it.
+        if not self.narrow and self.current is None:
+            self.show("network")
+        else:
+            self.chrome()
+        return False
 
     def go_back(self):
-        """«←»: a page's own inner page first (Обновления → «Что нового»),
-        else the list of pages."""
-        page = self.pages.get((self.stack.get_visible_child_name() or "").split("/")[0])
-        if page and getattr(page, "back", None) and page.back():
+        """«←»: a section's own subpage first, then (narrow) the list."""
+        name = self.stack.get_visible_child_name() or ""
+        page = self.pages.get(name.split("/")[0])
+        if "/" in name and page and getattr(page, "back", None) and page.back():
+            self.chrome()
+            return
+        if "/" in name:
+            self.show(name.split("/")[0])
             return
         self.show(None)
 
     def on_menu(self, _lb, row):
-        if row.key == "touch":
-            subprocess.Popen(["/usr/bin/haltia-launch", "tap", "touch"])
-            return
         self.show(row.key)
+
+    def on_long_press(self, _gesture, _x, y):
+        row = self.menu.get_row_at_y(int(y))
+        if row is None or row.key != "about":
+            return
+        if "helper" not in self.entries:
+            self.add_entry("helper")
+        self.show("helper")
+
+    def on_close(self, *_args):
+        helper = self.pages.get("helper")
+        if helper:
+            helper.closing()
+        return False
+
+    def refresh_summaries(self):
+        for key in self.entries:
+            self.update_entry(key)
 
 
 if __name__ == "__main__":

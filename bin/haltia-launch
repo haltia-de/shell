@@ -185,7 +185,7 @@ tap-slot)
 start)
 	id=${2:-}
 	if ! aliases_of "$id" >/dev/null; then
-		# An entry with no windows of its own («Служебные»: a menu) is
+		# An entry with no windows of its own (a menu such as the old «Служебные») is
 		# run as it is, without a curtain to wait under.
 		bin=$(bin_of "$id") || exit 1
 		# shellcheck disable=SC2086 # exec is split on spaces (apps.conf)
