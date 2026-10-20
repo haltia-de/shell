@@ -311,6 +311,9 @@ open)
 	# Settings at its Wi-Fi page).
 	# shellcheck disable=SC2086
 	$bin ${HALTIA_LAUNCH_ARGS:-} >"$run"/haltia/app-"$id".log 2>&1 9>&- &
+	# The program's process, for haltia-stop when it hangs and «✕» cannot
+	# close it.
+	mkdir -p "$dir/pid" && echo $! >"$dir/pid/$id"
 	# While it starts, the close button stops it (haltia-ask close-front kills
 	# the pid and the curtain, and removes this file) and the home button
 	# takes the curtain away (haltia-home).

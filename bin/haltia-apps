@@ -11,6 +11,7 @@
     haltia-apps unpin ID   take it off, and reload
     haltia-apps autostart  start the XDG autostart entries meant for this shell
                         (haltia-launcher, once per session)
+    haltia-apps autostart NAME.desktop   only that one (haltia-stop)
 
 Four sources, later ones winning:
   /usr/share/haltia/apps.conf  the system programs the shell shows
@@ -571,11 +572,15 @@ def autostart_entries():
     return chosen
 
 
-def autostart():
+def autostart(only=None):
+    """Start the autostart entries, or only the one named (haltia-stop
+    starts a program that lives in the background again)."""
     import shlex
 
     run = os.environ.get("XDG_RUNTIME_DIR") or os.path.expanduser("~/.cache")
     for name, entry in autostart_entries().items():
+        if only and name != only:
+            continue
         try:
             argv = shlex.split(command_of(entry))
         except ValueError:
@@ -593,7 +598,7 @@ def autostart():
 def main():
     cmd = sys.argv[1] if len(sys.argv) > 1 else ""
     if cmd == "autostart":
-        autostart()
+        autostart(sys.argv[2] if len(sys.argv) > 2 else None)
         return 0
     if cmd in ("pin", "unpin") and len(sys.argv) > 2:
         if not pin(sys.argv[2], cmd == "pin"):

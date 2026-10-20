@@ -2,7 +2,7 @@
 /*
  * haltia-splash: the curtain shown while a program opens.
  *
- *   haltia-splash [ID]
+ *   haltia-splash [ID [TEXT]]
  *
  * haltia-launch starts it when a program has no window yet and stops it
  * (SIGTERM) once the window is there. It covers the screen beside the
@@ -10,7 +10,8 @@
  * panel lies along the bottom: haltia-rotate) on the top layer: the program's icon and name from apps.conf
  * (the "icon" and "label" keys of section ID), and a ring of dots that
  * turns while the program starts. Without an ID, or an icon, it shows
- * "Загрузка" alone.
+ * "Загрузка" alone. TEXT replaces the name: haltia-ask covers a program
+ * that is being closed with «Закрываю «…»…».
  *
  * It replaces a Python version that took about half a second to show,
  * a good part of what it was there to cover. PNG icons go through cairo;
@@ -395,6 +396,9 @@ int main(int argc, char **argv)
 
 	if (argc > 1 && argv[1][0] && !strchr(argv[1], '/'))
 		read_app(argv[1]);
+	/* A text of its own instead of the label («Закрываю «Видео»…»). */
+	if (argc > 2 && argv[2][0])
+		snprintf(label, sizeof(label), "%s", argv[2]);
 
 	/* SIGTERM from haltia-launch ends it; block it first so it is never lost. */
 	sigemptyset(&mask);

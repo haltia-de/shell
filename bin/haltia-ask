@@ -55,6 +55,51 @@ chosen() {
 	/usr/libexec/haltia/haltia-press ask >/dev/null 2>&1
 }
 
+# windows NAME...: how many windows have one of these app ids.
+windows() {
+	/usr/bin/haltia-focus list 2>/dev/null | awk -v names=" $* " 'index(names, " " $0 " ") { n++ } END { print n + 0 }'
+}
+
+# close_program ID LABEL APP_ID...: close a program that the person chose to
+# close. The window is asked to close (the program may save first) under a
+# curtain «Закрываю «…»…», so the tap shows at once. A program that has not
+# closed within five seconds hangs: haltia-stop stops it, and it starts
+# again in the background if it lives there. A new window of the program
+# instead (a question such as «Сохранить?») means it answers: the curtain
+# goes and the question is the person's.
+close_program() {
+	cid=$1 clabel=$2
+	shift 2
+	before=$(windows "$@")
+	splash=
+	if [ -x /usr/libexec/haltia/haltia-splash ]; then
+		/usr/libexec/haltia/haltia-splash "$cid" "Закрываю «$clabel»…" >/dev/null 2>&1 &
+		splash=$!
+	fi
+	/usr/bin/haltia-focus close "$@"
+	end=$(($(date +%s) + 5))
+	state=hangs
+	while [ "$(date +%s)" -lt "$end" ]; do
+		# Fewer windows: the one asked has closed (another window of the
+		# program, Firefox's second one, may stay).
+		n=$(windows "$@")
+		if [ "$n" -lt "$before" ]; then
+			state=closed
+			break
+		fi
+		if [ "$n" -gt "$before" ]; then
+			state=asks
+			break
+		fi
+		sleep 0.3
+	done
+	if [ "$state" = hangs ]; then
+		/usr/libexec/haltia/haltia-stop "$cid" "$@" >>"$run/haltia/stop.log" 2>&1
+	fi
+	[ -n "$splash" ] && kill "$splash" 2>/dev/null
+	return 0
+}
+
 # player ID: sets state (Playing or Paused) and bus (its MPRIS name) from
 # haltia-badges' file, or fails when the program's player is not playing.
 player() {
@@ -117,7 +162,7 @@ close)
 	chosen
 	ids=$(conf "$id" app_ids)
 	# shellcheck disable=SC2086 # the app_ids are separate words
-	/usr/bin/haltia-focus close ${ids:-$id}
+	close_program "$id" "${label:-$id}" ${ids:-$id}
 	;;
 close-front)
 	# A program still starting under its curtain is stopped at once: there
@@ -142,7 +187,9 @@ close-front)
 	[ -n "$id" ] && label=$(conf "$id" label)
 	[ "$(ask "Закрыть «${label:-$app}»?" "Закрыть" "Отмена")" = 0 ] || exit 0
 	chosen
-	/usr/bin/haltia-focus close "$app"
+	# Only the window in front is asked to close (a program's other
+	# windows stay), but a hang stops the whole program.
+	close_program "${id:-$app}" "${label:-$app}" "$app"
 	;;
 media)
 	id=${2:-}

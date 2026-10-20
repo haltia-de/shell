@@ -1,0 +1,188 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0
+"""haltia-stop ID [APP_ID...]: stop a program that does not close.
+
+The shell's «✕» first asks the window to close (haltia-ask, through
+haltia-focus close). A program that hangs never answers, and the window
+stays. This stops the whole program: SIGTERM, then SIGKILL two seconds
+later to whatever is left.
+
+The program is the process haltia-launch started for section ID
+($XDG_RUNTIME_DIR/haltia/launch/pid/ID), and, for one started some other
+way (autostart, D-Bus activation, a terminal), every process of the
+session's user whose command is the section's exec (python3 SCRIPT counts
+as SCRIPT) or one of the window app ids; with each of them, all its
+descendants (Видео's player). The shell's own processes are never
+touched.
+
+A program that lives in the background (an autostart entry ID.desktop, as
+Сообщения) starts again in the background, so its notifications go on.
+"""
+import os
+import signal
+import subprocess
+import sys
+import time
+
+TERM_WAIT = 2.0
+# Never these, whatever a section says: the session itself.
+SHELL = {"waybar", "phoc", "phoc-gpu", "haltia-home", "haltia-close", "haltia-launcher",
+         "haltia-focus", "haltia-badges", "haltia-volume", "haltia-rotate", "haltia-wvkbd",
+         "wvkbd-b8k", "mako", "pulseaudio", "dbus-daemon", "dbus-run-session", "lisgd",
+         "haltia-ask", "haltia-launch", "haltia-stop", "haltia-splash", "fuzzel", "sh",
+         "python3", "python", "env", "setsid"}
+
+
+def runtime():
+    return os.environ.get("XDG_RUNTIME_DIR") or os.path.expanduser("~/.cache")
+
+
+def apps_conf():
+    for path in (os.path.join(runtime(), "haltia/apps.conf"), "/usr/share/haltia/apps.conf"):
+        if os.path.isfile(path):
+            return path
+    return None
+
+
+def section(sid):
+    """{key: value} of [sid] in the session's apps.conf."""
+    values, inside = {}, False
+    path = apps_conf()
+    if not path:
+        return values
+    with open(path) as fh:
+        for line in fh:
+            line = line.strip()
+            if line.startswith("["):
+                inside = line.strip("[] \t") == sid
+            elif inside and "=" in line and not line.startswith("#"):
+                key, _sep, value = line.partition("=")
+                values[key.strip()] = value.strip()
+    return values
+
+
+def processes():
+    """{pid: (ppid, names)} of the user's processes; names are the command's
+    base name and, for an interpreter, its script's."""
+    uid = os.getuid()
+    found = {}
+    for entry in os.listdir("/proc"):
+        if not entry.isdigit():
+            continue
+        try:
+            if os.stat("/proc/" + entry).st_uid != uid:
+                continue
+            with open("/proc/%s/stat" % entry) as fh:
+                stat = fh.read()
+            with open("/proc/%s/cmdline" % entry, "rb") as fh:
+                argv = [a.decode("utf-8", "replace") for a in fh.read().split(b"\0") if a]
+        except OSError:
+            continue
+        # The command name in stat is in parentheses and may hold spaces.
+        fields = stat[stat.rindex(")") + 2:].split()
+        if fields[0] == "Z" or not argv:
+            continue
+        names = {os.path.basename(argv[0])}
+        if names & {"python3", "python", "sh", "bash"} and len(argv) > 1:
+            script = next((a for a in argv[1:] if not a.startswith("-")), "")
+            names.add(os.path.basename(script))
+        found[int(entry)] = (int(fields[1]), names)
+    return found
+
+
+def program(sid, app_ids):
+    procs = processes()
+    roots = set()
+    try:
+        with open(os.path.join(runtime(), "haltia/launch/pid", sid)) as fh:
+            pid = int(fh.read().split()[0])
+        if pid in procs:
+            roots.add(pid)
+    except (OSError, ValueError, IndexError):
+        pass
+    exe = section(sid).get("exec", "").split()
+    wanted = set(app_ids)
+    if exe:
+        wanted.add(os.path.basename(exe[0]))
+    wanted -= SHELL
+    for pid, (_ppid, names) in procs.items():
+        if names & wanted:
+            roots.add(pid)
+    roots.discard(os.getpid())
+    # Each root with all its descendants (they are the program's), not us.
+    children = {}
+    for pid, (ppid, _names) in procs.items():
+        children.setdefault(ppid, []).append(pid)
+    chosen, todo = set(), list(roots)
+    while todo:
+        pid = todo.pop()
+        if pid in chosen or pid == os.getpid():
+            continue
+        chosen.add(pid)
+        todo.extend(children.get(pid, []))
+    return chosen
+
+
+def alive(pid):
+    try:
+        with open("/proc/%d/stat" % pid) as fh:
+            stat = fh.read()
+        return stat[stat.rindex(")") + 2] != "Z"
+    except (OSError, ValueError, IndexError):
+        return False
+
+
+def stop(pids):
+    for pid in pids:
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except OSError:
+            pass
+    end = time.monotonic() + TERM_WAIT
+    while time.monotonic() < end and any(alive(p) for p in pids):
+        time.sleep(0.1)
+    left = [p for p in pids if alive(p)]
+    for pid in left:
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except OSError:
+            pass
+    return left
+
+
+def restart_background(sid):
+    """Start the program again in the background when it is one that lives
+    there (an autostart entry of the same id)."""
+    entry = sid + ".desktop"
+    try:
+        out = subprocess.run(["/usr/bin/haltia-apps", "autostart", entry],
+                             capture_output=True, text=True, timeout=20).stdout
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return "autostart: " in out
+
+
+def main():
+    args = sys.argv[1:]
+    if not args or args[0].startswith("-") or "/" in args[0]:
+        sys.stderr.write("usage: haltia-stop ID [APP_ID...]\n")
+        return 2
+    sid, app_ids = args[0], args[1:]
+    pids = program(sid, app_ids)
+    if not pids:
+        sys.stderr.write("haltia-stop: no process of %s\n" % sid)
+        return 1
+    killed = stop(sorted(pids))
+    sys.stderr.write("haltia-stop: %s stopped (%d processes, %d killed)\n"
+                     % (sid, len(pids), len(killed)))
+    try:
+        os.unlink(os.path.join(runtime(), "haltia/launch/pid", sid))
+    except OSError:
+        pass
+    if restart_background(sid):
+        sys.stderr.write("haltia-stop: %s started again in the background\n" % sid)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

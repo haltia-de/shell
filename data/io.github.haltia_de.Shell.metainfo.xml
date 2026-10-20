@@ -17,6 +17,15 @@
   <content_rating type="oars-1.1"/>
   <developer id="io.github.haltia_de"><name>Mikhail Nevskiy</name></developer>
   <releases>
+    <release version="2.4.0" date="2026-10-20">
+      <description>
+        <ul>
+          <li>«✕» закрывает и зависшую программу: если она не закрылась за 5 секунд, оболочка снимает её сама</li>
+          <li>Пока программа закрывается, её накрывает шторка «Закрываю…»</li>
+          <li>Сообщения после такого закрытия сразу работают дальше в фоне</li>
+        </ul>
+      </description>
+    </release>
     <release version="2.3.2" date="2026-10-20">
       <description>
         <ul>
