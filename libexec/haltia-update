@@ -246,6 +246,8 @@ def update_catalogs():
     import urllib.error
     import urllib.request
     for repo in repositories():
+        if not repo.startswith("https://"):
+            continue  # unsigned: only over TLS
         path = catalog_path(repo)
         tag = read_json(path + ".json", {})
         req = urllib.request.Request("%s/%s" % (repo, CATALOG))
@@ -272,10 +274,34 @@ def update_catalogs():
         write_json(path + ".json", {"etag": etag, "time": int(time.time())})
 
 
+def policy(names):
+    """{name: [repositories that offer it]}, from one apk policy."""
+    found, name = {}, None
+    if not names:
+        return found
+    for line in apk("policy", "--", *names).stdout.splitlines():
+        if line.endswith(" policy:") and not line.startswith(" "):
+            name = line[:-len(" policy:")]
+            found[name] = []
+        elif name and line.strip().startswith("https://"):
+            repo = line.strip().rstrip("/")
+            if repo not in found[name]:
+                found[name].append(repo)
+    return found
+
+
+def providers(name):
+    """The repositories that offer package name: as the last check found
+    (one apk policy for all), else asked now."""
+    kept = read_json(os.path.join(STATE, "status.json"), {}).get("providers", {})
+    return kept.get(name) or policy([name]).get(name, [])
+
+
 def catalog_component(name):
-    """The component of package name in a kept catalog, as XML bytes."""
+    """The component of package name, as XML bytes, from the catalog of a
+    repository that offers that package: another one's word is not taken."""
     import gzip
-    for repo in repositories():
+    for repo in providers(name):
         path = catalog_path(repo)
         try:
             with gzip.open(path, "rb") as fh:
@@ -284,10 +310,10 @@ def catalog_component(name):
             continue
         # Unsigned, unlike the index, and read as root: no DTDs or
         # entities, a bounded size, and only text is ever shown.
-        if len(data) > CATALOG_MAX * 8 or b"<!DOCTYPE" in data or b"<!ENTITY" in data:
+        if len(data) > CATALOG_MAX * 8:
             continue
         try:
-            root = ET.fromstring(data)
+            root = parse_xml(data)
         except ET.ParseError:
             continue
         for comp in root.iter("component"):
@@ -307,7 +333,8 @@ def check():
             lines.append((name, installed().get(name, "?"), new))
     status = read_json(os.path.join(STATE, "status.json"), {})
     status.update(checked=int(time.time()), available=len(lines),
-                  list=[list(c) for c in lines])
+                  list=[list(c) for c in lines],
+                  providers=policy(sorted({c[0] for c in lines if is_haltia(c[0])})))
     write_json(os.path.join(STATE, "status.json"), status)
     for name, old, new in lines:
         log("%s %s %s" % (name, old, new))
@@ -449,14 +476,31 @@ def fetch_changes(name, have):
     return lines
 
 
+def parse_xml(data):
+    """XML from outside (a package's metainfo, a repository's catalog), read
+    as root: a document type or an entity declaration ends it, whatever the
+    encoding (a byte check alone missed UTF-16)."""
+    import xml.parsers.expat
+
+    def refuse(*_args):
+        raise ET.ParseError("no DTDs or entities")
+    # expat itself looks first (ElementTree's C parser takes no handlers),
+    # then ElementTree reads what passed.
+    scan = xml.parsers.expat.ParserCreate()
+    scan.StartDoctypeDeclHandler = refuse
+    scan.EntityDeclHandler = refuse
+    try:
+        scan.Parse(data, True)
+    except xml.parsers.expat.ExpatError as exc:
+        raise ET.ParseError(str(exc))
+    return ET.fromstring(data)
+
+
 def releases(xml, have):
     """VERSION DATE lines, each followed by its description's paragraphs
     and items (an item starts with "• "), for releases newer than have."""
-    # Signed packages carry it, but this runs as root: no DTDs or entities.
-    if b"<!DOCTYPE" in xml or b"<!ENTITY" in xml:
-        return []
     try:
-        root = ET.fromstring(xml)
+        root = parse_xml(xml)
     except ET.ParseError:
         return []
     lines = []
