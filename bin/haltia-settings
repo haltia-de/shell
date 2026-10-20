@@ -17,6 +17,7 @@ for every user (NetworkManager's system connection), so no secret agent
 (nm-applet) is needed afterwards.
 """
 import os
+import re
 import subprocess
 import sys
 import time
@@ -65,6 +66,10 @@ row label.mark { font-size: 26px; color: #3584e4; }
 label.section { font-size: 22px; font-weight: bold; color: #5e5c64; }
 label.note { font-size: 22px; color: #5e5c64; }
 label.big { font-size: 56px; font-weight: bold; color: #2e3436; }
+label.headline { font-size: 34px; font-weight: bold; color: #2e3436; }
+label.notes { font-size: 24px; color: #2e3436; }
+progressbar trough { min-height: 16px; border-radius: 8px; }
+progressbar progress { min-height: 16px; border-radius: 8px; background-color: #3584e4; }
 button.action {
   background-image: none; border: none; box-shadow: none;
   border-radius: 16px; min-height: 72px; font-size: 24px; padding: 0 24px;
@@ -142,12 +147,18 @@ def listbox(on_activate):
 
 
 def page_box():
+    """A scrolling page: the box to fill, 16 px in. GTK 3 draws a box's
+    background inside its border width only, and on a long page what lay
+    under the border showed black: the outer box draws the background over
+    all of it."""
+    outer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+    outer.get_style_context().add_class("page")
     box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=16)
     box.set_border_width(16)
-    box.get_style_context().add_class("page")
+    outer.pack_start(box, True, True, 0)
     scroll = Gtk.ScrolledWindow()
     scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
-    scroll.add(box)
+    scroll.add(outer)
     return scroll, box
 
 
@@ -660,6 +671,20 @@ class DateTime:
 
 # --- updates ----------------------------------------------------------------
 UPDATE = ["doas", "-n", "/usr/libexec/haltia/haltia-update"]
+MONTHS = ("января", "февраля", "марта", "апреля", "мая", "июня", "июля", "августа",
+          "сентября", "октября", "ноября", "декабря")
+STAGES = {"index": "Узнаю, что вышло…", "snapshot": "Сохраняю прежние версии…",
+          "install": "Скачиваю и устанавливаю…", "rollback": "Возвращаю прежнюю версию…"}
+RESULTS = {
+    "updated": "Готово. Если что-то работает не так — «Вернуть прежнюю» внизу.",
+    "nothing to update": "Обновлять нечего.",
+    "battery: charge it first": "Поставьте планшет на зарядку: заряд меньше 30 %.",
+    "storage: not enough room": "Мало места для обновления.",
+    "network: no repository": "Нет сети.",
+    "busy: another update runs": "Обновление уже идёт.",
+    "rolled back": "Прежняя версия возвращена. Эту версию автообновление пропустит.",
+    "failed, going back": "Обновление не удалось, всё возвращено как было.",
+}
 
 
 def run_async(args, done):
@@ -677,49 +702,117 @@ def run_async(args, done):
     threading.Thread(target=work, daemon=True).start()
 
 
-def program_name(package):
-    """A package as the person knows it: the program's name from its
-    .desktop file (haltia-text: «Блокнот»), else the package's own name."""
-    if package == "haltia-shell":
-        return "Оболочка Haltia"
-    if package.startswith("haltia-"):
-        rest = package[len("haltia-"):]
-        path = "/usr/share/applications/io.github.haltia_de.%s.desktop" % rest.capitalize()
+def run_lines(args, on_line, done):
+    """Runs a command; on_line(text) for each line of its output as it
+    comes, then done(returncode, last line), all in the main loop."""
+    proc = Gio.Subprocess.new(args, Gio.SubprocessFlags.STDOUT_PIPE |
+                              Gio.SubprocessFlags.STDERR_MERGE)
+    stream = Gio.DataInputStream.new(proc.get_stdout_pipe())
+    last = [""]
+
+    def got(src, result):
         try:
-            with open(path) as fh:
-                names = dict(l.strip().split("=", 1) for l in fh if "=" in l)
-            return names.get("Name[ru]") or names.get("Name") or package
-        except OSError:
-            pass
-    return package
+            line, _len = src.read_line_finish_utf8(result)
+        except GLib.Error:
+            line = None
+        if line is None:
+            proc.wait_async(None, lambda p, r: (p.wait_finish(r),
+                                                done(p.get_exit_status(), last[0])))
+            return
+        if line.strip():
+            last[0] = line.strip()
+            on_line(line.strip())
+        src.read_line_async(GLib.PRIORITY_DEFAULT, None, got)
+
+    stream.read_line_async(GLib.PRIORITY_DEFAULT, None, got)
+
+
+def when(stamp):
+    """A moment as people say it: «сегодня в 10:15», «20 октября в 10:15»."""
+    t = time.localtime(stamp)
+    today = time.localtime()
+    hm = time.strftime("%H:%M", t)
+    if t[:3] == today[:3]:
+        return "сегодня в %s" % hm
+    if t[:3] == time.localtime(time.time() - 86400)[:3]:
+        return "вчера в %s" % hm
+    return "%d %s в %s" % (t.tm_mday, MONTHS[t.tm_mon - 1], hm)
+
+
+def release_date(text):
+    """2026-10-18 as «18 октября 2026»."""
+    try:
+        y, m, d = (int(x) for x in text.split("-")[:3])
+        return "%d %s %d" % (d, MONTHS[m - 1], y)
+    except (ValueError, IndexError):
+        return text
+
+
+def button(text, kind, on_click):
+    b = Gtk.Button(label=text, valign=Gtk.Align.CENTER)
+    b.get_style_context().add_class(kind)
+    b.connect("clicked", lambda _b: on_click())
+    return b
 
 
 class Updates:
-    """haltia-update: what can be updated and what is new in it, updating
-    with a way back, updating by itself, and going back."""
+    """haltia-update: what can be updated, program by program or all, what
+    is new in each (a page of its own), updating with a way back, updating
+    by itself, and going back program by program."""
 
     title = "Обновления"
 
     def __init__(self, app):
         self.app = app
         self.busy = False
+        self.st = {}
+        self.watch = None
+        self.notes_for = None
+        # The list is the page; «Что нового» a page of its own in the window's
+        # stack (subpages), as a stack inside the page showed black edges.
         self.widget, box = page_box()
+
+        # The state of things, with «Проверить».
+        top = Gtk.Box(spacing=16)
+        text = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+        self.headline = Gtk.Label(xalign=0, wrap=True)
+        self.headline.get_style_context().add_class("headline")
+        text.pack_start(self.headline, False, False, 0)
         self.state = Gtk.Label(xalign=0, wrap=True)
         self.state.get_style_context().add_class("note")
-        box.pack_start(self.state, False, False, 0)
-        buttons = Gtk.Box(spacing=16)
-        self.check_btn = Gtk.Button(label="Проверить")
-        self.check_btn.get_style_context().add_class("plain")
-        self.check_btn.connect("clicked", lambda _b: self.check())
-        buttons.pack_start(self.check_btn, False, False, 0)
-        self.update_btn = Gtk.Button(label="Обновить всё")
-        self.update_btn.get_style_context().add_class("action")
-        self.update_btn.connect("clicked", lambda _b: self.upgrade())
-        self.update_btn.set_no_show_all(True)
-        buttons.pack_start(self.update_btn, False, False, 0)
-        box.pack_start(buttons, False, False, 0)
+        text.pack_start(self.state, False, False, 0)
+        top.pack_start(text, True, True, 0)
+        self.check_btn = button("Проверить", "plain", self.check)
+        top.pack_end(self.check_btn, False, False, 0)
+        box.pack_start(top, False, False, 0)
+
+        # What runs now.
+        self.work = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        self.work_label = Gtk.Label(xalign=0, wrap=True)
+        self.work_label.get_style_context().add_class("note")
+        self.work.pack_start(self.work_label, False, False, 0)
+        self.bar = Gtk.ProgressBar()
+        self.work.pack_start(self.bar, False, False, 0)
+        self.work.set_no_show_all(True)
+        self.work_label.show()
+        self.bar.show()
+        box.pack_start(self.work, False, False, 0)
+
+        # What can be updated.
+        head = Gtk.Box(spacing=16)
+        self.avail_title = section("Можно обновить")
+        head.pack_start(self.avail_title, True, True, 0)
+        self.all_btn = button("Обновить всё", "action", lambda: self.upgrade(None))
+        head.pack_end(self.all_btn, False, False, 0)
+        self.avail_head = head
+        head.set_no_show_all(True)
+        self.avail_title.show()
+        self.all_btn.show()
+        box.pack_start(head, False, False, 0)
         self.list = listbox(self.on_row)
         box.pack_start(self.list, False, False, 0)
+
+        # Updating by itself.
         line = Gtk.Box(spacing=16)
         text = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
         label = Gtk.Label(label="Обновлять автоматически", xalign=0)
@@ -734,182 +827,289 @@ class Updates:
         self.auto.connect("notify::active", self.on_auto)
         line.pack_end(self.auto, False, False, 0)
         box.pack_start(line, False, False, 0)
+
+        # The past ones, each with its way back.
         box.pack_start(section("Прошлые обновления"), False, False, 0)
         self.history = listbox(lambda *_a: None)
         box.pack_start(self.history, False, False, 0)
-        self.back_btn = Gtk.Button(label="Откатить последнее обновление")
-        self.back_btn.get_style_context().add_class("plain")
+        self.back_btn = button("Откатить последнее обновление", "plain", self.rollback_last)
         self.back_btn.get_style_context().add_class("danger")
         self.back_btn.set_halign(Gtk.Align.START)
-        self.back_btn.connect("clicked", lambda _b: self.rollback())
         # Only when there is an update to go back from (show_all leaves it).
         self.back_btn.set_no_show_all(True)
-        self.can_go_back = False
         box.pack_start(self.back_btn, False, False, 0)
-        self.items = []
+
+        # «Что нового» of one program: its releases, then «Обновить».
+        notes = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        notes.get_style_context().add_class("page")
+        scroll, self.notes_box = page_box()
+        notes.pack_start(scroll, True, True, 0)
+        bottom = Gtk.Box(spacing=16)
+        bottom.set_border_width(16)
+        self.notes_btn = button("Обновить", "action", lambda: self.upgrade(self.notes_for))
+        bottom.pack_end(self.notes_btn, False, False, 0)
+        notes.pack_end(bottom, False, False, 0)
+        self.subpages = {"notes": notes}
         self.refresh()
 
+    # --- state ---------------------------------------------------------------
+    def load(self):
+        import json
+        try:
+            self.st = json.loads(run(*UPDATE, "state") or "{}")
+        except ValueError:
+            self.st = {}
+        return self.st
+
     def summary(self):
-        st = self.status()
-        n = int(st.get("available", 0) or 0)
+        n = len(self.load().get("programs", []))
         return "есть обновления: %d" % n if n else "всё обновлено"
 
-    def status(self):
-        values = {}
-        for line in run(*UPDATE, "status").splitlines():
-            k, sep, v = line.partition("=")
-            if sep:
-                values[k] = v
-        return values
-
     def refresh(self):
-        st = self.status()
+        st = self.load()
         self.auto.handler_block_by_func(self.on_auto)
-        self.auto.set_active(st.get("auto") == "yes")
+        self.auto.set_active(bool(st.get("auto")))
         self.auto.handler_unblock_by_func(self.on_auto)
-        when = int(st.get("checked", 0) or 0)
-        if self.busy:
-            return
-        if not st:
-            self.state.set_text("Обновления недоступны: нет службы обновлений.")
-            self.check_btn.set_sensitive(False)
-        elif when:
-            self.state.set_text("Проверено %s. %s" % (
-                time.strftime("%d.%m в %H:%M", time.localtime(when)),
-                "Нажмите «Проверить», чтобы узнать, что вышло." if not self.items else ""))
+        if st.get("busy") and not self.busy:
+            # An update runs without us (by itself, or a window before):
+            # show its progress until it ends.
+            self.show_progress(st.get("progress") or {})
+            if self.watch is None:
+                self.watch = GLib.timeout_add_seconds(2, self.poll)
+        if self.busy or st.get("busy"):
+            self.set_sensitive(False)
         else:
-            self.state.set_text("Ещё не проверяли.")
-        if st.get("pending") == "yes":
-            self.state.set_text(self.state.get_text() + " Последнее обновление проверяется.")
+            self.set_sensitive(True)
+            self.work.hide()
+        self.fill_state()
+        self.fill_list()
+        self.fill_history()
+
+    def poll(self):
+        st = self.load()
+        if st.get("busy"):
+            self.show_progress(st.get("progress") or {})
+            return True
+        self.watch = None
+        self.refresh()
+        return False
+
+    def fill_state(self):
+        st = self.st
+        n = len(st.get("programs", []))
+        if not st:
+            self.headline.set_text("Обновления недоступны")
+            self.state.set_text("Нет службы обновлений.")
+            self.check_btn.set_sensitive(False)
+            return
+        self.headline.set_text("Есть обновления: %d" % n if n else "Всё обновлено")
+        when_ = ("Проверено %s." % when(st["checked"])) if st.get("checked") else \
+            "Ещё не проверяли."
+        if st.get("pending"):
+            when_ += " Последнее обновление проверяется."
+        self.state.set_text(when_)
+
+    def fill_list(self):
+        for child in self.list.get_children():
+            self.list.remove(child)
+        programs = self.st.get("programs", [])
+        for prog in programs:
+            row = Gtk.ListBoxRow()
+            line = Gtk.Box(spacing=16)
+            if prog["name"] == "system":
+                sub = "обновится пакетов: %d" % len(prog["packages"])
+                row.set_activatable(False)
+            else:
+                sub = "%s → %s · что нового ›" % (prog.get("old", "?"), prog.get("new", "?"))
+            line.pack_start(row_box(prog["label"], sub), True, True, 0)
+            b = button("Обновить", "plain", lambda p=prog: self.upgrade(p))
+            line.pack_end(b, False, False, 0)
+            row.add(line)
+            row.prog = prog
+            row.button = b
+            self.list.add(row)
+        self.list.show_all()
+        self.avail_head.set_visible(bool(programs))
+        self.all_btn.set_visible(len(programs) > 1)
+        self.list.set_visible(bool(programs))
+
+    def fill_history(self):
         for child in self.history.get_children():
             self.history.remove(child)
-        lines = run(*UPDATE, "history").splitlines()
-        for line in lines[:2]:
-            sid, _sp, what = line.partition(" ")
-            stamp = "%s.%s %s:%s" % (sid[6:8], sid[4:6], sid[8:10], sid[10:12])
-            # A program's compiled Python (-pyc) is part of the program.
-            names = sorted({program_name(c.split()[0]) for c in what.split(", ")
-                            if c and not c.split()[0].endswith("-pyc")})
-            row = Gtk.ListBoxRow(activatable=False)
-            row.add(row_box(stamp, ", ".join(names)))
-            self.history.add(row)
-        if not lines:
+        entries = self.st.get("history", [])
+        for entry in entries:
+            for prog in entry["programs"]:
+                row = Gtk.ListBoxRow(activatable=False)
+                line = Gtk.Box(spacing=16)
+                if prog["name"] == "system":
+                    sub = "пакетов: %d, %s" % (len(prog["packages"]), when(entry["time"]))
+                else:
+                    sub = "%s → %s, %s" % (prog.get("old", "?"), prog.get("new", "?"),
+                                           when(entry["time"]))
+                if prog.get("rolled_back"):
+                    sub += " · возвращена прежняя"
+                line.pack_start(row_box(prog["label"], sub), True, True, 0)
+                if not prog.get("rolled_back"):
+                    b = button("Вернуть прежнюю", "plain",
+                               lambda e=entry, p=prog: self.rollback(e, p))
+                    b.get_style_context().add_class("danger")
+                    line.pack_end(b, False, False, 0)
+                row.add(line)
+                self.history.add(row)
+        if not entries:
             row = Gtk.ListBoxRow(activatable=False)
             row.add(row_box("Обновлений ещё не было"))
             self.history.add(row)
-        self.can_go_back = bool(lines)
-        self.back_btn.set_visible(self.can_go_back)
-        self.back_btn.set_sensitive(self.can_go_back)
+        self.back_btn.set_visible(bool(entries))
         self.history.show_all()
 
-    def set_busy(self, text):
-        self.busy = bool(text)
-        for w in (self.check_btn, self.update_btn):
-            w.set_sensitive(not text)
-        self.back_btn.set_sensitive(not text and self.can_go_back)
-        if text:
-            self.state.set_text(text)
+    def set_sensitive(self, on):
+        for w in (self.check_btn, self.all_btn, self.back_btn, self.list, self.history,
+                  self.notes_btn):
+            w.set_sensitive(on)
+
+    # --- work ----------------------------------------------------------------
+    def show_progress(self, prog):
+        self.work.show()
+        text = STAGES.get(prog.get("stage"), "Обновляю…")
+        pct = prog.get("percent", 0)
+        if prog.get("stage") == "install":
+            text += " %d %%" % pct
+            self.bar.set_fraction(pct / 100)
+        else:
+            self.bar.pulse()
+        self.work_label.set_text(text)
+
+    def mark(self, names, text):
+        """The rows of these programs say what happens to them (their
+        «Обновить» buttons show it)."""
+        for row in self.list.get_children():
+            if names is None or row.prog["name"] in names:
+                row.button.set_label(text)
+
+    def start(self, args, label, targets=()):
+        """Runs haltia-update with its progress shown; the state is read
+        again when it ends. targets: the programs in the list it updates
+        (None: all), marked as waiting, then as being updated."""
+        self.targets = targets
+        if targets != ():
+            self.mark(targets, "Ждёт…")
+        self.busy = True
+        self.set_sensitive(False)
+        self.work.show()
+        self.work_label.set_text(label)
+        self.bar.set_fraction(0)
+        self.stage = None
+        run_lines(UPDATE + args, self.on_line, self.finished)
+
+    def on_line(self, line):
+        word, _sp, rest = line.partition(" ")
+        if word == "stage":
+            self.stage = rest
+            self.show_progress({"stage": rest})
+            if rest == "install" and self.targets != ():
+                self.mark(self.targets, "Обновляю…")
+        elif word == "progress" and rest.isdigit():
+            self.show_progress({"stage": self.stage or "install", "percent": int(rest)})
+
+    def finished(self, code, last):
+        self.busy = False
+        self.work.hide()
+        self.leave_notes()
+        self.refresh()
+        self.state.set_text(RESULTS.get(last, "Не получилось." if code else "Готово."))
 
     def check(self):
-        self.set_busy("Ищу обновления…")
-        run_async(UPDATE + ["check"], self.checked)
+        self.start(["check"], "Ищу обновления…")
 
-    def checked(self, code, out):
-        self.set_busy(None)
-        for child in self.list.get_children():
-            self.list.remove(child)
-        self.items = []
-        for line in out.splitlines():
-            parts = line.split()
-            if len(parts) == 3:
-                self.items.append(parts)
-        if code:
-            self.state.set_text("Не удалось проверить: нет сети?")
-        elif not self.items:
-            self.state.set_text("Всё обновлено.")
-        else:
-            self.state.set_text("Можно обновить: %d. Нажмите на строку — что нового." %
-                                len(self.items))
-        system = 0
-        for name, old, new in self.items:
-            if not name.startswith("haltia-"):
-                system += 1
-                continue
-            row = Gtk.ListBoxRow()
-            row.add(row_box(program_name(name), "%s → %s" % (old.split("-r")[0],
-                                                             new.split("-r")[0])))
-            row.package = name
-            self.list.add(row)
-        if system:
-            row = Gtk.ListBoxRow(activatable=False)
-            row.add(row_box("Системные пакеты", "обновится: %d" % system))
-            self.list.add(row)
-        self.update_btn.set_visible(bool(self.items))
-        self.list.show_all()
-        return False
-
-    def on_row(self, _lb, row):
-        self.set_busy("Узнаю, что нового…")
-        run_async(UPDATE + ["changes", row.package],
-                  lambda code, out: self.show_changes(row.package, out))
-
-    def show_changes(self, package, out):
-        self.set_busy(None)
-        self.refresh()
-        lines = [l for l in out.splitlines() if l.strip()]
-        text = "\n".join(lines) if lines else "Описания изменений нет."
-        say(self.app.win, "%s\n\n%s" % (program_name(package), text))
-        return False
-
-    def upgrade(self):
-        if dialogs and not dialogs.ask(self.app.win, "Обновить сейчас? Планшет не выключайте",
-                                       "Обновить"):
+    def upgrade(self, prog):
+        if prog is None:
+            if dialogs and not dialogs.ask(self.app.win,
+                                           "Обновить всё сейчас? Планшет не выключайте",
+                                           "Обновить"):
+                return
+            self.start(["upgrade"], "Обновляю всё…", None)
             return
-        self.set_busy("Обновляю… Не выключайте планшет.")
-        run_async(UPDATE + ["upgrade"], self.upgraded)
+        names = sorted({p[0] for p in prog["packages"]})
+        self.start(["upgrade"] + names, "Обновляю «%s»…" % prog["label"], {prog["name"]})
 
-    def upgraded(self, code, out):
-        self.set_busy(None)
-        last = (out.strip().splitlines() or [""])[-1]
-        messages = {
-            "updated": "Обновлено. Если что-то работает не так — «Откатить последнее обновление».",
-            "nothing to update": "Обновлять нечего.",
-            "battery: charge it first": "Поставьте планшет на зарядку: заряд меньше 30 %.",
-            "storage: not enough room": "Мало места для обновления.",
-            "network: no repository": "Нет сети.",
-            "busy: another update runs": "Обновление уже идёт.",
-            "rolled back": "Обновление не удалось, всё возвращено как было.",
-        }
-        self.state.set_text(messages.get(last, "Не удалось обновить."))
-        self.items = []
-        for child in self.list.get_children():
-            self.list.remove(child)
-        self.update_btn.hide()
-        self.refresh_history_only()
-        return False
+    def rollback(self, entry, prog):
+        what = "Вернуть прежние системные компоненты?" if prog["name"] == "system" else \
+            "Вернуть «%s» версии %s?" % (prog["label"], prog.get("old", ""))
+        if dialogs and not dialogs.ask(self.app.win, what, "Вернуть"):
+            return
+        self.start(["rollback", entry["id"]] + prog["packages"], "Возвращаю прежнюю версию…")
 
-    def refresh_history_only(self):
-        text = self.state.get_text()
-        self.refresh()
-        self.state.set_text(text)
-
-    def rollback(self):
+    def rollback_last(self):
         if dialogs and not dialogs.ask(
                 self.app.win, "Вернуть программы, какими они были до последнего обновления?",
-                "Откатить"):
+                "Вернуть"):
             return
-        self.set_busy("Возвращаю прежние версии…")
-        run_async(UPDATE + ["rollback"], self.rolled_back)
-
-    def rolled_back(self, code, out):
-        self.set_busy(None)
-        self.state.set_text("Прежние версии возвращены. Эту версию автообновление пропустит."
-                            if code == 0 else "Откатить не удалось.")
-        self.refresh_history_only()
-        return False
+        self.start(["rollback"], "Возвращаю прежние версии…")
 
     def on_auto(self, switch, _param):
         run(*UPDATE, "auto", "on" if switch.get_active() else "off")
+
+    # --- «Что нового» ----------------------------------------------------------
+    def on_row(self, _lb, row):
+        prog = row.prog
+        if prog["name"] == "system" or self.busy:
+            return
+        self.notes_for = prog
+        for child in self.notes_box.get_children():
+            self.notes_box.remove(child)
+        wait = Gtk.Label(label="Узнаю, что нового…", xalign=0)
+        wait.get_style_context().add_class("note")
+        self.notes_box.pack_start(wait, False, False, 0)
+        self.notes_btn.set_label("Обновить «%s»" % prog["label"])
+        self.notes_btn.set_sensitive(True)
+        self.subpages["notes"].show_all()
+        self.app.stack.set_visible_child_name("updates/notes")
+        self.app.header.set_title("%s: что нового" % prog["label"])
+        run_async(UPDATE + ["changes", prog["name"]], self.show_notes)
+
+    def show_notes(self, code, out):
+        if self.app.stack.get_visible_child_name() != "updates/notes":
+            return False
+        for child in self.notes_box.get_children():
+            self.notes_box.remove(child)
+        lines = [l for l in out.splitlines() if l.strip()]
+        if not lines:
+            text = "Не удалось узнать: нет сети?" if code else \
+                "Автор не описал, что изменилось в этой версии."
+            label = Gtk.Label(label=text, xalign=0, wrap=True)
+            label.get_style_context().add_class("note")
+            self.notes_box.pack_start(label, False, False, 0)
+        for line in lines:
+            # haltia-update's "VERSION DATE" line starts a release.
+            head = re.fullmatch(r"(\d+(?:\.\d+)+\S*)(?: (\d{4}-\d\d-\d\d)?)?", line)
+            if head:
+                text = "Версия %s" % head.group(1)
+                if head.group(2):
+                    text += " · %s" % release_date(head.group(2))
+                label = Gtk.Label(label=text, xalign=0, wrap=True)
+                label.get_style_context().add_class("section")
+                label.set_margin_top(8)
+            else:
+                label = Gtk.Label(label=line, xalign=0, wrap=True)
+                label.get_style_context().add_class("notes")
+                label.set_line_wrap_mode(2)  # Pango.WrapMode.WORD_CHAR
+            self.notes_box.pack_start(label, False, False, 0)
+        self.notes_box.show_all()
+        return False
+
+    def back(self):
+        """The header's «←»: from «Что нового» back to the list."""
+        if self.app.stack.get_visible_child_name() == "updates/notes":
+            self.leave_notes()
+            return True
+        return False
+
+    def leave_notes(self):
+        if self.app.stack.get_visible_child_name() == "updates/notes":
+            self.app.stack.set_visible_child_name("updates")
+            self.app.header.set_title(self.title)
+        self.notes_for = None
 
 
 # --- about ----------------------------------------------------------------
@@ -995,7 +1195,7 @@ class Settings(Gtk.Application):
         self.win.set_default_size(1160, 800)
         self.header = Gtk.HeaderBar(title="Настройки")
         self.back = Gtk.Button(label="←")
-        self.back.connect("clicked", lambda _b: self.show(None))
+        self.back.connect("clicked", lambda _b: self.go_back())
         self.back.set_no_show_all(True)
         self.header.pack_start(self.back)
         self.win.set_titlebar(self.header)
@@ -1027,6 +1227,8 @@ class Settings(Gtk.Application):
             self.pages[key] = cls(self)
             self.stack.add_named(self.pages[key].widget, key)
             self.pages[key].widget.show_all()
+            for name, widget in getattr(self.pages[key], "subpages", {}).items():
+                self.stack.add_named(widget, "%s/%s" % (key, name))
         return self.pages[key]
 
     def show(self, key):
@@ -1047,6 +1249,14 @@ class Settings(Gtk.Application):
         self.stack.set_visible_child_name(key)
         self.header.set_title(page.title)
         self.back.show()
+
+    def go_back(self):
+        """«←»: a page's own inner page first (Обновления → «Что нового»),
+        else the list of pages."""
+        page = self.pages.get((self.stack.get_visible_child_name() or "").split("/")[0])
+        if page and getattr(page, "back", None) and page.back():
+            return
+        self.show(None)
 
     def on_menu(self, _lb, row):
         if row.key == "touch":

@@ -141,6 +141,7 @@ def hook(name):
 
 UPDATE = "/usr/libexec/haltia/haltia-update"
 UPDATE_STATE = "/var/lib/haltia/update"
+UPDATE_NOTIFY = "/usr/libexec/haltia/haltia-update-notify"
 UPDATE_EVERY = 20 * 3600  # seconds between looks for updates
 
 
@@ -192,13 +193,21 @@ def updates_when_light():
             status = __import__("json").load(fh)
     except (OSError, ValueError):
         return
+    # What it did by itself (updated, went back), when not told yet.
+    try:
+        with open(os.path.join(UPDATE_STATE, "news.json")) as fh:
+            news = __import__("json").load(fh)
+    except (OSError, ValueError):
+        news = []
+    if any(not n.get("told") for n in news):
+        as_session_user([UPDATE_NOTIFY])
     told = os.path.join(UPDATE_STATE, "told")
     if not status.get("available") or os.path.exists(told) and \
             os.path.getmtime(told) >= status.get("checked", 0):
         return
     open(told, "w").close()
-    as_session_user(["notify-send", "-a", "Настройки", "Есть обновления",
-                     "Настройки → Обновления: что нового и «Обновить всё»"])
+    as_session_user([UPDATE_NOTIFY, "Есть обновления",
+                     "Нажмите, чтобы узнать, что нового, и обновить"])
 
 
 def read_level(path):

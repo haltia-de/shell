@@ -154,7 +154,11 @@ fi
 # in /etc/haltia/health pass.
 if [ -x /usr/libexec/haltia/haltia-update ]; then
 	doas -n /usr/libexec/haltia/haltia-update session-start >"$run"/haltia/update.log 2>&1
-	(sleep 60 && doas -n /usr/libexec/haltia/haltia-update health) >>"$run"/haltia/update.log 2>&1 &
+	# Then what it did by itself (going back at boot or just now, updating
+	# while the screen was off) as notifications that open «Обновления».
+	(sleep 60; doas -n /usr/libexec/haltia/haltia-update health
+		/usr/libexec/haltia/haltia-update-notify) >>"$run"/haltia/update.log 2>&1 &
+	/usr/libexec/haltia/haltia-update-notify >>"$run"/haltia/update.log 2>&1 &
 fi
 # What the device or the person adds at session start (haltia-hook).
 /usr/libexec/haltia/haltia-hook session-start
