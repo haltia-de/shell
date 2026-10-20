@@ -52,6 +52,12 @@ toolbar toolbutton > button > image,
 }
 
 statusbar, statusbar label { font-size: 20px; }
+/* The status bar's message (the game's "Stock left: 24  Redeals left: 2")
+   stays English: the games' strings go through Guile's gettext, and
+   Alpine's Guile is built without it, though aisleriot-lang has them in
+   Russian. It is hidden; the time and the score (aisleriot's own labels,
+   translated) stay. */
+statusbar > frame > box > label { color: transparent; }
 
 dialog label, messagedialog label { font-size: 23px; }
 dialog button, messagedialog button { min-height: 64px; padding: 0 24px; }

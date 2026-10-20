@@ -422,7 +422,42 @@ static void read_weather(char w[2][64])
 		memcpy(w, weather, sizeof(weather));
 }
 
-/* Re-read what others write: unread counts, the weather, apps.conf. */
+/* The time zone, when Настройки change it. libc reads /etc/localtime once
+   (musl keeps it until TZ names something else), so the clock stayed in the
+   old zone until the session restarted. A changed link or file is read again
+   by naming it through TZ for a moment. A TZ from the environment wins, as
+   before. */
+static void poll_zone(void)
+{
+	static char shown[256];
+	static time_t shown_mtime;
+	static int seen;
+	char link[256];
+	struct stat st;
+	ssize_t n;
+
+	if (getenv("TZ"))
+		return;
+	n = readlink("/etc/localtime", link, sizeof(link) - 1);
+	link[n < 0 ? 0 : n] = '\0';
+	if (stat("/etc/localtime", &st))
+		st.st_mtime = 0;
+	if (seen && !strcmp(link, shown) && st.st_mtime == shown_mtime)
+		return;
+	if (seen) {
+		setenv("TZ", ":/etc/localtime", 1);
+		tzset();
+		unsetenv("TZ");
+		tzset();
+		dirty = 1;
+	}
+	snprintf(shown, sizeof(shown), "%s", link);
+	shown_mtime = st.st_mtime;
+	seen = 1;
+}
+
+/* Re-read what others write: unread counts, the weather, apps.conf, the
+   time zone. */
 static void poll_files(void)
 {
 	const char *run = runtime_dir();
@@ -432,6 +467,7 @@ static void poll_files(void)
 
 	if (!stat(apps_path, &st) && st.st_mtime != apps_mtime)
 		read_apps();
+	poll_zone();
 	if (!run)
 		return;
 	for (int i = 0; i < napps; i++) {

@@ -62,6 +62,15 @@ if [ ! -e "$HOME/.config/haltia/filechooser-1" ] && command -v gsettings >/dev/n
 	done
 	mkdir -p "$HOME/.config/haltia" && : >"$HOME/.config/haltia/filechooser-1"
 fi
+# The calculator's large display and keys (share/galculator.conf, in
+# /etc/skel). A home made without skel, or galculator run before the shell
+# came, has galculator's own small defaults (40 px keys, its button font
+# off): those give way to the shell's; a file one changed stays.
+galc="$HOME/.config/galculator/galculator.conf"
+if [ -f /etc/skel/.config/galculator/galculator.conf ] && { [ ! -e "$galc" ] ||
+	{ grep -qx 'button_width=40' "$galc" && grep -qx 'custom_button_font=false' "$galc"; }; }; then
+	mkdir -p "${galc%/*}" && cp /etc/skel/.config/galculator/galculator.conf "$galc"
+fi
 # GTK 4 and libadwaita programs (GNOME Settings) take no GTK theme, only a
 # user style sheet: the shell's header for them, unless one has a style
 # sheet of one's own; no window buttons (the shell's «✕» closes).

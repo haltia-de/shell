@@ -742,6 +742,9 @@ class Updates:
         self.back_btn.get_style_context().add_class("danger")
         self.back_btn.set_halign(Gtk.Align.START)
         self.back_btn.connect("clicked", lambda _b: self.rollback())
+        # Only when there is an update to go back from (show_all leaves it).
+        self.back_btn.set_no_show_all(True)
+        self.can_go_back = False
         box.pack_start(self.back_btn, False, False, 0)
         self.items = []
         self.refresh()
@@ -784,17 +787,26 @@ class Updates:
         for line in lines[:2]:
             sid, _sp, what = line.partition(" ")
             stamp = "%s.%s %s:%s" % (sid[6:8], sid[4:6], sid[8:10], sid[10:12])
-            names = sorted({program_name(c.split()[0]) for c in what.split(", ") if c})
+            # A program's compiled Python (-pyc) is part of the program.
+            names = sorted({program_name(c.split()[0]) for c in what.split(", ")
+                            if c and not c.split()[0].endswith("-pyc")})
             row = Gtk.ListBoxRow(activatable=False)
             row.add(row_box(stamp, ", ".join(names)))
             self.history.add(row)
-        self.back_btn.set_sensitive(bool(lines))
+        if not lines:
+            row = Gtk.ListBoxRow(activatable=False)
+            row.add(row_box("Обновлений ещё не было"))
+            self.history.add(row)
+        self.can_go_back = bool(lines)
+        self.back_btn.set_visible(self.can_go_back)
+        self.back_btn.set_sensitive(self.can_go_back)
         self.history.show_all()
 
     def set_busy(self, text):
         self.busy = bool(text)
-        for w in (self.check_btn, self.update_btn, self.back_btn):
+        for w in (self.check_btn, self.update_btn):
             w.set_sensitive(not text)
+        self.back_btn.set_sensitive(not text and self.can_go_back)
         if text:
             self.state.set_text(text)
 

@@ -41,6 +41,7 @@ STATE = "/var/lib/haltia/update"
 CONF = "/etc/haltia/update.conf"
 LOCK = "/run/haltia/update.lock"
 CACHE = "/var/cache/apk"
+WORLD = "/etc/apk/world"
 HEALTH = "/etc/haltia/health"
 KEEP = 2  # snapshots kept
 MIN_FREE = 300 * 1024 * 1024
@@ -142,7 +143,27 @@ def newer(a, b):
     return apk("version", "-t", a, b).stdout.strip() == ">"
 
 
+def unhold_checksums():
+    """Images up to Pertin Haltia v2.2.0 held each Haltia package at its
+    file's checksum in world (haltia-shell><Q1...), so nothing ever showed
+    as upgradable. Such a hold becomes the plain name; a version pin
+    (name=1.2) of a rollback stays."""
+    try:
+        with open(WORLD) as fh:
+            lines = fh.read().split()
+    except OSError:
+        return
+    plain = [re.sub(r"^((?:haltia-|py3-haltia-)[A-Za-z0-9._+-]*)><.*$", r"\1", l)
+             for l in lines]
+    if plain != lines:
+        with open(WORLD + ".haltia-new", "w") as fh:
+            fh.write("\n".join(plain) + "\n")
+        os.replace(WORLD + ".haltia-new", WORLD)
+        note("world: checksum holds of Haltia packages dropped")
+
+
 def check():
+    unhold_checksums()
     apk("update", "-q")
     lines = [c for c in upgradable()]
     for name, bad in held().items():
@@ -275,6 +296,7 @@ def upgrade(auto=False):
     if shutil.disk_usage("/").free < MIN_FREE:
         log("storage: not enough room")
         return 3
+    unhold_checksums()
     if apk("update", "-q").returncode:
         log("network: no repository")
         return 3

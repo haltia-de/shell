@@ -17,6 +17,17 @@
   <content_rating type="oars-1.1"/>
   <developer id="io.github.haltia_de"><name>Mikhail Nevskiy</name></developer>
   <releases>
+    <release version="2.3.2" date="2026-10-20">
+      <description>
+        <ul>
+          <li>Часы на домашнем экране сразу переходят на новый часовой пояс</li>
+          <li>Число в Калькуляторе больше не прячется под кнопкой закрытия; крупные кнопки и на новой установке</li>
+          <li>В Пасьянсах нет английской строки о колоде</li>
+          <li>«Откатить последнее обновление» — только когда есть что откатывать</li>
+          <li>Обновления видны и на планшетах, установленных из образов до v2.2.0</li>
+        </ul>
+      </description>
+    </release>
     <release version="2.3.1" date="2026-10-19">
       <description>
         <ul>
