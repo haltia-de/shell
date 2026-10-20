@@ -19,6 +19,15 @@ for a in "$run/haltia/apps.conf" "$run/b8k/apps.conf"; do
 	[ -f "$a" ] && APPS=$a && break
 done
 
+# The simple file chooser (haltia-launcher): the helper's switch in
+# Настройки reaches every program started from now on.
+if [ -e "$run/haltia/portal" ]; then
+	case $(sed -n 's/^[ \t]*simple[ \t]*=[ \t]*//p' "$HOME/.config/haltia/chooser.conf" 2>/dev/null | tail -1) in
+	no | false | off | 0) unset GTK_USE_PORTAL ;;
+	*) export GTK_USE_PORTAL=1 ;;
+	esac
+fi
+
 # field ID KEY prints that key of the program, or fails when it has none.
 field() {
 	awk -v id="$1" -v key="$2" '

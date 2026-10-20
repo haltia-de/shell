@@ -46,11 +46,11 @@ fi
 # folders that exist, added once each; one's own bookmarks stay.
 marks="$HOME/.config/gtk-3.0/bookmarks"
 mkdir -p "${marks%/*}"
-for d in Загрузки Downloads Документы Изображения Музыка Видео Раскраски; do
+for d in Загрузки Downloads Документы Изображения Музыка Видео Изображения/Раскраски; do
 	[ -d "$HOME/$d" ] || continue
 	uri="file://$HOME/$d"
 	awk -v u="$uri" '$1 == u { f = 1 } END { exit !f }' "$marks" 2>/dev/null ||
-		printf '%s %s\n' "$uri" "$d" >>"$marks"
+		printf '%s %s\n' "$uri" "${d##*/}" >>"$marks"
 done
 # The chooser writes all its settings to dconf whenever it closes, so the
 # shell's defaults (91-haltia-shell.gschema.override) reach one who used it
@@ -61,6 +61,35 @@ if [ ! -e "$HOME/.config/haltia/filechooser-1" ] && command -v gsettings >/dev/n
 		gsettings reset org.gtk.Settings.FileChooser "$k" 2>/dev/null
 	done
 	mkdir -p "$HOME/.config/haltia" && : >"$HOME/.config/haltia/filechooser-1"
+fi
+# The simple file chooser (haltia-files --portal) for every program: GTK 3
+# and Firefox ask the portal for it once GTK_USE_PORTAL=1. A real
+# xdg-desktop-portal calls it (haltia-portals.conf); without one,
+# haltia-portal stands in, started here and, should it end, again by D-Bus
+# from the session's own service folder (never one beside a real portal's
+# file). $run/haltia/portal says a portal is there; the switch in Настройки →
+# «Для помощника» (~/.config/haltia/chooser.conf, simple = no) leaves
+# GTK_USE_PORTAL out, here and in haltia-launch for programs started later.
+rm -f "$run/dbus-1/services/org.freedesktop.portal.Desktop.service" "$run/haltia/portal"
+chooser=
+for d in /usr/share /usr/local/share; do
+	[ -f "$d/dbus-1/services/org.freedesktop.impl.portal.desktop.haltia.service" ] && chooser=yes
+done
+if [ -n "$chooser" ]; then
+	if [ -f /usr/share/dbus-1/services/org.freedesktop.portal.Desktop.service ]; then
+		: >"$run/haltia/portal"
+	elif [ -x /usr/libexec/haltia/haltia-portal ]; then
+		mkdir -p "$run/dbus-1/services"
+		printf '[D-BUS Service]\nName=org.freedesktop.portal.Desktop\nExec=/usr/libexec/haltia/haltia-portal\n' \
+			>"$run/dbus-1/services/org.freedesktop.portal.Desktop.service"
+		: >"$run/haltia/portal"
+	fi
+fi
+if [ -e "$run/haltia/portal" ]; then
+	case $(sed -n 's/^[ \t]*simple[ \t]*=[ \t]*//p' "$HOME/.config/haltia/chooser.conf" 2>/dev/null | tail -1) in
+	no | false | off | 0) ;;
+	*) export GTK_USE_PORTAL=1 ;;
+	esac
 fi
 # The calculator's large display and keys (share/galculator.conf, in
 # /etc/skel). A home made without skel, or galculator run before the shell
@@ -85,15 +114,20 @@ mkdir -p "$gtk4"
 # Settings, the portals (xdg-desktop-portal: gtk, wlr) and feedbackd start
 # through D-Bus activation and take the bus environment.
 dbus-update-activation-environment NO_AT_BRIDGE GTK_A11Y ${GTK_THEME:+GTK_THEME} \
-	WAYLAND_DISPLAY XDG_CURRENT_DESKTOP XDG_SESSION_TYPE 2>/dev/null
+	${GTK_USE_PORTAL:+GTK_USE_PORTAL} WAYLAND_DISPLAY XDG_CURRENT_DESKTOP XDG_SESSION_TYPE 2>/dev/null
 # Helpers that need no display outlive the session that started them
 # (setsid): one of each, or a volume key steps two or three times. So does
 # the sound server each session's first client spawns: a new one starts on
 # the next pactl. (busybox's pkill has no -u: ps, for this user only.)
 for pid in $(ps -o pid,user,args | awk -v u="$(id -un)" '$2 == u &&
-	($NF ~ /\/(haltia|b8k)-(volume|rotate)$/ || $3 == "/usr/bin/pulseaudio") { print $1 }'); do
+	($NF ~ /\/(haltia|b8k)-(volume|rotate|portal)$/ || $3 == "/usr/bin/pulseaudio") { print $1 }'); do
 	kill "$pid" 2>/dev/null
 done
+# The portal's stand-in, after the one of the last session has gone (it
+# held the bus name): with this session's environment.
+if [ -f "$run/dbus-1/services/org.freedesktop.portal.Desktop.service" ]; then
+	setsid /usr/libexec/haltia/haltia-portal >"$run"/haltia/portal.log 2>&1 &
+fi
 # Volume keys. Without this nothing handles them, and a muted sink at 0%
 # has no way back.
 if [ -x /usr/libexec/haltia/haltia-volume ]; then

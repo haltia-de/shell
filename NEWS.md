@@ -1,5 +1,21 @@
 # Что нового · What's new
 
+## 2.7.0 (2026-10-20)
+
+### Русский
+
+- Простое окно выбора файлов во всех программах (из Файлов 2.1): крупные папки, «Недавние», фото картинками, сохранение одной кнопкой
+- На планшете без xdg-desktop-portal его заменяет маленькая служба оболочки
+- «Вернуть прежнюю» в Обновлениях — только для помощника
+- Закладка «Раскраски» в обычном окне выбора ведёт в Изображения/Раскраски
+
+### English
+
+- A simple file chooser in every program (from Files 2.1): large folders, Recent, photos as pictures, saving with one button
+- On a tablet without xdg-desktop-portal a small service of the shell stands in for it
+- In Updates, going back to a previous version is left to whoever looks after the tablet
+- The Раскраски bookmark of GTK's own chooser leads to Изображения/Раскраски
+
 ## 2.6.2 (2026-10-20)
 
 ### Русский

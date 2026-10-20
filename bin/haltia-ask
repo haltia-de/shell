@@ -177,6 +177,13 @@ close-front)
 	# apps.conf has that app id.
 	app=$(cat "$run/haltia/launch/front" 2>/dev/null)
 	[ -n "$app" ] || exit 0
+	# The file chooser (haltia-files --portal): «✕» is its Отмена, nothing
+	# to lose, so no question.
+	if [ "$app" = io.github.haltia_de.FileChooser ]; then
+		chosen
+		/usr/bin/haltia-focus close "$app"
+		exit 0
+	fi
 	id=$(awk -v app="$app" '
 		/^\[/ { sec = $0; gsub(/[][ \t]/, "", sec); next }
 		/^[ \t]*app_ids[ \t]*=/ {

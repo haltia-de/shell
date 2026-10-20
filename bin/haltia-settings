@@ -18,6 +18,7 @@ A new Wi-Fi network's password is asked here and kept with the connection
 for every user (NetworkManager's system connection), so no secret agent
 (nm-applet) is needed afterwards.
 """
+import configparser
 import os
 import re
 import subprocess
@@ -1118,6 +1119,37 @@ class Notify:
 
 
 # --- for whoever looks after the tablet -------------------------------------------
+CHOOSER_CONF = os.path.join(CONFIG, "chooser.conf")
+CHOOSER_SERVICE = "org.freedesktop.impl.portal.desktop.haltia.service"
+
+
+def chooser_get(key, default):
+    conf = configparser.ConfigParser(interpolation=None)
+    try:
+        conf.read(CHOOSER_CONF, encoding="utf-8")
+        return conf.getboolean("chooser", key, fallback=default)
+    except (configparser.Error, UnicodeDecodeError, ValueError):
+        return default
+
+
+def chooser_set(**values):
+    """Write the switches, keeping what the chooser keeps there (the last
+    folder per program)."""
+    conf = configparser.ConfigParser(interpolation=None)
+    try:
+        conf.read(CHOOSER_CONF, encoding="utf-8")
+    except (configparser.Error, UnicodeDecodeError):
+        conf = configparser.ConfigParser(interpolation=None)
+    if not conf.has_section("chooser"):
+        conf.add_section("chooser")
+    for key, value in values.items():
+        conf.set("chooser", key, "yes" if value else "no")
+    os.makedirs(CONFIG, exist_ok=True)
+    with open(CHOOSER_CONF + ".new", "w", encoding="utf-8") as fh:
+        conf.write(fh)
+    os.replace(CHOOSER_CONF + ".new", CHOOSER_CONF)
+
+
 class Helper:
     """What the person needs not see: the touch filter's values, the
     terminal, the update log, going back to any kept update, and programs
@@ -1141,6 +1173,22 @@ class Helper:
             row.key = key
             self.menu.add(row)
         box.pack_start(self.menu, False, False, 0)
+        # The file chooser of Файлы (haltia-files --portal): ~/.config/haltia/
+        # chooser.conf, read by haltia-launch at every start and by the
+        # chooser itself.
+        if any(os.path.exists(d + "/dbus-1/services/" + CHOOSER_SERVICE)
+               for d in ("/usr/share", "/usr/local/share")):
+            box.pack_start(section("Выбор файлов"), False, False, 0)
+            self.simple = switch_line(
+                box, "Простой выбор файлов",
+                "Крупные папки и картинки вместо обычного окна GTK; для программ, "
+                "открытых после переключения", self.on_chooser)
+            self.everything = switch_line(
+                box, "Все файлы при выборе",
+                "Показывать и домашнюю папку, и всю систему, и скрытые файлы",
+                self.on_chooser)
+            set_quietly(self.simple, self.on_chooser, chooser_get("simple", True))
+            set_quietly(self.everything, self.on_chooser, chooser_get("all", False))
         box.pack_start(section("Программы"), False, False, 0)
         hint = Gtk.Label(label="Выключенная программа не видна ни на панели, ни на домашнем "
                          "экране", xalign=0, wrap=True)
@@ -1177,6 +1225,9 @@ class Helper:
             row.add(line)
             self.list.add(row)
         self.list.show_all()
+
+    def on_chooser(self, *_a):
+        chooser_set(simple=self.simple.get_active(), all=self.everything.get_active())
 
     def show_program(self, item, switch):
         if switch.get_active():
@@ -1283,7 +1334,7 @@ MONTHS = ("января", "февраля", "марта", "апреля", "ма�
 STAGES = {"index": "Узнаю, что вышло…", "snapshot": "Сохраняю прежние версии…",
           "install": "Скачиваю и устанавливаю…", "rollback": "Возвращаю прежнюю версию…"}
 RESULTS = {
-    "updated": "Готово. Если что-то работает не так — «Вернуть прежнюю» внизу.",
+    "updated": "Готово.",
     "nothing to update": "Обновлять нечего.",
     "battery: charge it first": "Поставьте планшет на зарядку: заряд меньше 30 %.",
     "storage: not enough room": "Мало места для обновления.",
@@ -1435,7 +1486,7 @@ class Updates:
         line.pack_end(self.auto, False, False, 0)
         box.pack_start(line, False, False, 0)
 
-        # The past ones, each with its way back.
+        # The past ones; going back from one is the helper's.
         box.pack_start(section("Прошлые обновления"), False, False, 0)
         self.history = listbox(lambda *_a: None)
         box.pack_start(self.history, False, False, 0)
@@ -1556,7 +1607,9 @@ class Updates:
                 if prog.get("rolled_back"):
                     sub += " · возвращена прежняя"
                 line.pack_start(row_box(prog["label"], sub), True, True, 0)
-                if not prog.get("rolled_back"):
+                # Going back is the helper's (shown after the long press on
+                # «О системе»): an older version is not for the person to pick.
+                if not prog.get("rolled_back") and self.app.helper_open():
                     b = button("Вернуть прежнюю", "plain",
                                lambda e=entry, p=prog: self.rollback(e, p))
                     b.get_style_context().add_class("danger")
@@ -1567,7 +1620,7 @@ class Updates:
             row = Gtk.ListBoxRow(activatable=False)
             row.add(row_box("Обновлений ещё не было"))
             self.history.add(row)
-        self.back_btn.set_visible(bool(entries))
+        self.back_btn.set_visible(bool(entries) and self.app.helper_open())
         self.history.show_all()
 
     def set_sensitive(self, on):
@@ -1952,7 +2005,14 @@ class Settings(Gtk.Application):
             return
         if "helper" not in self.entries:
             self.add_entry("helper")
+            # The updates' «Вернуть прежнюю» are the helper's too.
+            updates = self.pages.get("updates")
+            if updates is not None and getattr(updates, "st", None) is not None:
+                updates.fill_history()
         self.show("helper")
+
+    def helper_open(self):
+        return "helper" in self.entries
 
     def on_close(self, *_args):
         helper = self.pages.get("helper")

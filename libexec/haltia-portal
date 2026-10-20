@@ -1,0 +1,335 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0
+"""The portal's own small stand-in, for a system without xdg-desktop-portal
+(the B8000-H leaves it out: about 21 MB and PipeWire). It owns
+org.freedesktop.portal.Desktop and answers only what the session's
+programs ask once GTK_USE_PORTAL=1 is set (haltia-launcher sets it when
+this runs):
+
+  FileChooser  OpenFile, SaveFile: passed on to the file chooser backend,
+               org.freedesktop.impl.portal.desktop.haltia (haltia-files
+               --portal), whose window answers; Request.Close takes it
+               away
+  OpenURI      OpenURI, OpenFile, OpenDirectory: the default program for
+               it, as GIO picks (Firefox opens downloads this way)
+  Settings     nothing to read: GTK and Firefox then take the desktop's
+               own settings (dconf), as without a portal
+
+Anything else (Inhibit, ...) is an unknown interface, and GTK falls back
+as it does without a portal. haltia-launcher starts it and lets D-Bus
+start it again ($XDG_RUNTIME_DIR/dbus-1/services), never where a real
+portal is installed. It runs no programs' code: a request names a file or
+an address, never a command.
+"""
+import os
+import sys
+
+import warnings
+
+from gi.repository import Gio, GLib
+
+# register_object with plain callbacks still works; PyGObject 3.5x only
+# warns that it prefers closures.
+warnings.filterwarnings("ignore", category=DeprecationWarning)
+
+BUS_NAME = "org.freedesktop.portal.Desktop"
+PATH = "/org/freedesktop/portal/desktop"
+BACKEND = "org.freedesktop.impl.portal.desktop.haltia"
+FOREVER = GLib.MAXINT
+
+XML = """
+<node>
+  <interface name="org.freedesktop.portal.FileChooser">
+    <method name="OpenFile">
+      <arg type="s" name="parent_window" direction="in"/>
+      <arg type="s" name="title" direction="in"/>
+      <arg type="a{sv}" name="options" direction="in"/>
+      <arg type="o" name="handle" direction="out"/>
+    </method>
+    <method name="SaveFile">
+      <arg type="s" name="parent_window" direction="in"/>
+      <arg type="s" name="title" direction="in"/>
+      <arg type="a{sv}" name="options" direction="in"/>
+      <arg type="o" name="handle" direction="out"/>
+    </method>
+    <property name="version" type="u" access="read"/>
+  </interface>
+  <interface name="org.freedesktop.portal.OpenURI">
+    <method name="OpenURI">
+      <arg type="s" name="parent_window" direction="in"/>
+      <arg type="s" name="uri" direction="in"/>
+      <arg type="a{sv}" name="options" direction="in"/>
+      <arg type="o" name="handle" direction="out"/>
+    </method>
+    <method name="OpenFile">
+      <arg type="s" name="parent_window" direction="in"/>
+      <arg type="h" name="fd" direction="in"/>
+      <arg type="a{sv}" name="options" direction="in"/>
+      <arg type="o" name="handle" direction="out"/>
+    </method>
+    <method name="OpenDirectory">
+      <arg type="s" name="parent_window" direction="in"/>
+      <arg type="h" name="fd" direction="in"/>
+      <arg type="a{sv}" name="options" direction="in"/>
+      <arg type="o" name="handle" direction="out"/>
+    </method>
+    <method name="SchemeSupported">
+      <arg type="s" name="scheme" direction="in"/>
+      <arg type="b" name="supported" direction="out"/>
+    </method>
+    <property name="version" type="u" access="read"/>
+  </interface>
+  <interface name="org.freedesktop.portal.Settings">
+    <method name="ReadAll">
+      <arg type="as" name="namespaces" direction="in"/>
+      <arg type="a{sa{sv}}" name="value" direction="out"/>
+    </method>
+    <method name="Read">
+      <arg type="s" name="namespace" direction="in"/>
+      <arg type="s" name="key" direction="in"/>
+      <arg type="v" name="value" direction="out"/>
+    </method>
+    <method name="ReadOne">
+      <arg type="s" name="namespace" direction="in"/>
+      <arg type="s" name="key" direction="in"/>
+      <arg type="v" name="value" direction="out"/>
+    </method>
+    <signal name="SettingChanged">
+      <arg type="s" name="namespace"/>
+      <arg type="s" name="key"/>
+      <arg type="v" name="value"/>
+    </signal>
+    <property name="version" type="u" access="read"/>
+  </interface>
+  <interface name="org.freedesktop.portal.Request">
+    <method name="Close"/>
+    <signal name="Response">
+      <arg type="u" name="response"/>
+      <arg type="a{sv}" name="results"/>
+    </signal>
+  </interface>
+</node>
+"""
+NODE = Gio.DBusNodeInfo.new_for_xml(XML)
+VERSIONS = {"org.freedesktop.portal.FileChooser": 3,  # 3: folders too (GTK asks)
+            "org.freedesktop.portal.OpenURI": 4,
+            "org.freedesktop.portal.Settings": 2}
+# Addresses opened for a program; anything else (a script's own scheme, a
+# local command handler) is refused.
+SCHEMES = ("http", "https", "mailto", "tel", "file")
+
+
+def log(text):
+    sys.stderr.write(text + "\n")
+    sys.stderr.flush()
+
+
+def request_path(sender, token):
+    """The handle a client expects: .../request/SENDER/TOKEN, the sender's
+    unique name without its colon and with dots as underscores."""
+    sender = sender.lstrip(":").replace(".", "_")
+    token = "".join(c if c.isalnum() or c == "_" else "_" for c in token) or "t"
+    return "%s/request/%s/%s" % (PATH, sender, token)
+
+
+class Portal:
+    def __init__(self, loop):
+        self.loop = loop
+        self.conn = None
+        self.requests = {}  # handle -> registration id
+        self.pids = {}
+
+    def connected(self, conn, _name):
+        """On the bus, before the name: a call that started this process by
+        activation is delivered as soon as the name is ours."""
+        self.conn = conn
+        for iface in ("org.freedesktop.portal.FileChooser", "org.freedesktop.portal.OpenURI",
+                      "org.freedesktop.portal.Settings"):
+            conn.register_object(PATH, NODE.lookup_interface(iface), self.method,
+                                 self.get_property, None)
+
+    def acquired(self, _conn, _name):
+        log("portal: %s" % BUS_NAME)
+
+    def lost(self, _conn, _name):
+        log("portal: %s is someone else's, leaving" % BUS_NAME)
+        self.loop.quit()
+
+    def get_property(self, _conn, _sender, _path, iface, name):
+        if name == "version":
+            return GLib.Variant("u", VERSIONS.get(iface, 1))
+        return None
+
+    # --- requests -----------------------------------------------------------
+    def new_request(self, sender, options):
+        token = options.get("handle_token") or "haltia%d" % (len(self.requests) + 1)
+        handle = request_path(sender, str(token))
+        if handle in self.requests:
+            return None
+        try:
+            reg = self.conn.register_object(handle,
+                                            NODE.lookup_interface("org.freedesktop.portal.Request"),
+                                            self.request_method, None, None)
+        except GLib.Error as exc:
+            log("portal: %s: %s" % (handle, exc.message))
+            return None
+        self.requests[handle] = reg
+        return handle
+
+    def respond(self, handle, sender, response, results):
+        reg = self.requests.pop(handle, None)
+        if reg is None:
+            return  # closed by the client meanwhile
+        try:
+            self.conn.emit_signal(sender, handle, "org.freedesktop.portal.Request", "Response",
+                                  GLib.Variant.new_tuple(GLib.Variant("u", response), results))
+        except GLib.Error as exc:
+            log("portal: response: %s" % exc.message)
+        self.conn.unregister_object(reg)
+
+    def request_method(self, conn, _sender, path, _iface, name, _params, invocation):
+        if name != "Close":
+            invocation.return_dbus_error("org.freedesktop.DBus.Error.UnknownMethod", name)
+            return
+        reg = self.requests.pop(path, None)
+        if reg is not None:
+            conn.unregister_object(reg)
+            conn.call(BACKEND, path, "org.freedesktop.impl.portal.Request", "Close", None, None,
+                      Gio.DBusCallFlags.NO_AUTO_START, -1, None, None, None)
+        invocation.return_value(None)
+
+    # --- methods ------------------------------------------------------------
+    def method(self, conn, sender, _path, iface, name, params, invocation):
+        try:
+            if iface == "org.freedesktop.portal.Settings":
+                self.settings(name, params, invocation)
+            elif iface == "org.freedesktop.portal.FileChooser":
+                self.file_chooser(sender, name, params, invocation)
+            elif iface == "org.freedesktop.portal.OpenURI":
+                self.open_uri(sender, name, params, invocation)
+            else:
+                invocation.return_dbus_error("org.freedesktop.DBus.Error.UnknownInterface", iface)
+        except Exception as exc:  # every call gets an answer
+            log("portal: %s.%s: %s" % (iface, name, exc))
+            invocation.return_dbus_error("org.freedesktop.portal.Error.Failed", str(exc))
+
+    def settings(self, name, params, invocation):
+        if name == "ReadAll":
+            invocation.return_value(GLib.Variant("(a{sa{sv}})", ({},)))
+        else:
+            ns, key = params.unpack()
+            invocation.return_dbus_error("org.freedesktop.portal.Error.NotFound",
+                                         "%s %s is not set here" % (ns, key))
+
+    def app_of(self, sender):
+        """The calling program's command, for the chooser to remember the
+        folder per program: a script's name for python3 and sh."""
+        try:
+            pid = self.conn.call_sync("org.freedesktop.DBus", "/org/freedesktop/DBus",
+                                      "org.freedesktop.DBus", "GetConnectionUnixProcessID",
+                                      GLib.Variant("(s)", (sender,)), GLib.VariantType("(u)"),
+                                      Gio.DBusCallFlags.NONE, 2000, None).unpack()[0]
+            with open("/proc/%d/cmdline" % pid, "rb") as fh:
+                argv = [a.decode("utf-8", "replace") for a in fh.read().split(b"\0") if a]
+        except (GLib.Error, OSError, ValueError):
+            return ""
+        if not argv:
+            return ""
+        name = os.path.basename(argv[0])
+        if (name.startswith("python") or name in ("sh", "bash", "dash")) and len(argv) > 1:
+            script = next((a for a in argv[1:] if not a.startswith("-")), "")
+            name = os.path.basename(script) or name
+        return name
+
+    def file_chooser(self, sender, name, params, invocation):
+        parent, title, options = params.unpack()
+        if name not in ("OpenFile", "SaveFile"):
+            invocation.return_dbus_error("org.freedesktop.DBus.Error.UnknownMethod", name)
+            return
+        handle = self.new_request(sender, options)
+        if handle is None:
+            invocation.return_dbus_error("org.freedesktop.portal.Error.Failed", "request taken")
+            return
+        # The options go to the backend as they came (the a{sv} untouched).
+        raw = params.get_child_value(2)
+        args = GLib.Variant.new_tuple(GLib.Variant("o", handle),
+                                      GLib.Variant("s", self.app_of(sender)),
+                                      GLib.Variant("s", parent), GLib.Variant("s", title), raw)
+        invocation.return_value(GLib.Variant("(o)", (handle,)))
+
+        def answered(conn, result):
+            try:
+                reply = conn.call_finish(result)
+                response = reply.get_child_value(0).get_uint32()
+                results = reply.get_child_value(1)
+            except GLib.Error as exc:
+                log("portal: file chooser: %s" % exc.message)
+                response, results = 2, GLib.Variant("a{sv}", {})
+            # GTK 3 reads "uris" unchecked and crashes without it: a list
+            # always, whatever backend answered.
+            if results.lookup_value("uris", GLib.VariantType("as")) is None:
+                d = {k: results.lookup_value(k, None) for k in results.keys()}
+                d["uris"] = GLib.Variant("as", [])
+                results = GLib.Variant("a{sv}", d)
+            self.respond(handle, sender, response, results)
+
+        self.conn.call(BACKEND, PATH, "org.freedesktop.impl.portal.FileChooser", name, args,
+                       GLib.VariantType("(ua{sv})"), Gio.DBusCallFlags.NONE, FOREVER, None,
+                       answered)
+
+    def open_uri(self, sender, name, params, invocation):
+        if name == "SchemeSupported":
+            scheme = params.unpack()[0]
+            invocation.return_value(GLib.Variant("(b)", (scheme in SCHEMES,)))
+            return
+        if name == "OpenURI":
+            _parent, uri, options = params.unpack()
+            scheme = GLib.Uri.peek_scheme(uri) or ""
+            if scheme not in SCHEMES:
+                invocation.return_dbus_error("org.freedesktop.portal.Error.NotAllowed",
+                                             "no program opens %s: here" % scheme)
+                return
+        elif name in ("OpenFile", "OpenDirectory"):
+            _parent, index, options = params.unpack()
+            fds = invocation.get_message().get_unix_fd_list()
+            fd = fds.get(index) if fds is not None else -1
+            if fd < 0:
+                invocation.return_dbus_error("org.freedesktop.portal.Error.InvalidArgument",
+                                             "no file")
+                return
+            try:
+                path = os.readlink("/proc/self/fd/%d" % fd)
+            finally:
+                os.close(fd)
+            if name == "OpenDirectory":
+                path = os.path.dirname(path) if not os.path.isdir(path) else path
+            uri = Gio.File.new_for_path(path).get_uri()
+        else:
+            invocation.return_dbus_error("org.freedesktop.DBus.Error.UnknownMethod", name)
+            return
+        handle = self.new_request(sender, options)
+        if handle is None:
+            invocation.return_dbus_error("org.freedesktop.portal.Error.Failed", "request taken")
+            return
+        invocation.return_value(GLib.Variant("(o)", (handle,)))
+        try:
+            Gio.AppInfo.launch_default_for_uri(uri, None)
+            response = 0
+        except GLib.Error as exc:
+            log("portal: open %s: %s" % (uri, exc.message))
+            response = 2
+        GLib.idle_add(lambda: self.respond(handle, sender, response,
+                                           GLib.Variant("a{sv}", {})) and False)
+
+
+def main():
+    loop = GLib.MainLoop()
+    portal = Portal(loop)
+    Gio.bus_own_name(Gio.BusType.SESSION, BUS_NAME, Gio.BusNameOwnerFlags.DO_NOT_QUEUE,
+                     portal.connected, portal.acquired, portal.lost)
+    loop.run()
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

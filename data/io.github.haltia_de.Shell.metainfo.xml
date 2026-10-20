@@ -17,6 +17,22 @@
   <content_rating type="oars-1.1"/>
   <developer id="io.github.haltia_de"><name>Mikhail Nevskiy</name></developer>
   <releases>
+    <release version="2.7.0" date="2026-10-20">
+      <description>
+        <ul>
+          <li>A simple file chooser in every program (from Files 2.1): large folders, Recent, photos as pictures, saving with one button</li>
+          <li>On a tablet without xdg-desktop-portal a small service of the shell stands in for it</li>
+          <li>In Updates, going back to a previous version is left to whoever looks after the tablet</li>
+          <li>The Раскраски bookmark of GTK's own chooser leads to Изображения/Раскраски</li>
+        </ul>
+        <ul>
+          <li xml:lang="ru">Простое окно выбора файлов во всех программах (из Файлов 2.1): крупные папки, «Недавние», фото картинками, сохранение одной кнопкой</li>
+          <li xml:lang="ru">На планшете без xdg-desktop-portal его заменяет маленькая служба оболочки</li>
+          <li xml:lang="ru">«Вернуть прежнюю» в Обновлениях — только для помощника</li>
+          <li xml:lang="ru">Закладка «Раскраски» в обычном окне выбора ведёт в Изображения/Раскраски</li>
+        </ul>
+      </description>
+    </release>
     <release version="2.6.2" date="2026-10-20">
       <description>
         <ul>
