@@ -183,8 +183,17 @@ def available(name):
     return None
 
 
+SIMPLE = re.compile(r"(\d+(?:\.\d+)*)(?:-r(\d+))?")
+
+
 def newer(a, b):
-    """a newer than b, by apk's own comparison."""
+    """a newer than b, by apk's own comparison; plain X.Y.Z-rN versions
+    (all of Haltia's) without starting apk for each."""
+    ma, mb = SIMPLE.fullmatch(a), SIMPLE.fullmatch(b)
+    if ma and mb:
+        def key(m):
+            return [int(x) for x in m.group(1).split(".")], int(m.group(2) or 0)
+        return key(ma) > key(mb)
     return apk("version", "-t", a, b).stdout.strip() == ">"
 
 
@@ -221,9 +230,76 @@ def update_index():
     return False
 
 
+CATALOG = "appstream.xml.gz"  # next to a repository's indexes (haltia-de/packages)
+CATALOG_MAX = 8 * 1024 * 1024
+
+
+def catalog_path(repo):
+    import hashlib
+    key = hashlib.sha1(repo.encode()).hexdigest()[:16]
+    return os.path.join(STATE, "catalog", key + ".xml.gz")
+
+
+def update_catalogs():
+    """Each repository's AppStream catalog, when it has one and it changed:
+    what is new in every version, without downloading packages."""
+    import urllib.error
+    import urllib.request
+    for repo in repositories():
+        path = catalog_path(repo)
+        tag = read_json(path + ".json", {})
+        req = urllib.request.Request("%s/%s" % (repo, CATALOG))
+        if tag.get("etag") and os.path.exists(path):
+            req.add_header("If-None-Match", tag["etag"])
+        try:
+            with urllib.request.urlopen(req, timeout=30) as res:
+                data = res.read(CATALOG_MAX + 1)
+                etag = res.headers.get("ETag", "")
+        except urllib.error.HTTPError as exc:
+            if exc.code == 404:  # a repository without one (Alpine's)
+                for f in (path, path + ".json"):
+                    if os.path.exists(f):
+                        os.unlink(f)
+            continue  # 304: ours is current
+        except OSError:
+            continue
+        if len(data) > CATALOG_MAX:
+            continue
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path + ".new", "wb") as fh:
+            fh.write(data)
+        os.replace(path + ".new", path)
+        write_json(path + ".json", {"etag": etag, "time": int(time.time())})
+
+
+def catalog_component(name):
+    """The component of package name in a kept catalog, as XML bytes."""
+    import gzip
+    for repo in repositories():
+        path = catalog_path(repo)
+        try:
+            with gzip.open(path, "rb") as fh:
+                data = fh.read(CATALOG_MAX * 8 + 1)
+        except (OSError, EOFError):
+            continue
+        # Unsigned, unlike the index, and read as root: no DTDs or
+        # entities, a bounded size, and only text is ever shown.
+        if len(data) > CATALOG_MAX * 8 or b"<!DOCTYPE" in data or b"<!ENTITY" in data:
+            continue
+        try:
+            root = ET.fromstring(data)
+        except ET.ParseError:
+            continue
+        for comp in root.iter("component"):
+            if (comp.findtext("pkgname") or "").strip() == name:
+                return ET.tostring(comp)
+    return None
+
+
 def check():
     unhold_checksums()
     update_index()
+    update_catalogs()
     lines = [c for c in upgradable()]
     for name, bad in held().items():
         new = available(name)
@@ -314,7 +390,10 @@ def changes(name):
     package's metainfo: VERSION DATE, then its description's text. Kept per
     installed and new version, so a second look needs no download."""
     have = installed().get(name)
-    new = available(name)
+    # The new version as the last check found it (apk search reads every
+    # index, seconds on the tablet), else from apk.
+    known = {c[0]: c[2] for c in read_json(os.path.join(STATE, "status.json"), {}).get("list", [])}
+    new = known.get(name) or available(name)
     notes = os.path.join(STATE, "notes")
     keep = os.path.join(notes, "%s-%s-%s.ru.txt" % (name, have, new))
     try:
@@ -323,7 +402,16 @@ def changes(name):
         return 0
     except OSError:
         pass
-    lines = fetch_changes(name, have)
+    lines = None
+    comp = catalog_component(name)
+    if comp is not None and new:
+        found = releases(comp, have)
+        # The catalog knows this version (it may lag a fresh release).
+        if any(l.split(" ", 1)[0] == new.split("-r")[0] for l in found
+               if not l.startswith("• ")):
+            lines = found
+    if lines is None:
+        lines = fetch_changes(name, have)
     if lines is None:
         return 1
     for line in lines:

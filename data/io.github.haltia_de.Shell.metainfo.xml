@@ -17,81 +17,139 @@
   <content_rating type="oars-1.1"/>
   <developer id="io.github.haltia_de"><name>Mikhail Nevskiy</name></developer>
   <releases>
+    <release version="2.6.1" date="2026-10-20">
+      <description>
+        <ul>
+          <li>What's new opens faster: the descriptions come from the repository's catalog, without downloading the package</li>
+          <li>The shell's changes are described in NEWS.md, in Russian and English</li>
+        </ul>
+        <ul>
+          <li xml:lang="ru">«Что нового» открывается быстрее: описания берутся из общего каталога репозитория, без скачивания пакета</li>
+          <li xml:lang="ru">Описания изменений оболочки — в NEWS.md, по-русски и по-английски</li>
+        </ul>
+      </description>
+    </release>
     <release version="2.6.0" date="2026-10-20">
       <description>
         <ul>
-          <li>Все настройки в одном окне, в две колонки: сеть, звук и вибрация, экран, панель и домашний экран, уведомления, дата и время, обновления</li>
-          <li>Плитка «Настройки» на месте «Служебных»</li>
-          <li>Сколько ждать, прежде чем гасить экран, и не гасить на зарядке</li>
-          <li>Какие программы на панели и на домашнем экране и в каком порядке</li>
-          <li>Уведомления: вибрация, сколько показывать, тишина ночью</li>
-          <li>Раздел «Для помощника»: касания, терминал, журнал обновлений, скрытие программ</li>
+          <li>Every setting in one window, in two columns: network, sound and vibration, screen, panel and home screen, notifications, date and time, updates</li>
+          <li>The Settings tile takes the place of «Служебные»</li>
+          <li>How long the screen waits before it goes off, and staying on while charging</li>
+          <li>Which programs are on the panel and on the home screen, and in which order</li>
+          <li>Notifications: vibration, how long they stay, quiet at night</li>
+          <li>A section for whoever looks after the tablet: touches, the terminal, the update log, hiding programs</li>
+        </ul>
+        <ul>
+          <li xml:lang="ru">Все настройки в одном окне, в две колонки: сеть, звук и вибрация, экран, панель и домашний экран, уведомления, дата и время, обновления</li>
+          <li xml:lang="ru">Плитка «Настройки» на месте «Служебных»</li>
+          <li xml:lang="ru">Сколько ждать, прежде чем гасить экран, и не гасить на зарядке</li>
+          <li xml:lang="ru">Какие программы на панели и на домашнем экране и в каком порядке</li>
+          <li xml:lang="ru">Уведомления: вибрация, сколько показывать, тишина ночью</li>
+          <li xml:lang="ru">Раздел «Для помощника»: касания, терминал, журнал обновлений, скрытие программ</li>
         </ul>
       </description>
     </release>
     <release version="2.5.0" date="2026-10-20">
       <description>
         <ul>
-          <li>Обновления по одной программе: у каждой своя кнопка «Обновить», и «Вернуть прежнюю» у каждой записи истории</li>
-          <li>«Что нового» — отдельная страница, по-русски, помещается на экране</li>
-          <li>Ход обновления по этапам, с полосой</li>
-          <li>Уведомления после автообновления и после возврата прежней версии; нажатие открывает «Обновления»</li>
-          <li>Раздел «Обновления» открывается быстрее</li>
+          <li>Updates program by program: each has its own Update button, and each past update its Bring back the previous one</li>
+          <li>What's new is a page of its own, in Russian, and fits the screen</li>
+          <li>An update shows its steps, with a bar</li>
+          <li>Notifications after updating by itself and after going back to the previous version; a tap opens Updates</li>
+          <li>The Updates section opens faster</li>
+        </ul>
+        <ul>
+          <li xml:lang="ru">Обновления по одной программе: у каждой своя кнопка «Обновить», и «Вернуть прежнюю» у каждой записи истории</li>
+          <li xml:lang="ru">«Что нового» — отдельная страница, по-русски, помещается на экране</li>
+          <li xml:lang="ru">Ход обновления по этапам, с полосой</li>
+          <li xml:lang="ru">Уведомления после автообновления и после возврата прежней версии; нажатие открывает «Обновления»</li>
+          <li xml:lang="ru">Раздел «Обновления» открывается быстрее</li>
         </ul>
       </description>
     </release>
     <release version="2.4.0" date="2026-10-20">
       <description>
         <ul>
-          <li>«✕» закрывает и зависшую программу: если она не закрылась за 5 секунд, оболочка снимает её сама</li>
-          <li>Пока программа закрывается, её накрывает шторка «Закрываю…»</li>
-          <li>Сообщения после такого закрытия сразу работают дальше в фоне</li>
+          <li>«✕» closes a program that hangs too: one that has not closed within 5 seconds is stopped by the shell</li>
+          <li>While a program closes, a «Закрываю…» curtain covers it</li>
+          <li>Messages, stopped that way, go on working in the background at once</li>
+        </ul>
+        <ul>
+          <li xml:lang="ru">«✕» закрывает и зависшую программу: если она не закрылась за 5 секунд, оболочка снимает её сама</li>
+          <li xml:lang="ru">Пока программа закрывается, её накрывает шторка «Закрываю…»</li>
+          <li xml:lang="ru">Сообщения после такого закрытия сразу работают дальше в фоне</li>
         </ul>
       </description>
     </release>
     <release version="2.3.2" date="2026-10-20">
       <description>
         <ul>
-          <li>Часы на домашнем экране сразу переходят на новый часовой пояс</li>
-          <li>Число в Калькуляторе больше не прячется под кнопкой закрытия; крупные кнопки и на новой установке</li>
-          <li>В Пасьянсах нет английской строки о колоде</li>
-          <li>«Откатить последнее обновление» — только когда есть что откатывать</li>
-          <li>Обновления видны и на планшетах, установленных из образов до v2.2.0</li>
+          <li>The home screen's clock follows a new time zone at once</li>
+          <li>The Calculator's number no longer hides under the close button; large keys on a new install too</li>
+          <li>No English stock line in Solitaire</li>
+          <li>Roll back the last update shows only when there is one to roll back</li>
+          <li>Updates show on tablets installed from images before v2.2.0 too</li>
+        </ul>
+        <ul>
+          <li xml:lang="ru">Часы на домашнем экране сразу переходят на новый часовой пояс</li>
+          <li xml:lang="ru">Число в Калькуляторе больше не прячется под кнопкой закрытия; крупные кнопки и на новой установке</li>
+          <li xml:lang="ru">В Пасьянсах нет английской строки о колоде</li>
+          <li xml:lang="ru">«Откатить последнее обновление» — только когда есть что откатывать</li>
+          <li xml:lang="ru">Обновления видны и на планшетах, установленных из образов до v2.2.0</li>
         </ul>
       </description>
     </release>
     <release version="2.3.1" date="2026-10-19">
       <description>
         <ul>
-          <li>Тема Haltia у всех программ, как бы они ни запускались</li>
+          <li>The Haltia theme for every program, however it starts</li>
+        </ul>
+        <ul>
+          <li xml:lang="ru">Тема Haltia у всех программ, как бы они ни запускались</li>
         </ul>
       </description>
     </release>
     <release version="2.3.0" date="2026-10-19">
       <description>
         <ul>
-          <li>Свои «Настройки»: сеть, звук, экран, дата и время, обновления</li>
-          <li>Обновления с «Что нового» и откатом, по желанию сами</li>
-          <li>Батарея, поворот и вибрация — через стандартные службы</li>
-          <li>Свайп от левого края возвращает спрятанную панель</li>
-          <li>Иконки в едином стиле Haltia</li>
+          <li>Settings of our own: network, sound, screen, date and time, updates</li>
+          <li>Updates with what's new and a way back, by themselves if wished</li>
+          <li>Battery, turning and vibration through the standard services</li>
+          <li>A swipe from the left edge brings a hidden panel back</li>
+          <li>Icons in one Haltia style</li>
+        </ul>
+        <ul>
+          <li xml:lang="ru">Свои «Настройки»: сеть, звук, экран, дата и время, обновления</li>
+          <li xml:lang="ru">Обновления с «Что нового» и откатом, по желанию сами</li>
+          <li xml:lang="ru">Батарея, поворот и вибрация — через стандартные службы</li>
+          <li xml:lang="ru">Свайп от левого края возвращает спрятанную панель</li>
+          <li xml:lang="ru">Иконки в едином стиле Haltia</li>
         </ul>
       </description>
     </release>
     <release version="2.2.0" date="2026-10-19">
       <description>
         <ul>
-          <li>Пакеты для aarch64 и x86_64, вход через менеджер входа</li>
-          <li>Настройки GNOME в том же виде, что программы</li>
+          <li>Packages for aarch64 and x86_64; sign-in through a display manager</li>
+          <li>GNOME Settings look like the programs</li>
+        </ul>
+        <ul>
+          <li xml:lang="ru">Пакеты для aarch64 и x86_64, вход через менеджер входа</li>
+          <li xml:lang="ru">Настройки GNOME в том же виде, что программы</li>
         </ul>
       </description>
     </release>
     <release version="2.1.0" date="2026-10-19">
       <description>
         <ul>
-          <li>Строка состояния: Wi-Fi, звук и батарея одной кнопкой</li>
-          <li>Знаки проигрывания и непрочитанного в углах кнопок</li>
-          <li>Плавная громкость при удержании кнопки</li>
+          <li>A status row: Wi-Fi, sound and battery as one button</li>
+          <li>Play and unread marks in the corners of the buttons</li>
+          <li>The volume changes smoothly while a key is held</li>
+        </ul>
+        <ul>
+          <li xml:lang="ru">Строка состояния: Wi-Fi, звук и батарея одной кнопкой</li>
+          <li xml:lang="ru">Знаки проигрывания и непрочитанного в углах кнопок</li>
+          <li xml:lang="ru">Плавная громкость при удержании кнопки</li>
         </ul>
       </description>
     </release>
