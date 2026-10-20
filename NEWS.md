@@ -1,5 +1,15 @@
 # Что нового · What's new
 
+## 2.8.0 (2026-10-20)
+
+### Русский
+
+- Программа может отвечать на касания сама: пока она впереди, оболочка не вибрирует на каждое касание (Раскраска вибрирует только на верное)
+
+### English
+
+- A program can answer touches itself: while it is in front, the shell does not buzz on every tap (Раскраска buzzes only a right one)
+
 ## 2.7.0 (2026-10-20)
 
 ### Русский

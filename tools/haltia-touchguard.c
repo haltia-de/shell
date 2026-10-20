@@ -35,7 +35,10 @@
  *    own. A tap is a touch lifted within tap_radius of where it landed; a
  *    finger that moves farther scrolls or drags, and does not buzz. A
  *    finger held still for long_ms buzzes once then (a long press, as
- *    its menu opens) and not again on the lift.
+ *    its menu opens) and not again on the lift. A program that answers
+ *    touches itself (X-Haltia-Own-Feedback=true: Раскраска buzzes a right
+ *    tap and not a miss) gets no buzz while it is in front, which
+ *    haltia-focus marks in the session's $XDG_RUNTIME_DIR/haltia/quiet-taps.
  *
  * SIGHUP reads the settings again (haltia-touch-settings changes them while
  * one tries them). SIGUSR1 logs every decision for the next 15 minutes,
@@ -64,12 +67,14 @@
 #include <linux/input.h>
 #include <linux/uinput.h>
 #include <poll.h>
+#include <pwd.h>
 #include <signal.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/ioctl.h>
+#include <sys/stat.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -445,10 +450,58 @@ static void haptic_close(void)
 	haptic_fd = haptic_effect = -1;
 }
 
+/* The marks in the session user's runtime folder (/etc/haltia/session-user,
+ * else the old /etc/b8k one): read at start and on SIGHUP. */
+static char quiet_path[96], home_path[96];
+static uid_t quiet_uid;
+
+static void find_session(void)
+{
+	char name[64] = "";
+	struct passwd *pw;
+	FILE *f = fopen("/etc/haltia/session-user", "r");
+
+	if (!f)
+		f = fopen("/etc/b8k/session-user", "r");
+	quiet_path[0] = 0;
+	if (!f)
+		return;
+	if (fscanf(f, "%63s", name) != 1)
+		name[0] = 0;
+	fclose(f);
+	if (!name[0] || !(pw = getpwnam(name)))
+		return;
+	quiet_uid = pw->pw_uid;
+	snprintf(quiet_path, sizeof(quiet_path), "/run/user/%u/haltia/quiet-taps",
+		 (unsigned)pw->pw_uid);
+	snprintf(home_path, sizeof(home_path), "/run/user/%u/haltia/home.raised",
+		 (unsigned)pw->pw_uid);
+}
+
+/* The program in front gives its own touch feedback (X-Haltia-Own-Feedback
+ * in its .desktop file; haltia-focus marks it while it is in front), so a
+ * tap or a long press does not buzz here, unless the home screen is up over
+ * it. Only whether the session user's mark is there is looked at, never
+ * what it holds: a planted one can only keep the motor still. */
+static int quiet_taps(void)
+{
+	struct stat st;
+
+	if (!quiet_path[0] || lstat(quiet_path, &st) || !S_ISREG(st.st_mode) ||
+	    st.st_uid != quiet_uid)
+		return 0;
+	return lstat(home_path, &st) != 0;
+}
+
 static void buzz(void)
 {
 	struct input_event play;
 
+	if (quiet_taps()) {
+		if (debugging())
+			logf_("no buzz: the program in front answers touches itself");
+		return;
+	}
 	haptic_open();
 	if (haptic_fd < 0)
 		return;
@@ -766,6 +819,7 @@ int main(int argc, char **argv)
 	read_axes();
 	read_config(config); /* its fractions need the axes */
 	resolve_config();
+	find_session();
 	haptic_open(); /* found now, not on the first touch */
 	if (create_output() < 0) {
 		logf_("uinput: %s", strerror(errno));
@@ -787,6 +841,7 @@ int main(int argc, char **argv)
 			reload = 0;
 			read_config(config);
 			resolve_config();
+			find_session();
 			haptic_close();
 			haptic_open();
 			log_config();

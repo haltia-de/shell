@@ -28,7 +28,8 @@ fi
 # config and style. Without them, the built-in ones.
 panel=
 # phoc starts with the screen in landscape; haltia-rotate writes portrait.
-rm -f "$run"/haltia/apps.conf "$run"/haltia/orientation
+# No program in front yet: taps buzz (haltia-focus marks quiet-taps).
+rm -f "$run"/haltia/apps.conf "$run"/haltia/orientation "$run"/haltia/quiet-taps
 if [ -x /usr/bin/haltia-apps ] && /usr/bin/haltia-apps >"$run"/haltia/apps.log 2>&1 &&
 	[ -s "$run"/haltia/waybar.json ] && [ -s "$run"/haltia/style.css ]; then
 	panel=yes

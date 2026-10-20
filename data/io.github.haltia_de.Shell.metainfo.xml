@@ -17,6 +17,16 @@
   <content_rating type="oars-1.1"/>
   <developer id="io.github.haltia_de"><name>Mikhail Nevskiy</name></developer>
   <releases>
+    <release version="2.8.0" date="2026-10-20">
+      <description>
+        <ul>
+          <li>A program can answer touches itself: while it is in front, the shell does not buzz on every tap (Раскраска buzzes only a right one)</li>
+        </ul>
+        <ul>
+          <li xml:lang="ru">Программа может отвечать на касания сама: пока она впереди, оболочка не вибрирует на каждое касание (Раскраска вибрирует только на верное)</li>
+        </ul>
+      </description>
+    </release>
     <release version="2.7.0" date="2026-10-20">
       <description>
         <ul>

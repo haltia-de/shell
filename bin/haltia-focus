@@ -49,8 +49,18 @@ def load_slots():
         return ()
 
 
+def load_quiet():
+    """The app ids of programs that answer touches themselves (feedback =
+    own in apps.conf, from X-Haltia-Own-Feedback)."""
+    conf = configparser.ConfigParser(interpolation=None)
+    conf.read(APPS, encoding="utf-8")
+    return frozenset(i for sec in conf.sections() if conf[sec].get("feedback") == "own"
+                     for i in conf[sec].get("app_ids", "").split())
+
+
 # Read once: after a change to apps.conf, restart "haltia-focus watch".
 BUTTONS = load_apps()
+QUIET = load_quiet()
 SLOTS = load_slots()
 
 
@@ -282,6 +292,15 @@ def publish_front(found):
     which is told when it changes."""
     front = next((w["app_id"] for w in found.values()
                   if w.get("activated") and not w.get("closed") and w["app_id"]), "")
+    # The touch filter (root) only looks whether this file is there: no
+    # buzz on taps while a program that buzzes itself is in front.
+    quiet = os.path.join(os.path.dirname(os.path.dirname(state_path())), "quiet-taps")
+    if front in QUIET:
+        if not os.path.exists(quiet):
+            os.makedirs(os.path.dirname(quiet), exist_ok=True)
+            open(quiet, "w").close()
+    elif os.path.lexists(quiet):
+        os.unlink(quiet)
     try:
         with open(front_path()) as fh:
             if fh.read().strip() == front:

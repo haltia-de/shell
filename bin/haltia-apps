@@ -112,7 +112,7 @@ PORTRAIT_CSS = """
 #custom-status { min-width: 116px; margin: 8px 4px; }
 #custom-clock { padding: 0 10px 0 6px; }
 """
-FIELDS = ("label", "icon", "app_ids", "exec", "env", "home")
+FIELDS = ("label", "icon", "app_ids", "exec", "env", "home", "feedback")
 ALIASES = {}  # old shell id -> the .desktop program that replaced it (build())
 # Programs renamed with Haltia 2.0 (ADR 0004): a pin, a count or a play mark
 # under the old id finds the new program until 3.0, even when its .desktop
@@ -200,12 +200,17 @@ def fields_of(app_id, entry):
     ids = [x for x in (entry.get("StartupWMClass"), app_id, binary) if x]
     # Windows of helper programs that belong to it (Видео: b8k-vplay).
     ids += [w for w in re.split(r"[;\s]+", xkey(entry, "Windows")) if w]
-    return {
+    fields = {
         "label": entry.get("Name[ru]") or entry.get("Name") or app_id,
         "icon": find_icon(entry.get("Icon", "")),
         "app_ids": " ".join(dict.fromkeys(ids)),
         "exec": command,
     }
+    # It answers touches itself: the touch filter does not buzz while it is
+    # in front (haltia-focus marks that).
+    if is_true(xkey(entry, "Own-Feedback")):
+        fields["feedback"] = "own"
+    return fields
 
 
 def desktop_app(app_id):
