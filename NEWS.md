@@ -1,5 +1,25 @@
 # Что нового · What's new
 
+## 2.10.0 (2026-10-21)
+
+### Русский
+
+- Входящий звонок включает экран и выходит на передний план; пока используются микрофон или камера, на панели виден значок
+- На зарядке планшет больше не засыпает, чтобы сообщения и звонки приходили вовремя; экран по-прежнему гаснет
+- Настройки открываются сразу и больше не зависают во время проверки обновлений
+- Части рабочего стола, которые остановились, запускаются снова сами
+- Неудачное обновление безопасно откатывается и больше не закрепляет старые версии системных пакетов
+- Ночное обновление больше не работает с приоритетом реального времени, а устаревший номер процесса больше не может закрыть сеанс
+
+### English
+
+- An incoming call turns the screen on and comes to the front; the panel shows a sign while the microphone or camera is in use
+- On the charger the tablet no longer falls asleep, so messages and calls arrive on time; the screen still goes dark
+- Settings open at once and no longer freeze while updates are checked
+- Parts of the desktop that stop start again by themselves
+- A failed update is rolled back safely and no longer pins system packages to old versions
+- The nightly update no longer runs at real-time priority, and a stale process number can no longer close the session
+
 ## 2.9.1 (2026-10-20)
 
 ### Русский

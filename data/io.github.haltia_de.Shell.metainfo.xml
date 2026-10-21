@@ -17,6 +17,26 @@
   <content_rating type="oars-1.1"/>
   <developer id="io.github.haltia_de"><name>Mikhail Nevskiy</name></developer>
   <releases>
+    <release version="2.10.0" date="2026-10-21">
+      <description>
+        <ul>
+          <li>An incoming call turns the screen on and comes to the front; the panel shows a sign while the microphone or camera is in use</li>
+          <li>On the charger the tablet no longer falls asleep, so messages and calls arrive on time; the screen still goes dark</li>
+          <li>Settings open at once and no longer freeze while updates are checked</li>
+          <li>Parts of the desktop that stop start again by themselves</li>
+          <li>A failed update is rolled back safely and no longer pins system packages to old versions</li>
+          <li>The nightly update no longer runs at real-time priority, and a stale process number can no longer close the session</li>
+        </ul>
+        <ul>
+          <li xml:lang="ru">Входящий звонок включает экран и выходит на передний план; пока используются микрофон или камера, на панели виден значок</li>
+          <li xml:lang="ru">На зарядке планшет больше не засыпает, чтобы сообщения и звонки приходили вовремя; экран по-прежнему гаснет</li>
+          <li xml:lang="ru">Настройки открываются сразу и больше не зависают во время проверки обновлений</li>
+          <li xml:lang="ru">Части рабочего стола, которые остановились, запускаются снова сами</li>
+          <li xml:lang="ru">Неудачное обновление безопасно откатывается и больше не закрепляет старые версии системных пакетов</li>
+          <li xml:lang="ru">Ночное обновление больше не работает с приоритетом реального времени, а устаревший номер процесса больше не может закрыть сеанс</li>
+        </ul>
+      </description>
+    </release>
     <release version="2.9.1" date="2026-10-20">
       <description>
         <ul>
