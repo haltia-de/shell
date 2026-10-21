@@ -37,6 +37,15 @@ class Label(unittest.TestCase):
             self.assertEqual(parsed.replace("&amp;", "&").replace("&lt;", "<")
                              .replace("&gt;", ">"), label)
 
+    def test_control_characters_go(self):
+        out = self.json_text("Мой\tблокнот\x01")
+        self.assertEqual(json.loads('{"text":"%s"}' % out)["text"], "Мойблокнот")
+
+    def test_the_id_fallback_is_escaped_too(self):
+        src = read("bin/haltia-launch")
+        self.assertEqual(src.count('label=$(printf \'%s\' "$id" | json_text)'), 2)
+        self.assertNotIn('label="$id"', src)
+
 
 class Queue(unittest.TestCase):
     def test_a_job_queued_as_the_last_is_taken_runs_once(self):
