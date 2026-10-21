@@ -32,6 +32,10 @@ open in one of the user's processes, looked at every REC_EVERY seconds,
 only when the device has a camera and the screen is on): "mic", "cam" or
 both in $XDG_RUNTIME_DIR/haltia/rec, then the panel's custom/rec
 (signal REC_SIGNAL) reads it again (haltia-meter rec).
+
+And whether the program in front has a step back (BackStep): its GTK action
+app.back, followed over org.gtk.Actions into $XDG_RUNTIME_DIR/haltia/
+launch/back, for haltia-close's home button at the top left.
 """
 import configparser
 import glob
@@ -410,9 +414,106 @@ class Recording:
         stream.read_line_async(GLib.PRIORITY_DEFAULT, None, got)
 
 
+BACK = "back"  # the program's action app.back (docs/plan-minimize.md)
+
+
+def object_path(app_id):
+    """Where GApplication puts its actions on the bus by default."""
+    return "/" + app_id.replace(".", "/").replace("-", "_")
+
+
+class BackStep:
+    """Whether the program in front has a step back, for haltia-close's
+    home button at the top left: its GTK action app.back, which
+    GApplication publishes on the bus by itself (org.gtk.Actions), enabled
+    while there is one. haltia/launch/back holds "APP_ID 1" or "APP_ID 0";
+    a program without the action, or not on the bus, has none (0)."""
+
+    def __init__(self, bus):
+        self.bus = bus
+        run = os.environ.get("XDG_RUNTIME_DIR", "/tmp")
+        folder = os.path.join(run, "haltia", "launch")
+        self.front_path = os.path.join(folder, "front")
+        self.path = os.path.join(folder, "back")
+        self.front = None
+        self.sub = None
+        self.written = None
+        os.makedirs(folder, exist_ok=True)
+        # haltia-focus replaces front by a rename: the folder is watched.
+        self.monitor = Gio.File.new_for_path(folder).monitor_directory(
+            Gio.FileMonitorFlags.WATCH_MOVES, None)
+        self.monitor.connect("changed", self.on_folder)
+        self.look()
+
+    def on_folder(self, _monitor, file, other, _event):
+        if "front" in (file.get_basename(), other.get_basename() if other else None):
+            self.look()
+
+    def look(self):
+        try:
+            with open(self.front_path) as fh:
+                front = fh.read().strip()
+        except OSError:
+            front = ""
+        if front == self.front:
+            return
+        self.front = front
+        if self.sub is not None:
+            self.bus.signal_unsubscribe(self.sub)
+            self.sub = None
+        if not front:
+            return
+        if not Gio.dbus_is_name(front) or Gio.dbus_is_unique_name(front):
+            self.write(front, False)
+            return
+        path = object_path(front)
+        self.sub = self.bus.signal_subscribe(front, "org.gtk.Actions", "Changed", path, None,
+                                             Gio.DBusSignalFlags.NONE, self.on_changed, front)
+
+        def described(bus, result):
+            try:
+                enabled = bus.call_finish(result).unpack()[0][0]
+            except GLib.Error:
+                enabled = False  # no such action, or not a GApplication
+            if front == self.front:
+                self.write(front, enabled)
+
+        # Never start a service of that name: the program is either there or not.
+        self.bus.call(front, path, "org.gtk.Actions", "Describe", GLib.Variant("(s)", (BACK,)),
+                      GLib.VariantType("((bgav))"), Gio.DBusCallFlags.NO_AUTO_START, 500, None,
+                      described)
+
+    def on_changed(self, _bus, _sender, _path, _iface, _signal, params, front):
+        if front != self.front:
+            return
+        removed, enabled, _states, added = params.unpack()
+        if BACK in removed:
+            self.write(front, False)
+        if BACK in enabled:
+            self.write(front, enabled[BACK])
+        if BACK in added:
+            self.write(front, added[BACK][0])
+
+    def write(self, front, enabled):
+        text = "%s %d\n" % (front, 1 if enabled else 0)
+        if text == self.written:
+            return
+        self.written = text
+        try:
+            with open(self.path + ".new", "w") as fh:
+                fh.write(text)
+            os.replace(self.path + ".new", self.path)
+            run = os.environ.get("XDG_RUNTIME_DIR", "")
+            with open(os.path.join(run, "haltia", "close.pid")) as fh:
+                os.kill(int(fh.read().strip()), signal.SIGUSR1)
+        except (OSError, ValueError):
+            pass  # haltia-close looks again within seconds anyway
+
+
 def main():
     bus = Gio.bus_get_sync(Gio.BusType.SESSION, None)
     Recording()
+    BackStep(bus)
 
     def on_player_owner(_bus, _sender, _path, _iface, _signal, params, _data):
         name, old, new = params.unpack()

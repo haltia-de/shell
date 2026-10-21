@@ -29,7 +29,9 @@ headerbar.default-decoration button, headerbar.default-decoration image,
 }
 
 /* The display (a GtkTextView, its number right-aligned) clear of the
-   shell's «✕», which stands over the window's top right corner (110 px). */
+   shell's «✕», which stands over the window's top right corner (110 px),
+   and of its home button over the top left corner (110 px). */
 textview {
   padding-right: 112px;
+  padding-left: 112px;
 }

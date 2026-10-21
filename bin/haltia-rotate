@@ -238,6 +238,11 @@ def move_panel(orientation):
         return False
     log("panel for %s" % orientation)
     subprocess.call(["/usr/libexec/haltia/haltia-hook", "orientation", orientation])
+    # The home button's arrow points at the panel: left, or down in portrait.
+    try:
+        subprocess.call(["/usr/libexec/haltia/haltia-close", "update"])
+    except OSError:
+        pass
     return True
 
 
