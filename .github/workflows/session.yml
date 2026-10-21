@@ -1,6 +1,7 @@
 # The shell's session on a machine that is not the B8000-H (ADR 0004 in
-# haltia-de/haltia): headless phoc with pixman on x86_64 Alpine starts the panel and the home screen, and the screenshot is kept
-# as an artifact. A tie to the B8000-H breaks this, not the next tablet.
+# haltia-de/haltia): headless phoc with pixman on x86_64 Alpine starts the
+# panel and the home screen, and the screenshot is kept as an artifact. A
+# tie to the B8000-H breaks this, not the next tablet.
 name: session
 on:
   push:
