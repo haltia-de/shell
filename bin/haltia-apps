@@ -56,6 +56,7 @@ import re
 import signal
 import subprocess
 import sys
+import time
 
 
 _panel = None
@@ -613,10 +614,35 @@ def kept_by_keeper(pid):
         return False
 
 
+def end_tab(uid):
+    """Take down a «›» tab (haltia-tab, the panel hidden) and wait for it:
+    it shows the panel as it ends. Left up over a reload, its SIGUSR1 could
+    reach the rebuilt bar and hide it with no tab to bring it back."""
+    tabs = []
+    for pid in os.listdir("/proc"):
+        if not pid.isdigit():
+            continue
+        try:
+            if os.stat("/proc/" + pid).st_uid != uid:
+                continue
+            with open("/proc/%s/comm" % pid) as fh:
+                if fh.read().strip() != "haltia-tab":
+                    continue
+            os.kill(int(pid), signal.SIGTERM)
+            tabs.append(pid)
+        except OSError:
+            continue
+    end = time.monotonic() + 1
+    while tabs and time.monotonic() < end:
+        tabs = [p for p in tabs if os.path.exists("/proc/" + p)]
+        time.sleep(0.05)
+
+
 def reload_session(uid):
     """Apply the files: waybar rereads its config, haltia-focus starts again
     (by its keeper, or here for a session started before haltia-keep)."""
     kept, watchers = True, 0
+    end_tab(uid)
     try:
         panel().reload()  # only a bar that catches SIGUSR2
     except OSError:
