@@ -191,6 +191,25 @@ tap-slot)
 	[ -n "$id" ] || exit 0
 	exec "$0" tap "$id"
 	;;
+home)
+	# The shell's «⇤» at the top left (haltia-close): the home screen comes up
+	# over the program, which stays open, and the program's panel button
+	# flashes as pressed, so the person sees where it went and how to get
+	# it back. An unpinned program in front always holds slot 1.
+	/usr/libexec/haltia/haltia-home show
+	front=$(awk '$2 == "active" { print $1; exit }' "$dir/state" 2>/dev/null || true)
+	[ -n "$front" ] || exit 0
+	sig=$(field "$front" signal || echo 0)
+	case $sig in
+	'' | *[!0-9]*) sig=0 ;;
+	esac
+	if [ "$sig" -gt 0 ]; then
+		exec /usr/libexec/haltia/haltia-press "$front" "$sig"
+	fi
+	[ "$(slot_id 1 || true)" = "$front" ] || exit 0
+	sig=$(sed -n 1p "$run/haltia/slots" 2>/dev/null)
+	exec /usr/libexec/haltia/haltia-press slot1 ${sig:+"$sig"}
+	;;
 start)
 	id=${2:-}
 	if ! aliases_of "$id" >/dev/null; then

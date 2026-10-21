@@ -1,10 +1,12 @@
 // SPDX-License-Identifier: GPL-2.0
 /*
- * haltia-close: the one way to close a program, a "✕" in the top right corner.
+ * haltia-close: the one way to close a program, a "✕" in the top right corner,
+ * and the way home from a program's first screen, a "⇤" in the top left.
  *
  *   haltia-close            run it (haltia-launcher starts one per session)
- *   haltia-close update     look again at what is in front (haltia-focus and
- *                        haltia-home call this when it changes)
+ *   haltia-close update     look again at what is in front (haltia-focus,
+ *                        haltia-home, haltia-badges and haltia-rotate call
+ *                        this when it changes)
  *
  * A square on the overlay layer at the top right of the screen, drawn as
  * the last button of the program's header (same size, place and look as
@@ -17,6 +19,20 @@
  * after "Закрыть «…»?" with Отмена preselected, as a program closed by
  * accident is lost work for an older hand. The same corner for every
  * program, the video player included.
+ *
+ * The second square stands at the top left, right of the panel (exclusive
+ * zone 0, so it follows the panel; in portrait the panel is at the bottom
+ * and it stands in the screen's corner), where a program's header has its
+ * "←". It shows only while the program in front has no step back:
+ * haltia-badges follows the program's GTK action app.back (org.gtk.Actions)
+ * into haltia/launch/back, "APP_ID 1" while there is a step back, "APP_ID 0"
+ * otherwise; a program without the action gets no line and always has the
+ * button. A new program in front waits up to GRACE_MS for that line, so the
+ * button does not flash over the "←" of a program open on a deeper page.
+ * Not under a curtain, not over the home screen. Drawn as the "✕" but with
+ * an arrow into a bar, pointing at the panel (left, or down in portrait),
+ * blue under the finger; a tap runs haltia-launch home (the home screen up,
+ * the program's panel button flashed).
  */
 #define _GNU_SOURCE
 #include <cairo.h>
@@ -34,6 +50,7 @@
 #include <sys/signalfd.h>
 #include <sys/stat.h>
 #include <sys/timerfd.h>
+#include <time.h>
 #include <unistd.h>
 #include <wayland-client.h>
 
@@ -45,9 +62,11 @@
 #define SQ 88
 #define TOP 8
 #define RIGHT 16
+#define LEFT 16 /* the theme's header padding on the left, where "←" stands */
 #define W (SQ + RIGHT + 6)
 #define H (TOP + SQ + 8)
 #define POLL_S 2 /* a look at the files now and then, besides the signal */
+#define GRACE_MS 300 /* a new front program's word on app.back */
 
 extern char **environ;
 
@@ -55,11 +74,9 @@ static struct wl_compositor *compositor;
 static struct wl_shm *shm;
 static struct wl_seat *seat;
 static struct zwlr_layer_shell_v1 *layer_shell;
-static struct wl_surface *surface;
-static struct zwlr_layer_surface_v1 *layer;
 static struct wl_touch *touch;
 static struct wl_pointer *pointer;
-static int configured, running = 1, shown = -1, want, pressed;
+static int running = 1, portrait, wait_ms = -1;
 static int32_t touch_id = -1;
 
 struct buffer {
@@ -67,7 +84,16 @@ struct buffer {
 	void *data;
 	int busy;
 };
-static struct buffer bufs[2];
+
+enum { CLOSE, HOME, BUTTONS };
+
+static struct button {
+	struct wl_surface *surface;
+	struct zwlr_layer_surface_v1 *layer;
+	struct buffer bufs[2];
+	int configured, shown, pressed, portrait;
+} buttons[BUTTONS] = { { .shown = -1 }, { .shown = -1 } };
+static struct button *touched, *pointed;
 
 static const char *runtime_dir(void)
 {
@@ -76,29 +102,84 @@ static const char *runtime_dir(void)
 	return run && run[0] == '/' ? run : NULL;
 }
 
-/* Something to close is in front: a front app id, and no home screen up. */
-static int wanted(void)
+/* The first line of $XDG_RUNTIME_DIR/haltia/NAME, without its newline. */
+static int read_first(const char *name, char *out, size_t n)
 {
 	const char *run = runtime_dir();
-	char path[512], id[256] = "";
-	struct stat st;
+	char path[512];
 	FILE *f;
+
+	out[0] = '\0';
+	if (!run)
+		return -1;
+	snprintf(path, sizeof(path), "%s/haltia/%s", run, name);
+	if (!(f = fopen(path, "r")))
+		return -1;
+	if (!fgets(out, (int)n, f))
+		out[0] = '\0';
+	fclose(f);
+	out[strcspn(out, "\n")] = '\0';
+	return 0;
+}
+
+static int exists(const char *name)
+{
+	const char *run = runtime_dir();
+	char path[512];
+	struct stat st;
 
 	if (!run)
 		return 0;
-	snprintf(path, sizeof(path), "%s/haltia/home.raised", run);
-	if (!stat(path, &st))
-		return 0;
-	snprintf(path, sizeof(path), "%s/haltia/launch/starting", run);
-	if (!stat(path, &st))
-		return 1; /* a program under its curtain: the way to stop it */
-	snprintf(path, sizeof(path), "%s/haltia/launch/front", run);
-	if (!(f = fopen(path, "r")))
-		return 0;
-	if (!fgets(id, sizeof(id), f))
-		id[0] = '\0';
-	fclose(f);
-	return id[0] && id[0] != '\n';
+	snprintf(path, sizeof(path), "%s/haltia/%s", run, name);
+	return !stat(path, &st);
+}
+
+static long long now_ms(void)
+{
+	struct timespec ts;
+
+	clock_gettime(CLOCK_MONOTONIC, &ts);
+	return (long long)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
+}
+
+/* What shows: the close button while something to close is in front (a
+ * front app id, or a program under its curtain), and no home screen up; the
+ * home button while a program in front has no step back. */
+static void wanted(int *close_on, int *home_on)
+{
+	static char seen[256];
+	static long long since;
+	char front[256], back[300], orient[32];
+	size_t len;
+
+	*close_on = *home_on = 0;
+	wait_ms = -1;
+	read_first("orientation", orient, sizeof(orient));
+	portrait = !strcmp(orient, "portrait");
+	if (exists("home.raised"))
+		return;
+	if (exists("launch/starting")) {
+		*close_on = 1; /* a program under its curtain: the way to stop it */
+		return;
+	}
+	if (read_first("launch/front", front, sizeof(front)) < 0 || !front[0])
+		return;
+	*close_on = 1;
+	if (strcmp(front, seen)) {
+		snprintf(seen, sizeof(seen), "%s", front);
+		since = now_ms();
+	}
+	len = strlen(front);
+	read_first("launch/back", back, sizeof(back));
+	if (!strncmp(back, front, len) && back[len] == ' ') {
+		*home_on = back[len + 1] != '1';
+	} else {
+		long long left = since + GRACE_MS - now_ms();
+
+		*home_on = left <= 0;
+		if (left > 0)
+			wait_ms = (int)left;
+	}
 }
 
 static void spawn(const char *a0, const char *a1)
@@ -127,7 +208,7 @@ static void buffer_release(void *d, struct wl_buffer *b)
 
 static const struct wl_buffer_listener buffer_listener = { .release = buffer_release };
 
-static int make_buffers(void)
+static int make_buffers(struct buffer *bufs)
 {
 	size_t size = (size_t)W * H * 4;
 
@@ -162,42 +243,67 @@ static void rounded(cairo_t *cr, double x, double y, double w, double h, double 
 	cairo_close_path(cr);
 }
 
-static void draw(void *px, int on)
+static void plate(cairo_t *cr, double x, double y, int pressed, double r, double g, double b)
+{
+	/* As the header buttons: #f2f2f0 with a #c0bfbc line, the mark in
+	 * #2e3436; under the finger the button's colour with a white mark. */
+	rounded(cr, x + 0.5, y + 0.5, SQ - 1, SQ - 1, 16);
+	if (pressed)
+		cairo_set_source_rgb(cr, r, g, b);
+	else
+		cairo_set_source_rgb(cr, 0xf2 / 255.0, 0xf2 / 255.0, 0xf0 / 255.0);
+	cairo_fill_preserve(cr);
+	if (pressed)
+		cairo_set_source_rgb(cr, r, g, b);
+	else
+		cairo_set_source_rgb(cr, 0xc0 / 255.0, 0xbf / 255.0, 0xbc / 255.0);
+	cairo_set_line_width(cr, 1);
+	cairo_stroke(cr);
+	if (pressed)
+		cairo_set_source_rgb(cr, 1, 1, 1);
+	else
+		cairo_set_source_rgb(cr, 0x2e / 255.0, 0x34 / 255.0, 0x36 / 255.0);
+	cairo_set_line_width(cr, 5);
+	cairo_set_line_cap(cr, CAIRO_LINE_CAP_ROUND);
+	cairo_set_line_join(cr, CAIRO_LINE_JOIN_ROUND);
+}
+
+static void draw(struct button *bt, void *px, int on)
 {
 	cairo_surface_t *s = cairo_image_surface_create_for_data(px, CAIRO_FORMAT_ARGB32, W, H,
 								  W * 4);
 	cairo_t *cr = cairo_create(s);
-	double x = W - SQ - RIGHT, y = TOP, c = SQ * 0.2;
+	double c = SQ * 0.2;
 
 	cairo_set_operator(cr, CAIRO_OPERATOR_SOURCE);
 	cairo_set_source_rgba(cr, 0, 0, 0, 0);
 	cairo_paint(cr);
 	cairo_set_operator(cr, CAIRO_OPERATOR_OVER);
-	if (on) {
-		/* As the header buttons: #f2f2f0 with a #c0bfbc line, the mark in
-		 * #2e3436; red with a white mark only under the finger. */
-		rounded(cr, x + 0.5, y + 0.5, SQ - 1, SQ - 1, 16);
-		if (pressed)
-			cairo_set_source_rgb(cr, 0xe0 / 255.0, 0x1b / 255.0, 0x24 / 255.0);
-		else
-			cairo_set_source_rgb(cr, 0xf2 / 255.0, 0xf2 / 255.0, 0xf0 / 255.0);
-		cairo_fill_preserve(cr);
-		if (pressed)
-			cairo_set_source_rgb(cr, 0xe0 / 255.0, 0x1b / 255.0, 0x24 / 255.0);
-		else
-			cairo_set_source_rgb(cr, 0xc0 / 255.0, 0xbf / 255.0, 0xbc / 255.0);
-		cairo_set_line_width(cr, 1);
-		cairo_stroke(cr);
-		if (pressed)
-			cairo_set_source_rgb(cr, 1, 1, 1);
-		else
-			cairo_set_source_rgb(cr, 0x2e / 255.0, 0x34 / 255.0, 0x36 / 255.0);
-		cairo_set_line_width(cr, 5);
-		cairo_set_line_cap(cr, CAIRO_LINE_CAP_ROUND);
+	if (on && bt == &buttons[CLOSE]) {
+		double x = W - SQ - RIGHT, y = TOP;
+
+		plate(cr, x, y, bt->pressed, 0xe0 / 255.0, 0x1b / 255.0, 0x24 / 255.0);
 		cairo_move_to(cr, x + SQ / 2.0 - c, y + SQ / 2.0 - c);
 		cairo_line_to(cr, x + SQ / 2.0 + c, y + SQ / 2.0 + c);
 		cairo_move_to(cr, x + SQ / 2.0 + c, y + SQ / 2.0 - c);
 		cairo_line_to(cr, x + SQ / 2.0 - c, y + SQ / 2.0 + c);
+		cairo_stroke(cr);
+	} else if (on) {
+		/* An arrow into a bar, "⇤", pointing at the panel: left, or down
+		 * while the screen stands portrait (the panel along the bottom). */
+		double x = LEFT, y = TOP, tip = -c + 9, head = c * 0.55;
+
+		plate(cr, x, y, bt->pressed, 0x35 / 255.0, 0x84 / 255.0, 0xe4 / 255.0);
+		cairo_translate(cr, x + SQ / 2.0, y + SQ / 2.0);
+		if (bt->portrait)
+			cairo_rotate(cr, -M_PI / 2);
+		cairo_move_to(cr, -c, -c);
+		cairo_line_to(cr, -c, c);
+		cairo_move_to(cr, c, 0);
+		cairo_line_to(cr, tip, 0);
+		cairo_move_to(cr, tip + head, -head);
+		cairo_line_to(cr, tip, 0);
+		cairo_line_to(cr, tip + head, head);
 		cairo_stroke(cr);
 	}
 	cairo_destroy(cr);
@@ -205,53 +311,78 @@ static void draw(void *px, int on)
 	cairo_surface_destroy(s);
 }
 
-/* Show or clear the button; a clear one takes no input. */
-static void render(int on)
+/* Show or clear a button; a clear one takes no input. */
+static void render(struct button *bt, int on)
 {
-	struct buffer *b = !bufs[0].busy ? &bufs[0] : (!bufs[1].busy ? &bufs[1] : NULL);
+	struct buffer *b = !bt->bufs[0].busy ? &bt->bufs[0] :
+			   (!bt->bufs[1].busy ? &bt->bufs[1] : NULL);
 	struct wl_region *region;
 
-	if (!configured || !b)
+	if (!bt->configured || !b)
 		return;
-	draw(b->data, on);
+	bt->portrait = portrait;
+	draw(bt, b->data, on);
 	b->busy = 1;
 	region = wl_compositor_create_region(compositor);
 	if (on)
 		wl_region_add(region, 0, 0, W, H);
-	wl_surface_set_input_region(surface, region);
+	wl_surface_set_input_region(bt->surface, region);
 	wl_region_destroy(region);
-	wl_surface_attach(surface, b->wl, 0, 0);
-	wl_surface_damage(surface, 0, 0, W, H);
-	wl_surface_commit(surface);
-	shown = on;
+	wl_surface_attach(bt->surface, b->wl, 0, 0);
+	wl_surface_damage(bt->surface, 0, 0, W, H);
+	wl_surface_commit(bt->surface);
+	bt->shown = on;
 }
 
 static void update(void)
 {
-	want = wanted();
-	if (want != shown)
-		render(want);
+	int want[BUTTONS];
+
+	wanted(&want[CLOSE], &want[HOME]);
+	for (int i = 0; i < BUTTONS; i++)
+		if (want[i] != buttons[i].shown || (i == HOME && want[i] &&
+						     buttons[i].portrait != portrait))
+			render(&buttons[i], want[i]);
 }
 
-static void tapped(void)
+static struct button *button_of(struct wl_surface *s)
 {
-	pressed = 0;
-	if (shown == 1) {
+	for (int i = 0; i < BUTTONS; i++)
+		if (buttons[i].surface == s)
+			return &buttons[i];
+	return NULL;
+}
+
+static void press(struct button *bt, int down)
+{
+	if (!bt)
+		return;
+	bt->pressed = down;
+	render(bt, bt->shown == 1);
+}
+
+static void tapped(struct button *bt)
+{
+	if (!bt)
+		return;
+	bt->pressed = 0;
+	if (bt->shown == 1 && bt == &buttons[CLOSE]) {
 		spawn("/usr/libexec/haltia/haltia-press", "close");
 		spawn("/usr/bin/haltia-ask", "close-front");
+	} else if (bt->shown == 1) {
+		spawn("/usr/bin/haltia-launch", "home");
 	}
-	render(shown == 1);
+	render(bt, bt->shown == 1);
 }
 
 static void touch_down(void *d, struct wl_touch *t, uint32_t serial, uint32_t time,
 		       struct wl_surface *s, int32_t id, wl_fixed_t x, wl_fixed_t y)
 {
-	(void)d; (void)t; (void)serial; (void)time; (void)s; (void)x; (void)y;
-	if (touch_id >= 0)
+	(void)d; (void)t; (void)serial; (void)time; (void)x; (void)y;
+	if (touch_id >= 0 || !(touched = button_of(s)))
 		return;
 	touch_id = id;
-	pressed = 1;
-	render(shown == 1);
+	press(touched, 1);
 }
 
 static void touch_up(void *d, struct wl_touch *t, uint32_t serial, uint32_t time, int32_t id)
@@ -260,7 +391,8 @@ static void touch_up(void *d, struct wl_touch *t, uint32_t serial, uint32_t time
 	if (id != touch_id)
 		return;
 	touch_id = -1;
-	tapped(); /* on the lift of the finger, not the touch */
+	tapped(touched); /* on the lift of the finger, not the touch */
+	touched = NULL;
 }
 
 static void touch_motion(void *d, struct wl_touch *t, uint32_t time, int32_t id, wl_fixed_t x,
@@ -278,8 +410,8 @@ static void touch_cancel(void *d, struct wl_touch *t)
 {
 	(void)d; (void)t;
 	touch_id = -1;
-	pressed = 0;
-	render(shown == 1);
+	press(touched, 0);
+	touched = NULL;
 }
 
 static void touch_shape(void *d, struct wl_touch *t, int32_t id, wl_fixed_t a, wl_fixed_t b)
@@ -300,13 +432,16 @@ static const struct wl_touch_listener touch_listener = {
 static void ptr_enter(void *d, struct wl_pointer *p, uint32_t serial, struct wl_surface *s,
 		      wl_fixed_t x, wl_fixed_t y)
 {
-	(void)d; (void)p; (void)serial; (void)s; (void)x; (void)y;
+	(void)d; (void)p; (void)serial; (void)x; (void)y;
+	pointed = button_of(s);
 }
 
 static void ptr_leave(void *d, struct wl_pointer *p, uint32_t serial, struct wl_surface *s)
 {
 	(void)d; (void)p; (void)serial; (void)s;
-	pressed = 0;
+	if (pointed)
+		pointed->pressed = 0;
+	pointed = NULL;
 }
 
 static void ptr_motion(void *d, struct wl_pointer *p, uint32_t time, wl_fixed_t x, wl_fixed_t y)
@@ -320,12 +455,10 @@ static void ptr_button(void *d, struct wl_pointer *p, uint32_t serial, uint32_t 
 	(void)d; (void)p; (void)serial; (void)time;
 	if (button != 0x110)
 		return;
-	if (state == WL_POINTER_BUTTON_STATE_PRESSED) {
-		pressed = 1;
-		render(shown == 1);
-	} else if (pressed) {
-		tapped();
-	}
+	if (state == WL_POINTER_BUTTON_STATE_PRESSED)
+		press(pointed, 1);
+	else if (pointed && pointed->pressed)
+		tapped(pointed);
 }
 
 static void ptr_axis(void *d, struct wl_pointer *p, uint32_t time, uint32_t axis, wl_fixed_t v)
@@ -387,15 +520,17 @@ static const struct wl_registry_listener registry_listener = { global, global_re
 static void layer_configure(void *d, struct zwlr_layer_surface_v1 *ls, uint32_t serial,
 			    uint32_t w, uint32_t h)
 {
-	(void)d; (void)w; (void)h;
+	struct button *bt = d;
+
+	(void)w; (void)h;
 	zwlr_layer_surface_v1_ack_configure(ls, serial);
-	if (!configured) {
-		configured = 1;
-		if (make_buffers() < 0) {
+	if (!bt->configured) {
+		bt->configured = 1;
+		if (make_buffers(bt->bufs) < 0) {
 			running = 0;
 			return;
 		}
-		shown = -1;
+		bt->shown = -1;
 		update();
 	}
 }
@@ -469,15 +604,28 @@ int main(int argc, char **argv)
 	wl_display_roundtrip(display);
 	if (!compositor || !shm || !layer_shell)
 		return 1;
-	surface = wl_compositor_create_surface(compositor);
-	layer = zwlr_layer_shell_v1_get_layer_surface(layer_shell, surface, NULL,
-						      ZWLR_LAYER_SHELL_V1_LAYER_OVERLAY, "haltia-close");
-	zwlr_layer_surface_v1_add_listener(layer, &layer_listener, NULL);
-	zwlr_layer_surface_v1_set_size(layer, W, H);
-	zwlr_layer_surface_v1_set_anchor(layer, ZWLR_LAYER_SURFACE_V1_ANCHOR_TOP |
-					 ZWLR_LAYER_SURFACE_V1_ANCHOR_RIGHT);
-	zwlr_layer_surface_v1_set_exclusive_zone(layer, -1); /* over everything, the keyboard too */
-	wl_surface_commit(surface);
+	for (int i = 0; i < BUTTONS; i++) {
+		struct button *bt = &buttons[i];
+
+		bt->surface = wl_compositor_create_surface(compositor);
+		bt->layer = zwlr_layer_shell_v1_get_layer_surface(layer_shell, bt->surface, NULL,
+								  ZWLR_LAYER_SHELL_V1_LAYER_OVERLAY,
+								  i == CLOSE ? "haltia-close" : "haltia-home-button");
+		zwlr_layer_surface_v1_add_listener(bt->layer, &layer_listener, bt);
+		zwlr_layer_surface_v1_set_size(bt->layer, W, H);
+		if (i == CLOSE) {
+			zwlr_layer_surface_v1_set_anchor(bt->layer, ZWLR_LAYER_SURFACE_V1_ANCHOR_TOP |
+							 ZWLR_LAYER_SURFACE_V1_ANCHOR_RIGHT);
+			/* over everything, the keyboard too */
+			zwlr_layer_surface_v1_set_exclusive_zone(bt->layer, -1);
+		} else {
+			zwlr_layer_surface_v1_set_anchor(bt->layer, ZWLR_LAYER_SURFACE_V1_ANCHOR_TOP |
+							 ZWLR_LAYER_SURFACE_V1_ANCHOR_LEFT);
+			/* right of the panel, where the program's header begins */
+			zwlr_layer_surface_v1_set_exclusive_zone(bt->layer, 0);
+		}
+		wl_surface_commit(bt->surface);
+	}
 
 	tfd = timerfd_create(CLOCK_MONOTONIC, TFD_CLOEXEC);
 	timerfd_settime(tfd, 0, &every, NULL);
@@ -492,7 +640,7 @@ int main(int argc, char **argv)
 		while (wl_display_prepare_read(display) != 0)
 			wl_display_dispatch_pending(display);
 		wl_display_flush(display);
-		if (poll(fds, 3, -1) < 0 && errno != EINTR) {
+		if (poll(fds, 3, wait_ms) < 0 && errno != EINTR) {
 			wl_display_cancel_read(display);
 			break;
 		}
@@ -504,6 +652,8 @@ int main(int argc, char **argv)
 		}
 		if (wl_display_dispatch_pending(display) < 0)
 			break;
+		if (wait_ms >= 0)
+			update(); /* the grace for a new front program may be over */
 		if (fds[1].revents & POLLIN) {
 			struct signalfd_siginfo si;
 
@@ -519,8 +669,10 @@ int main(int argc, char **argv)
 			update();
 		}
 	}
-	zwlr_layer_surface_v1_destroy(layer);
-	wl_surface_destroy(surface);
+	for (int i = 0; i < BUTTONS; i++) {
+		zwlr_layer_surface_v1_destroy(buttons[i].layer);
+		wl_surface_destroy(buttons[i].surface);
+	}
 	wl_display_disconnect(display);
 	unlink(path);
 	return 0;

@@ -2101,8 +2101,15 @@ class Settings(Gtk.Application):
         self.win.set_default_size(1160, 800)
         self.win.connect("delete-event", self.on_close)
         self.header = Gtk.HeaderBar(title="Настройки")
+        # «←» is the action app.back, enabled while there is a step back:
+        # the shell shows its home button in this place otherwise
+        # (haltia-badges follows the action over org.gtk.Actions).
+        self.back_action = Gio.SimpleAction.new("back", None)
+        self.back_action.connect("activate", lambda *_a: self.go_back())
+        self.back_action.set_enabled(False)
+        self.add_action(self.back_action)
         self.back = Gtk.Button(label="←")
-        self.back.connect("clicked", lambda _b: self.go_back())
+        self.back.set_action_name("app.back")
         self.back.set_no_show_all(True)
         self.header.pack_start(self.back)
         self.win.set_titlebar(self.header)
@@ -2223,7 +2230,9 @@ class Settings(Gtk.Application):
         self.side.set_visible(alone or not (self.narrow or self.wide_sub))
         self.line.set_visible(not self.narrow and not self.wide_sub)
         self.stack.set_visible(not alone)
-        self.back.set_visible(sub or (self.narrow and self.current is not None))
+        can = sub or (self.narrow and self.current is not None)
+        self.back_action.set_enabled(can)
+        self.back.set_visible(can)
         # Alone, the list takes the whole width.
         for prop in ("expand", "fill"):
             self.side.get_parent().child_set_property(self.side, prop, alone)
