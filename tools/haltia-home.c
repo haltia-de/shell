@@ -29,6 +29,7 @@
  */
 #define _GNU_SOURCE
 #include <cairo.h>
+#include <ctype.h>
 #include <dirent.h>
 #include <dlfcn.h>
 #include <errno.h>
@@ -83,7 +84,11 @@ struct app {
 
 static struct app apps[MAX_APPS];
 static int napps;
-static time_t apps_mtime;
+/* apps.conf as last read: its inode (haltia-apps replaces it, a new one each
+ * time) and its time to the nanosecond, as two replaces in one second (pin,
+ * then reload) went unseen by seconds. */
+static ino_t apps_ino;
+static struct timespec apps_mtim;
 
 static struct wl_display *display;
 static struct wl_compositor *compositor;
@@ -260,7 +265,8 @@ static void read_apps(void)
 	pick_apps_path();
 	if (stat(apps_path, &st) < 0 || !(f = fopen(apps_path, "r")))
 		return;
-	apps_mtime = st.st_mtime;
+	apps_ino = st.st_ino;
+	apps_mtim = st.st_mtim;
 	memset(next, 0, sizeof(next));
 	memset(&cur, 0, sizeof(cur));
 	for (;;) {
@@ -341,7 +347,12 @@ static void json_string(const char *p, char *out, size_t n)
 	size_t o = 0;
 
 	while (*p && *p != '"' && o + 4 < n) {
-		if (*p == '\\' && p[1] == 'u') {
+		/* Four hex digits or it is no \\u escape: a cache read while it is
+		 * written may end in the middle of one, and p[2..5] lay past the
+		 * terminator. */
+		if (*p == '\\' && p[1] == 'u' && isxdigit((unsigned char)p[2]) &&
+		    isxdigit((unsigned char)p[3]) && isxdigit((unsigned char)p[4]) &&
+		    isxdigit((unsigned char)p[5])) {
 			unsigned c = (unsigned)strtoul((char[5]){ p[2], p[3], p[4], p[5], 0 }, NULL, 16);
 
 			if (c < 0x80) {
@@ -467,7 +478,8 @@ static void poll_files(void)
 	struct stat st;
 	FILE *f;
 
-	if (!stat(apps_path, &st) && st.st_mtime != apps_mtime)
+	if (!stat(apps_path, &st) && (st.st_ino != apps_ino || st.st_mtim.tv_sec != apps_mtim.tv_sec ||
+					      st.st_mtim.tv_nsec != apps_mtim.tv_nsec))
 		read_apps();
 	poll_zone();
 	if (!run)
@@ -1140,6 +1152,10 @@ int main(int argc, char **argv)
 	sigaddset(&mask, SIGRTMIN + 1);
 	sigprocmask(SIG_BLOCK, &mask, NULL);
 	sfd = signalfd(-1, &mask, SFD_CLOEXEC);
+	if (sfd < 0) {
+		perror("haltia-home: signalfd"); /* blocked for good otherwise */
+		return 1;
+	}
 
 	display = wl_display_connect(NULL);
 	if (!display)
@@ -1163,6 +1179,15 @@ int main(int argc, char **argv)
 	zwlr_layer_surface_v1_set_exclusive_zone(layer, 0);
 	wl_surface_commit(surface);
 	wl_display_flush(display);
+	/* This one starts lowered: a mark left by one that died raised kept «✕»
+	 * hidden for every program and the panel's home button lit. */
+	if (runtime_dir()) {
+		char mark[512];
+
+		snprintf(mark, sizeof(mark), "%s/haltia/home.raised", runtime_dir());
+		if (!unlink(mark))
+			signal_close_button();
+	}
 	read_apps();
 	poll_files();
 

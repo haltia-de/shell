@@ -572,6 +572,10 @@ int main(int argc, char **argv)
 	sigaddset(&mask, SIGUSR1);
 	sigprocmask(SIG_BLOCK, &mask, NULL);
 	sfd = signalfd(-1, &mask, SFD_CLOEXEC);
+	if (sfd < 0) {
+		perror("haltia-close: signalfd"); /* blocked for good otherwise */
+		return 1;
+	}
 
 	display = wl_display_connect(NULL);
 	if (!display)
