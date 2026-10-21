@@ -83,6 +83,22 @@ window#waybar { background: #242424; color: #ffffff; }
   background-color: transparent;
   background-repeat: no-repeat;
 }
+/* A program records from the microphone or uses the camera (custom/rec,
+   haltia-meter rec from haltia-badges' $XDG_RUNTIME_DIR/haltia/rec): a red
+   plate with a white microphone, camera or both, nothing when neither;
+   no text, no tap. */
+#custom-rec {
+  min-height: 36px;
+  margin: 2px 4px;
+  padding: 0;
+  background-color: transparent;
+  background-repeat: no-repeat;
+  background-position: center;
+  background-size: 48px 36px;
+}
+#custom-rec.mic { background-image: url("/usr/share/haltia/rec-mic.svg"); }
+#custom-rec.cam { background-image: url("/usr/share/haltia/rec-cam.svg"); }
+#custom-rec.both { background-image: url("/usr/share/haltia/rec-both.svg"); }
 /* Hides the panel; haltia-tab draws its 120x44 tab in exactly this place, so
    keep the size (40 px + 2 px margins) and the 30 px icon in step with it. */
 #custom-hide {

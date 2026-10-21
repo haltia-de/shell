@@ -119,6 +119,17 @@ case ${1:-} in
 	status) out status "$(wifi_class)" "$(volume_class)" "$(battery_class)" ;;
 	battery-info) battery_info ;;
 	hide) out hide idle ;;
+	rec)
+		# The microphone or the camera in use (haltia-badges writes "mic",
+		# "cam" or both): an icon; nothing, so no module, when neither.
+		set -- $(cat "${XDG_RUNTIME_DIR:-/tmp}/haltia/rec" 2>/dev/null)
+		case "$*" in
+		*mic*cam* | *cam*mic*) printf '{"text":" ","class":["both"]}\n' ;;
+		*mic*) printf '{"text":" ","class":["mic"]}\n' ;;
+		*cam*) printf '{"text":" ","class":["cam"]}\n' ;;
+		*) printf '{"text":""}\n' ;;
+		esac
+		;;
 	home)
 		# Lit while the home screen is up over the windows (haltia-home).
 		if [ -e "${XDG_RUNTIME_DIR:-/tmp}/haltia/home.raised" ]; then

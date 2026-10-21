@@ -1,0 +1,27 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0
+"""haltia-wake: turn the screen on now (an incoming call; haltia-call).
+
+Asks haltia-sleep, which owns the backlight, through its socket
+/run/haltia/wake.sock; it hears only root and the session user. Exit 0
+when the screen is on (or was), 1 when haltia-sleep did not answer.
+"""
+import socket
+import sys
+
+SOCKET = "/run/haltia/wake.sock"
+
+
+def wake():
+    try:
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
+            sock.settimeout(2)
+            sock.connect(SOCKET)
+            sock.sendall(b"wake\n")
+            return sock.recv(16).strip() == b"ok"
+    except OSError:
+        return False
+
+
+if __name__ == "__main__":
+    sys.exit(0 if wake() else 1)
