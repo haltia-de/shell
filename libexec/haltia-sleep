@@ -33,6 +33,8 @@ import fcntl
 import os
 import pwd
 import select
+import shutil
+import stat
 import subprocess
 import sys
 import time
@@ -153,6 +155,21 @@ UPDATE_EVERY = 20 * 3600  # seconds between looks for updates
 _screen = {"at": -SCREEN_CHECK, "off": IDLE_OFF, "keep": False, "charging": False}
 
 
+def read_user_file(path, uid, limit=4096):
+    """A small file of the user's, read as root without trusting it: opened
+    without blocking (a FIFO would stop the power key's loop), taken only
+    when what was opened is a regular file of that user (not a link to
+    /dev/zero or to root's files), and at most limit bytes of it."""
+    fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_NOCTTY | os.O_CLOEXEC)
+    try:
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode) or st.st_uid != uid:
+            raise OSError(errno.EPERM, "not a regular file of the user", path)
+        return os.read(fd, limit).decode("utf-8", "replace")
+    finally:
+        os.close(fd)
+
+
 def idle_off():
     """Seconds without input before the screen goes off, as Настройки set
     it (IDLE_OFF otherwise); None while it stays on (charging, when asked)."""
@@ -164,14 +181,14 @@ def idle_off():
         if found:
             try:
                 home = pwd.getpwuid(found[1]).pw_dir
-                with open(os.path.join(home, SCREEN_CONF)) as fh:
-                    for line in fh:
-                        key, sep, val = line.partition("=")
-                        key, val = key.strip(), val.strip()
-                        if sep and key == "off_after" and val.isdigit() and int(val) >= 30:
-                            off = float(val)
-                        elif sep and key == "charging":
-                            keep = val == "on"
+                text = read_user_file(os.path.join(home, SCREEN_CONF), found[1])
+                for line in text.splitlines():
+                    key, sep, val = line.partition("=")
+                    key, val = key.strip(), val.strip()
+                    if sep and key == "off_after" and val.isdigit() and int(val) >= 30:
+                        off = float(val)
+                    elif sep and key == "charging":
+                        keep = val == "on"
             except (OSError, KeyError):
                 pass
         _screen.update(off=off, keep=keep, charging=keep and charging())
@@ -212,8 +229,13 @@ def updates_when_dark():
     cmd = "%s check >/dev/null" % UPDATE
     if auto:
         cmd += " && %s upgrade --auto" % UPDATE
+    # Below the person's programs in both the processor and the disk: the
+    # update is no hurry, the screen coming back is.
+    lower = ["nice", "-n", "10"]
+    if shutil.which("ionice"):
+        lower += ["ionice", "-c", "2", "-n", "7"]
     try:
-        subprocess.Popen(["sh", "-c", cmd + " >>/var/log/haltia-update.log 2>&1"],
+        subprocess.Popen(lower + ["sh", "-c", cmd + " >>/var/log/haltia-update.log 2>&1"],
                          start_new_session=True)
         log("UPDATES %s" % ("auto" if auto else "look"))
     except OSError as exc:
@@ -727,18 +749,47 @@ def listen():
             emit(home, EV_SYN, SYN_REPORT, 0)
 
 
+class SchedParam(ctypes.Structure):
+    _fields_ = [("sched_priority", ctypes.c_int)]
+
+
+def set_policy(policy, priority):
+    """sched_setscheduler for this thread. musl leaves sched_setscheduler()
+    unimplemented (ENOSYS: Python's os.sched_setscheduler there), so
+    pthread_setschedparam, which passes the policy and its flags on to the
+    kernel, does it."""
+    try:
+        os.sched_setscheduler(0, policy, os.sched_param(priority))
+        return True
+    except (OSError, AttributeError):
+        pass
+    try:
+        libc = ctypes.CDLL(None, use_errno=True)
+        libc.pthread_self.restype = ctypes.c_ulong
+        libc.pthread_setschedparam.argtypes = (ctypes.c_ulong, ctypes.c_int,
+                                               ctypes.POINTER(SchedParam))
+        return libc.pthread_setschedparam(libc.pthread_self(), policy,
+                                          ctypes.byref(SchedParam(priority))) == 0
+    except (OSError, AttributeError):
+        return False
+
+
 def raise_priority():
     # The press must act at once even with every core busy. The handler
     # sleeps in read() almost all the time, so real-time costs nothing.
-    try:
-        os.sched_setscheduler(0, os.SCHED_FIFO, os.sched_param(10))
+    # SCHED_RESET_ON_FORK: what it starts (the nightly update, hooks, the
+    # suspend hook) begins as an ordinary process with nice 0, instead of
+    # inheriting real time, or nice -10, over the person's programs.
+    reset = getattr(os, "SCHED_RESET_ON_FORK", 0x40000000)
+    if set_policy(os.SCHED_FIFO | reset, 10):
         log("PRIO fifo")
-    except (OSError, AttributeError):
-        try:
-            os.nice(-10)
-            log("PRIO nice")
-        except OSError:
-            pass
+        return
+    set_policy(os.SCHED_OTHER | reset, 0)
+    try:
+        os.nice(-10)
+        log("PRIO nice")
+    except OSError:
+        pass
 
 
 def main():

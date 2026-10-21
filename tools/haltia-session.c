@@ -11,6 +11,7 @@
  * HOME and XDG_RUNTIME_DIR (from pam_elogind); the default is root.
  */
 #include <security/pam_appl.h>
+#include <errno.h>
 #include <grp.h>
 #include <pwd.h>
 #include <signal.h>
@@ -105,6 +106,14 @@ int main(int argc, char **argv)
 		putenv(env[i]);
 
 	pid = fork();
+	if (pid < 0) {
+		/* Without a child, waitpid() fails at once and the loop below
+		 * would spin a core as root with the screen black. */
+		perror("haltia-session: fork");
+		pam_close_session(ph, 0);
+		pam_end(ph, PAM_SUCCESS);
+		return 1;
+	}
 	if (pid == 0) {
 		setsid();
 		if (pw->pw_uid != 0 &&
@@ -125,8 +134,13 @@ int main(int argc, char **argv)
 	}
 	signal(SIGINT, SIG_IGN);
 	signal(SIGTERM, SIG_IGN);
-	while (waitpid(pid, &st, 0) < 0)
-		;
+	while (waitpid(pid, &st, 0) < 0) {
+		if (errno != EINTR) {
+			perror("haltia-session: waitpid");
+			st = 1 << 8;
+			break;
+		}
+	}
 	pam_close_session(ph, 0);
 	pam_end(ph, PAM_SUCCESS);
 	return WIFEXITED(st) ? WEXITSTATUS(st) : 1;

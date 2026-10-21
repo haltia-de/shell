@@ -8,12 +8,14 @@ stays. This stops the whole program: SIGTERM, then SIGKILL two seconds
 later to whatever is left.
 
 The program is the process haltia-launch started for section ID
-($XDG_RUNTIME_DIR/haltia/launch/pid/ID), and, for one started some other
+($XDG_RUNTIME_DIR/haltia/launch/pid/ID: "PID START", taken only while
+that pid still has that start time, as the file outlives the program),
+and, for one started some other
 way (autostart, D-Bus activation, a terminal), every process of the
 session's user whose command is the section's exec (python3 SCRIPT counts
 as SCRIPT) or one of the window app ids; with each of them, all its
-descendants (Видео's player). The shell's own processes are never
-touched.
+descendants (Видео's player). The shell's own processes (SHELL) are
+never touched, nor anything below them.
 
 A program that lives in the background (an autostart entry ID.desktop, as
 Сообщения) starts again in the background, so its notifications go on.
@@ -31,6 +33,8 @@ SHELL = {"waybar", "phoc", "phoc-gpu", "haltia-home", "haltia-close", "haltia-la
          "wvkbd-b8k", "mako", "pulseaudio", "dbus-daemon", "dbus-run-session", "lisgd",
          "haltia-ask", "haltia-launch", "haltia-stop", "haltia-splash", "fuzzel", "sh",
          "python3", "python", "env", "setsid"}
+# Commands that run another: a process is the shell's by what they run.
+INTERPRETERS = {"sh", "bash", "python3", "python", "env", "setsid"}
 
 
 def runtime():
@@ -90,16 +94,39 @@ def processes():
     return found
 
 
+def is_shell(names):
+    return bool((names - INTERPRETERS) & SHELL)
+
+
+def start_time(pid):
+    """A process's start time in clock ticks since boot, or None."""
+    try:
+        with open("/proc/%d/stat" % pid) as fh:
+            stat = fh.read()
+        return int(stat[stat.rindex(")") + 2:].split()[19])
+    except (OSError, ValueError, IndexError):
+        return None
+
+
+def launched(sid):
+    """The pid haltia-launch wrote for sid, if that process still runs:
+    the same pid with the same start time. A file of the old form (the pid
+    alone) proves nothing and is not taken."""
+    try:
+        with open(os.path.join(runtime(), "haltia/launch/pid", sid)) as fh:
+            words = fh.read().split()
+        pid, start = int(words[0]), int(words[1])
+    except (OSError, ValueError, IndexError):
+        return None
+    return pid if start and start_time(pid) == start else None
+
+
 def program(sid, app_ids):
     procs = processes()
     roots = set()
-    try:
-        with open(os.path.join(runtime(), "haltia/launch/pid", sid)) as fh:
-            pid = int(fh.read().split()[0])
-        if pid in procs:
-            roots.add(pid)
-    except (OSError, ValueError, IndexError):
-        pass
+    pid = launched(sid)
+    if pid in procs and not is_shell(procs[pid][1]):
+        roots.add(pid)
     exe = section(sid).get("exec", "").split()
     wanted = set(app_ids)
     if exe:
@@ -116,7 +143,7 @@ def program(sid, app_ids):
     chosen, todo = set(), list(roots)
     while todo:
         pid = todo.pop()
-        if pid in chosen or pid == os.getpid():
+        if pid in chosen or pid == os.getpid() or is_shell(procs[pid][1]):
             continue
         chosen.add(pid)
         todo.extend(children.get(pid, []))
