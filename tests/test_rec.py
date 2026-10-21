@@ -37,9 +37,14 @@ class Microphone(unittest.TestCase):
             fh.write(SOURCES)
         self.ns = functions()
 
-    def streams(self, *streams):
+    def streams(self, *streams, raw=None, short_outputs=""):
         with open(os.path.join(self.dir, "outputs.json"), "w") as fh:
-            json.dump(list(streams), fh)
+            if raw is None:
+                json.dump(list(streams), fh)
+            else:
+                fh.write(raw)
+        with open(os.path.join(self.dir, "short-outputs"), "w") as fh:
+            fh.write(short_outputs)
         fake = os.path.join(self.dir, "pactl")
         with open(fake, "w") as fh:
             fh.write(textwrap.dedent("""\
@@ -47,8 +52,9 @@ class Microphone(unittest.TestCase):
                 case "$*" in
                 "-f json list source-outputs") cat "%s/outputs.json" ;;
                 "list short sources") cat "%s/sources" ;;
+                "list short source-outputs") cat "%s/short-outputs" ;;
                 esac
-                """ % (self.dir, self.dir)))
+                """ % (self.dir, self.dir, self.dir)))
         os.chmod(fake, 0o755)
         return self.ns["microphone"]()
 
@@ -74,6 +80,16 @@ class Microphone(unittest.TestCase):
         self.assertFalse(self.streams({"source": 1, "corked": True, "properties": {}}))
         self.assertFalse(self.streams({"source": 0, "corked": False, "properties": {}}))
         self.assertFalse(self.streams())
+
+    def test_no_json_falls_back_to_the_plain_look(self):
+        # pactl without -f json prints nothing on stdout, or junk.
+        self.assertTrue(self.streams(raw="", short_outputs="5\t1\t-\t-\tfloat32le\n"))
+        self.assertTrue(self.streams(raw="{\"x\": 1}", short_outputs="5\t1\t-\t-\ts16le\n"))
+        self.assertFalse(self.streams(raw="not json", short_outputs="5\t0\t-\t-\ts16le\n"))
+
+    def test_odd_items_are_skipped(self):
+        self.assertFalse(self.streams(raw='[1, "x", null]'))
+        self.assertTrue(self.streams(raw='[1, {"source": 1, "corked": false, "properties": []}]'))
 
     def test_the_canceller_beside_a_call(self):
         self.assertTrue(self.streams(

@@ -299,17 +299,27 @@ def microphone():
     B8000-H keeps loaded for calls): neither counts. A filter's stream is
     one a module made, with no client; media.role alone is the program's
     word, so a client's "filter" stream still counts."""
+    names = {row[0]: row[1] for row in short("sources") if len(row) > 1}
     try:
         # In C: pactl warns of translated text and its JSON breaks.
         out = subprocess.run(["pactl", "-f", "json", "list", "source-outputs"],
                              capture_output=True, text=True, timeout=5,
                              env=dict(os.environ, LC_ALL="C")).stdout
-        outputs = json.loads(out or "[]")
+        outputs = json.loads(out)
+        if not isinstance(outputs, list):
+            raise ValueError("not a list")
     except (OSError, subprocess.SubprocessError, ValueError):
-        return False
-    names = {row[0]: row[1] for row in short("sources") if len(row) > 1}
-    for stream in outputs if isinstance(outputs, list) else []:
+        # A pactl without JSON (before PulseAudio 16) or a broken answer:
+        # the plain look, which may count a corked stream, rather than
+        # hiding a recording.
+        return any(len(row) > 1 and not names.get(row[1], "").endswith(".monitor")
+                   for row in short("source-outputs"))
+    for stream in outputs:
+        if not isinstance(stream, dict):
+            continue
         props = stream.get("properties") or {}
+        if not isinstance(props, dict):
+            props = {}
         filter_own = props.get("media.role") == "filter" and stream.get("client") is None
         if stream.get("corked") or filter_own:
             continue
