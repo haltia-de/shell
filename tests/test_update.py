@@ -236,12 +236,15 @@ class Update(unittest.TestCase):
                      "P:haltia-text\nV:1-r0\nF:usr/bin\nR:haltia-text\n"
                      "F:usr/share/applications\nR:io.github.haltia_de.Text.desktop\n\n"
                      "P:haltia-gst-webrtc\nV:1-r0\nF:usr/lib/gstreamer-1.0\nR:libgstwebrtc.so\n\n"
-                     "P:haltia-desktop\nV:1-r0\n\n")
+                     "P:haltia-desktop\nV:1-r0\n\n"
+                     "P:pavucontrol\nV:1-r0\nF:usr/share/applications\n"
+                     "R:org.pulseaudio.pavucontrol.desktop\n\n")
         self.assertEqual(hu.programs(), {"haltia-shell", "haltia-text"})
         self.assertFalse(hu.needs_session([("haltia-text", "1", "2"),
                                            ("haltia-text-pyc", "1", "2"),
                                            ("py3-haltia-kit", "1", "2")]))
-        for name in ("haltia-gst-webrtc", "haltia-desktop", "haltia-shell", "libnice"):
+        for name in ("haltia-gst-webrtc", "haltia-desktop", "haltia-shell", "libnice",
+                     "pavucontrol"):
             self.assertTrue(hu.needs_session([(name, "1", "2")]), name)
 
     def test_log_outlives_a_closed_window(self):

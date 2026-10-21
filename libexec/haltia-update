@@ -62,9 +62,10 @@ MIN_FREE = 300 * 1024 * 1024
 MIN_CHARGE = 30
 # An update of anything but programs is good only in a session started
 # after it, as the running one still has the old code in memory. A program
-# is a package that installs a .desktop file (apk's database says so), or
-# the kit only programs use; libraries (haltia-gst-webrtc, libnice), the
-# device's packages, meta packages and the shell are not.
+# is one of Haltia's packages that installs a .desktop file (apk's database
+# says so), or the kit only programs use; libraries (haltia-gst-webrtc,
+# libnice), the device's packages, meta packages, the shell and every
+# system package (a library may ship a .desktop file too) are not.
 DESKTOP = re.compile(r"usr/share/applications/[^/]+\.desktop")
 PROGRAM_LIBS = {"py3-haltia-kit"}
 SESSION = {"haltia-shell"}  # installs .desktop files too (Настройки), yet is the session
@@ -915,7 +916,7 @@ def run_checks(kind):
 
 
 def programs():
-    """The installed packages that install a .desktop file."""
+    """Haltia's installed packages that install a .desktop file."""
     found, name, folder = set(), None, ""
     try:
         with open(INSTALLED) as fh:
@@ -924,7 +925,7 @@ def programs():
                     name, folder = line[2:].strip(), ""
                 elif line.startswith("F:"):
                     folder = line[2:].strip()
-                elif line.startswith("R:") and name and \
+                elif line.startswith("R:") and name and is_haltia(name) and \
                         DESKTOP.fullmatch(folder + "/" + line[2:].strip()):
                     found.add(name)
     except OSError:
