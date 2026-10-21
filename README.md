@@ -5,8 +5,10 @@
 уклоном к пожилым людям. Первое устройство — Lenovo YOGA Tablet 10
 (B8000-H, образы Pertin Haltia из
 [device-lenovo-b8000h](https://github.com/haltia-de/device-lenovo-b8000h)),
-но оболочка к нему не привязана (ADR 0004 там же). До 2.0 она называлась
-`b8k-shell`.
+но оболочка к нему не привязана
+([ADR 0004](https://github.com/haltia-de/haltia/blob/main/docs/adr/0004-de-apart-from-device.md)
+в [haltia-de/haltia](https://github.com/haltia-de/haltia)). До 2.0 она
+называлась `b8k-shell`.
 
 - **Панель** слева (waybar) с кнопкой «Домой», закреплёнными и открытыми
   программами, строкой состояния (Wi-Fi, звук, батарея; касание — меню
