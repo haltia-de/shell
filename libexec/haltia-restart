@@ -156,10 +156,16 @@ def restart_helpers():
                 for d in os.environ.get("PATH", "/usr/bin").split(":"))):
             continue
         name = os.path.basename(command)
-        old = [pid for pid, (_pp, names) in procs.items() if name in names]
+        old = [pid for pid, (_pp, names) in procs.items()
+               if name in names and "haltia-keep" not in names]
         if not old:
             continue  # not running here: nothing to bring up to date
+        kept = all("haltia-keep" in procs.get(pp, (0, set()))[1]
+                   for pp, _names in (procs[p] for p in old))
         stop.stop(old)
+        if kept:
+            log("%s stopped, its keeper starts the new one" % name)
+            continue  # haltia-keep starts the new version
         with open(os.path.join(RUN, logname), "a") as out:
             subprocess.Popen([command, *args], stdin=subprocess.DEVNULL, stdout=out,
                              stderr=out, start_new_session=True)

@@ -33,6 +33,31 @@ import os
 import signal
 import subprocess
 import sys
+
+
+_panel = None
+
+
+def panel():
+    """haltia-panel-signal as a module (loaded on first use): signalling
+    the panel, the one way."""
+    global _panel
+    if _panel is None:
+        import importlib.machinery
+        import importlib.util
+        here = os.path.dirname(os.path.realpath(__file__))
+        for path in (os.path.join(here, "haltia-panel-signal"),
+                     os.path.join(here, "..", "bin", "haltia-panel-signal"),
+                     "/usr/bin/haltia-panel-signal"):
+            if os.path.exists(path):
+                loader = importlib.machinery.SourceFileLoader("haltia_panel_signal", path)
+                spec = importlib.util.spec_from_loader("haltia_panel_signal", loader)
+                _panel = importlib.util.module_from_spec(spec)
+                loader.exec_module(_panel)
+                break
+        else:
+            raise OSError("haltia-panel-signal is missing")
+    return _panel
 import time
 
 DEVICE_CONF = "/etc/haltia/device.conf"
@@ -191,15 +216,6 @@ def pids_of(name):
     return found
 
 
-def catches(pid, signum):
-    try:
-        with open("/proc/%d/status" % pid) as fh:
-            mask = next(line for line in fh if line.startswith("SigCgt:"))
-        return bool(int(mask.split()[1], 16) >> (signum - 1) & 1)
-    except (OSError, StopIteration, ValueError):
-        return False
-
-
 def move_panel(orientation):
     """Writes the panel's files for the orientation; True when done."""
     os.makedirs(os.path.dirname(ORIENTATION), exist_ok=True)
@@ -227,12 +243,10 @@ def move_panel(orientation):
 
 def reload_panel():
     """SIGUSR2 to waybar, once it catches it; False to try again later."""
-    bars = [p for p in pids_of("waybar") if os.stat("/proc/%d" % p).st_uid == os.getuid()]
-    if not bars or not all(catches(p, signal.SIGUSR2) for p in bars):
+    try:
+        return panel().reload()
+    except OSError:
         return False
-    for pid in bars:
-        os.kill(pid, signal.SIGUSR2)
-    return True
 
 
 def enabled():

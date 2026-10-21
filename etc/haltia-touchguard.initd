@@ -4,10 +4,17 @@
 # tremor's repeated strikes and a resting palm. Settings in
 # /etc/haltia/touchguard.conf; reload reads them again without letting go of
 # the screen (haltia-touch-settings changes them so).
+#
+# supervise-daemon starts it again when it ends (the screen went away, a
+# crash), at most 10 times a minute; each start looks the screen up afresh.
+# The filter writes its own pid to /run/haltia/touchguard.pid for signals
+# (haltia-touchguard-conf); the service's pidfile is the supervisor's.
 description="Filter for accidental touches"
+supervisor=supervise-daemon
 command=/usr/libexec/haltia/haltia-touchguard
-command_background=yes
-pidfile=/run/haltia/touchguard.pid
+respawn_delay=2
+respawn_max=10
+respawn_period=60
 output_log=/var/log/haltia-touchguard.log
 error_log=/var/log/haltia-touchguard.log
 extra_started_commands="reload"
@@ -15,6 +22,10 @@ description_reload="Read the settings again"
 
 start_pre() {
 	checkpath -d -m 755 /run/haltia
+}
+
+stop_post() {
+	rm -f /run/haltia/touchguard.pid
 }
 
 depend() {
@@ -25,6 +36,6 @@ depend() {
 
 reload() {
 	ebegin "Reloading $RC_SVCNAME"
-	start-stop-daemon --signal HUP --pidfile "$pidfile"
+	supervise-daemon "$RC_SVCNAME" --signal HUP
 	eend $?
 }

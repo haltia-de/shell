@@ -43,14 +43,25 @@ if [ -x /usr/bin/haltia-apps ] && /usr/bin/haltia-apps >"$run"/haltia/apps.log 2
 	panel=yes
 fi
 stamp apps
+# The keepers of an earlier session (haltia-keep) end first, and their
+# daemons with them: one that outlived its compositor would otherwise start
+# a daemon of this session it does not watch over.
+for d in /proc/[0-9]*; do
+	[ -O "$d" ] || continue
+	case $(tr '\0' '\n' <"$d/cmdline" 2>/dev/null | sed -n 2p) in
+	/usr/libexec/haltia/haltia-keep) kill "${d#/proc/}" 2>/dev/null ;;
+	esac
+done
 # The home screen: every program as a tile, on the background layer right
-# of the panel; the panel's home button raises it over the windows.
+# of the panel; the panel's home button raises it over the windows. It and
+# the daemons below run under haltia-keep, which starts one that ends
+# again (a few times a minute at most) until the session ends.
 if [ -x /usr/libexec/haltia/haltia-home ]; then
-	setsid /usr/libexec/haltia/haltia-home >"$run"/haltia/home.log 2>&1 &
+	setsid /usr/libexec/haltia/haltia-keep --session /usr/libexec/haltia/haltia-home >"$run"/haltia/home.log 2>&1 &
 fi
 # The "✕" in the top right corner that closes the program in front.
 if [ -x /usr/libexec/haltia/haltia-close ]; then
-	setsid /usr/libexec/haltia/haltia-close >"$run"/haltia/close.log 2>&1 &
+	setsid /usr/libexec/haltia/haltia-keep --session /usr/libexec/haltia/haltia-close >"$run"/haltia/close.log 2>&1 &
 fi
 # The file chooser's places (MAX's «Сохранить как», Firefox): the usual
 # folders that exist, added once each; one's own bookmarks stay.
@@ -130,13 +141,14 @@ dbus-update-activation-environment NO_AT_BRIDGE GTK_A11Y ${GTK_THEME:+GTK_THEME}
 # Helpers that need no display outlive the session that started them
 # (setsid): one of each, or a volume key steps two or three times. So does
 # the sound server each session's first client spawns: a new one starts on
-# the next pactl. (busybox's pkill has no -u: ps, for this user only.)
+# the next pactl. Their keepers (haltia-keep, whose command line ends with
+# the helper's) go too. (busybox's pkill has no -u: ps, for this user only.)
 for pid in $(ps -o pid,user,args | awk -v u="$(id -un)" '$2 == u &&
-	($NF ~ /\/(haltia|b8k)-(volume|rotate|portal)$/ || $3 == "/usr/bin/pulseaudio") { print $1 }'); do
+	($NF ~ /\/(haltia|b8k)-(volume|rotate|portal|badges)$/ || $3 == "/usr/bin/pulseaudio") { print $1 }'); do
 	kill "$pid" 2>/dev/null
 done
 if [ -x /usr/bin/haltia-focus ]; then
-	setsid /usr/bin/haltia-focus watch >"$run"/haltia/focus-watch.log 2>&1 &
+	setsid /usr/libexec/haltia/haltia-keep --session /usr/bin/haltia-focus watch >"$run"/haltia/focus-watch.log 2>&1 &
 fi
 # Notifications (org.freedesktop.Notifications): large cards at the top
 # that buzz once; a tap opens what they are about.
@@ -188,16 +200,16 @@ after_panel() {
 	# Volume keys. Without this nothing handles them, and a muted sink at 0%
 	# has no way back.
 	if [ -x /usr/libexec/haltia/haltia-volume ]; then
-		setsid /usr/libexec/haltia/haltia-volume >"$run"/haltia/volume.log 2>&1 &
+		setsid /usr/libexec/haltia/haltia-keep --session /usr/libexec/haltia/haltia-volume >"$run"/haltia/volume.log 2>&1 &
 	fi
 	# The screen follows the tablet: portrait on its side, turned over upside
 	# down (off in Настройки → Экран).
 	if [ -x /usr/bin/haltia-rotate ] && command -v wlr-randr >/dev/null; then
-		setsid /usr/bin/haltia-rotate >"$run"/haltia/rotate.log 2>&1 &
+		setsid /usr/libexec/haltia/haltia-keep --session /usr/bin/haltia-rotate >"$run"/haltia/rotate.log 2>&1 &
 	fi
 	# Counts on buttons from programs' Unity LauncherEntry signals.
 	if [ -x /usr/libexec/haltia/haltia-badges ]; then
-		setsid /usr/libexec/haltia/haltia-badges >"$run"/haltia/badges.log 2>&1 &
+		setsid /usr/libexec/haltia/haltia-keep --session /usr/libexec/haltia/haltia-badges >"$run"/haltia/badges.log 2>&1 &
 	fi
 	# Сообщения (MAX) live in the background: messages buzz and the button
 	# counts them with no window open. (Until the program brings an XDG

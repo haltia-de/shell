@@ -57,6 +57,31 @@ import signal
 import subprocess
 import sys
 
+
+_panel = None
+
+
+def panel():
+    """haltia-panel-signal as a module (loaded on first use): signalling
+    the panel, the one way."""
+    global _panel
+    if _panel is None:
+        import importlib.machinery
+        import importlib.util
+        here = os.path.dirname(os.path.realpath(__file__))
+        for path in (os.path.join(here, "haltia-panel-signal"),
+                     os.path.join(here, "..", "bin", "haltia-panel-signal"),
+                     "/usr/bin/haltia-panel-signal"):
+            if os.path.exists(path):
+                loader = importlib.machinery.SourceFileLoader("haltia_panel_signal", path)
+                spec = importlib.util.spec_from_loader("haltia_panel_signal", loader)
+                _panel = importlib.util.module_from_spec(spec)
+                loader.exec_module(_panel)
+                break
+        else:
+            raise OSError("haltia-panel-signal is missing")
+    return _panel
+
 SYSTEM = "/usr/share/haltia/apps.conf"
 SYSTEM_PANEL = "/usr/share/haltia/panel"
 
@@ -564,8 +589,28 @@ def write_style(path, apps, order, panel, slots):
     os.replace(path + ".new", path)
 
 
+def kept_by_keeper(pid):
+    """Whether haltia-keep runs pid (and starts it again when it ends)."""
+    try:
+        with open("/proc/%d/stat" % pid) as fh:
+            stat = fh.read()
+        ppid = int(stat[stat.rindex(")") + 2:].split()[1])
+        with open("/proc/%d/cmdline" % ppid, "rb") as fh:
+            args = fh.read().split(b"\0")
+        # /bin/sh /usr/libexec/haltia/haltia-keep ...
+        return len(args) > 1 and os.path.basename(args[1]) == b"haltia-keep"
+    except (OSError, ValueError, IndexError):
+        return False
+
+
 def reload_session(uid):
-    """Apply the files: waybar rereads its config, haltia-focus starts again."""
+    """Apply the files: waybar rereads its config, haltia-focus starts again
+    (by its keeper, or here for a session started before haltia-keep)."""
+    kept, watchers = True, 0
+    try:
+        panel().reload()  # only a bar that catches SIGUSR2
+    except OSError:
+        pass
     for pid in os.listdir("/proc"):
         if not pid.isdigit():
             continue
@@ -576,10 +621,12 @@ def reload_session(uid):
                 args = fh.read().split(b"\0")
         except OSError:
             continue
-        if args[0].endswith(b"waybar"):
-            os.kill(int(pid), signal.SIGUSR2)
-        elif len(args) > 2 and args[1].endswith(b"haltia-focus") and args[2] == b"watch":
+        if len(args) > 2 and args[1].endswith(b"haltia-focus") and args[2] == b"watch":
+            kept = kept and kept_by_keeper(int(pid))
+            watchers += 1
             os.kill(int(pid), signal.SIGTERM)
+    if watchers and kept:
+        return  # haltia-keep starts the watcher again
     run = os.environ.get("XDG_RUNTIME_DIR", "")
     log = open(os.path.join(run, "haltia/focus-watch.log"), "a") if run else subprocess.DEVNULL
     subprocess.Popen(["/usr/bin/haltia-focus", "watch"], stdout=log, stderr=log,

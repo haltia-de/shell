@@ -35,8 +35,32 @@ import gi
 gi.require_version("Gio", "2.0")
 from gi.repository import Gio, GLib  # noqa: E402
 
+
+_panel = None
+
+
+def panel():
+    """haltia-panel-signal as a module (loaded on first use): signalling
+    the panel, the one way."""
+    global _panel
+    if _panel is None:
+        import importlib.machinery
+        import importlib.util
+        here = os.path.dirname(os.path.realpath(__file__))
+        for path in (os.path.join(here, "haltia-panel-signal"),
+                     os.path.join(here, "..", "bin", "haltia-panel-signal"),
+                     "/usr/bin/haltia-panel-signal"):
+            if os.path.exists(path):
+                loader = importlib.machinery.SourceFileLoader("haltia_panel_signal", path)
+                spec = importlib.util.spec_from_loader("haltia_panel_signal", loader)
+                _panel = importlib.util.module_from_spec(spec)
+                loader.exec_module(_panel)
+                break
+        else:
+            raise OSError("haltia-panel-signal is missing")
+    return _panel
+
 SHARE = "/usr/share/haltia"
-WAYBAR = "/usr/bin/waybar"
 
 
 def apps_conf():
@@ -102,20 +126,10 @@ def redraw(*sigs):
 
 
 def send(signum):
-    for pid in os.listdir("/proc"):
-        if not pid.isdigit():
-            continue
-        try:
-            if os.readlink("/proc/%s/exe" % pid) != WAYBAR:
-                continue
-            if os.stat("/proc/" + pid).st_uid != os.getuid():
-                continue
-            with open("/proc/%s/status" % pid) as fh:
-                caught = next((int(l.split()[1], 16) for l in fh if l.startswith("SigCgt:")), 0)
-            if caught >> (signum - 1) & 1:
-                os.kill(int(pid), signum)
-        except (OSError, ValueError):
-            continue
+    try:
+        panel().send(signum)
+    except OSError:
+        pass
 
 
 shown = {}  # bus name -> the ids it set a count for

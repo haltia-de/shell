@@ -10,10 +10,34 @@ in the input group. The keypad is only read, not grabbed.
 import ctypes
 import os
 import select
-import signal
 import struct
 import subprocess
 import sys
+
+
+_panel = None
+
+
+def panel():
+    """haltia-panel-signal as a module (loaded on first use): signalling
+    the panel, the one way."""
+    global _panel
+    if _panel is None:
+        import importlib.machinery
+        import importlib.util
+        here = os.path.dirname(os.path.realpath(__file__))
+        for path in (os.path.join(here, "haltia-panel-signal"),
+                     os.path.join(here, "..", "bin", "haltia-panel-signal"),
+                     "/usr/bin/haltia-panel-signal"):
+            if os.path.exists(path):
+                loader = importlib.machinery.SourceFileLoader("haltia_panel_signal", path)
+                spec = importlib.util.spec_from_loader("haltia_panel_signal", loader)
+                _panel = importlib.util.module_from_spec(spec)
+                loader.exec_module(_panel)
+                break
+        else:
+            raise OSError("haltia-panel-signal is missing")
+    return _panel
 import time
 
 KEY_VOLUMEDOWN = 114
@@ -62,23 +86,12 @@ def volume():
 
 
 def refresh_bar():
-    # The volume in the drawer and the handle (a muted speaker) listen on
-    # SIGRTMIN+10. Signal only a bar that catches it: an uncaught real-time
-    # signal would kill the bar.
-    signum = signal.SIGRTMIN + 10
-    for pid in os.listdir("/proc"):
-        if not pid.isdigit():
-            continue
-        try:
-            with open("/proc/%s/comm" % pid) as fh:
-                if fh.read().strip() != "waybar":
-                    continue
-            with open("/proc/%s/status" % pid) as fh:
-                cgt = next(l for l in fh if l.startswith("SigCgt:"))
-            if int(cgt.split()[1], 16) >> (signum - 1) & 1:
-                os.kill(int(pid), signum)
-        except (OSError, StopIteration, ValueError):
-            pass
+    # The speaker in the status listens on SIGRTMIN+10 (only a bar that
+    # catches it gets it).
+    try:
+        panel().refresh(10)
+    except OSError:
+        pass
 
 
 def step(level, by):
@@ -94,7 +107,10 @@ def step(level, by):
 def main():
     path = find_keypad()
     if not path:
-        sys.exit("haltia-volume: no device with volume keys")
+        # Nothing to do on this machine: a clean end, which haltia-keep
+        # leaves off instead of starting it again and again.
+        sys.stderr.write("haltia-volume: no device with volume keys\n")
+        return 0
     try:
         dev = open(path, "rb", buffering=0)
     except OSError as exc:
@@ -112,8 +128,10 @@ def main():
                 continue
             data = dev.read(EVENT.size)
             if len(data) < EVENT.size:
-                time.sleep(1)
-                continue
+                # The keypad went away (EOF): end, and haltia-keep starts
+                # this again, which looks the keypad up afresh, instead of
+                # waking every second on a dead device.
+                sys.exit("haltia-volume: %s: gone" % path)
             _sec, _usec, etype, code, value = EVENT.unpack(data)
             if etype != EV_KEY or code not in (KEY_VOLUMEUP, KEY_VOLUMEDOWN):
                 continue
@@ -128,4 +146,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
