@@ -137,6 +137,7 @@ class Portal:
         self.loop = loop
         self.conn = None
         self.requests = {}  # handle -> registration id
+        self.made = 0  # requests made, for tokens of their own
         self.pids = {}
 
     def connected(self, conn, _name):
@@ -162,7 +163,9 @@ class Portal:
 
     # --- requests -----------------------------------------------------------
     def new_request(self, sender, options):
-        token = options.get("handle_token") or "haltia%d" % (len(self.requests) + 1)
+        # A running count: len(requests) + 1 could name one still open.
+        self.made += 1
+        token = options.get("handle_token") or "haltia%d" % self.made
         handle = request_path(sender, str(token))
         if handle in self.requests:
             return None
