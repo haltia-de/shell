@@ -291,6 +291,14 @@ class Update(unittest.TestCase):
                 mock.patch("urllib.request.urlopen", lambda *_a, **_k: Answer(whole)):
             hu.update_catalogs()
             self.assertTrue(os.path.exists(hu.catalog_path(repo)))
+        # A small download that unpacks past the reader's bound is refused.
+        os.unlink(hu.catalog_path(repo))
+        bomb = gzip.compress(b"\0" * (hu.CATALOG_MAX * 8 + 1))
+        self.assertLess(len(bomb), hu.CATALOG_MAX)
+        with mock.patch.object(hu, "repositories", lambda: [repo]), \
+                mock.patch("urllib.request.urlopen", lambda *_a, **_k: Answer(bomb)):
+            hu.update_catalogs()
+            self.assertFalse(os.path.exists(hu.catalog_path(repo)))
 
     def test_hanging_check_counts_as_failed(self):
         os.makedirs(os.path.join(hu.HEALTH, "required.d"))

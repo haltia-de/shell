@@ -317,6 +317,7 @@ def update_catalogs():
     what is new in every version, without downloading packages."""
     import gzip
     import http.client
+    import io
     import urllib.error
     import urllib.request
     for repo in repositories():
@@ -342,9 +343,19 @@ def update_catalogs():
         if len(data) > CATALOG_MAX:
             continue
         # Kept under its ETag, a download cut short would be answered 304
-        # from now on: keep only a catalog that unpacks whole (SH2-20).
+        # from now on: keep only a catalog that unpacks whole (SH2-20), and
+        # within the bound the reader takes (catalog_component), never
+        # unpacked all at once into this root process's memory.
         try:
-            gzip.decompress(data)
+            unpacked = 0
+            with gzip.GzipFile(fileobj=io.BytesIO(data)) as fh:
+                while True:
+                    chunk = fh.read(65536)
+                    if not chunk:
+                        break
+                    unpacked += len(chunk)
+                    if unpacked > CATALOG_MAX * 8:
+                        raise ValueError("too large unpacked")
         except (OSError, EOFError, ValueError):
             continue
         os.makedirs(os.path.dirname(path), exist_ok=True)
