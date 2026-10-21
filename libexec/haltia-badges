@@ -295,8 +295,10 @@ def short(*args):
 def microphone():
     """Some program records from a source that is not a monitor (the
     speaker's own sound). A corked stream captures nothing, and a filter's
-    own stream is no program recording (module-echo-cancel's, media.role
-    filter, which the B8000-H keeps loaded for calls): neither counts."""
+    own stream is no program recording (module-echo-cancel's, which the
+    B8000-H keeps loaded for calls): neither counts. A filter's stream is
+    one a module made, with no client; media.role alone is the program's
+    word, so a client's "filter" stream still counts."""
     try:
         # In C: pactl warns of translated text and its JSON breaks.
         out = subprocess.run(["pactl", "-f", "json", "list", "source-outputs"],
@@ -308,7 +310,8 @@ def microphone():
     names = {row[0]: row[1] for row in short("sources") if len(row) > 1}
     for stream in outputs if isinstance(outputs, list) else []:
         props = stream.get("properties") or {}
-        if stream.get("corked") or props.get("media.role") == "filter":
+        filter_own = props.get("media.role") == "filter" and stream.get("client") is None
+        if stream.get("corked") or filter_own:
             continue
         if not names.get(str(stream.get("source")), "").endswith(".monitor"):
             return True

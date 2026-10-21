@@ -58,10 +58,17 @@ class Microphone(unittest.TestCase):
                                       "properties": {"media.role": "phone"}}))
 
     def test_the_echo_canceller_does_not(self):
-        self.assertFalse(self.streams({"source": 1, "corked": True, "properties": {
-            "media.name": "Echo-Cancel Source Stream", "media.role": "filter"}}))
-        self.assertFalse(self.streams({"source": 1, "corked": False,
+        self.assertFalse(self.streams({"source": 1, "corked": True, "client": None,
+                                       "owner_module": "19", "properties": {
+                                           "media.name": "Echo-Cancel Source Stream",
+                                           "media.role": "filter"}}))
+        self.assertFalse(self.streams({"source": 1, "corked": False, "client": None,
+                                       "owner_module": "19",
                                        "properties": {"media.role": "filter"}}))
+
+    def test_a_program_calling_itself_a_filter_still_counts(self):
+        self.assertTrue(self.streams({"source": 1, "corked": False, "client": "7",
+                                      "properties": {"media.role": "filter"}}))
 
     def test_corked_or_monitor_does_not(self):
         self.assertFalse(self.streams({"source": 1, "corked": True, "properties": {}}))
@@ -70,8 +77,10 @@ class Microphone(unittest.TestCase):
 
     def test_the_canceller_beside_a_call(self):
         self.assertTrue(self.streams(
-            {"source": 1, "corked": False, "properties": {"media.role": "filter"}},
-            {"source": 2, "corked": False, "properties": {"media.role": "phone"}}))
+            {"source": 1, "corked": False, "client": None,
+             "properties": {"media.role": "filter"}},
+            {"source": 2, "corked": False, "client": "7",
+             "properties": {"media.role": "phone"}}))
 
 
 if __name__ == "__main__":
