@@ -1,5 +1,21 @@
 # Что нового · What's new
 
+## 2.11.0 (2026-10-22)
+
+### Русский
+
+- На первом экране программы, где уже нет «Назад», кнопка «Домой» слева вверху скрывает программу и показывает домашний экран; программа остаётся открытой на панели
+- Кнопка «Домой» появляется в программах по мере их обновления; в Firefox, калькуляторе и Пасьянсах она доступна сразу
+- Значок микрофона на панели загорается только во время настоящей записи
+- В портретном положении часы на панели видны целиком и при значке записи
+
+### English
+
+- On a program’s first screen, where there is no Back any more, the Home button at the top left hides the program and shows the home screen; the program stays open on the panel
+- Programs gain the Home button as they are updated; Firefox, the calculator and Cards have it at once
+- The microphone sign on the panel lights only while something really records
+- In portrait the panel keeps the clock whole while the recording sign is shown
+
 ## 2.10.0 (2026-10-21)
 
 ### Русский

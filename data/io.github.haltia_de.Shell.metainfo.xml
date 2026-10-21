@@ -17,6 +17,22 @@
   <content_rating type="oars-1.1"/>
   <developer id="io.github.haltia_de"><name>Mikhail Nevskiy</name></developer>
   <releases>
+    <release version="2.11.0" date="2026-10-22">
+      <description>
+        <ul>
+          <li>On a program’s first screen, where there is no Back any more, the Home button at the top left hides the program and shows the home screen; the program stays open on the panel</li>
+          <li>Programs gain the Home button as they are updated; Firefox, the calculator and Cards have it at once</li>
+          <li>The microphone sign on the panel lights only while something really records</li>
+          <li>In portrait the panel keeps the clock whole while the recording sign is shown</li>
+        </ul>
+        <ul>
+          <li xml:lang="ru">На первом экране программы, где уже нет «Назад», кнопка «Домой» слева вверху скрывает программу и показывает домашний экран; программа остаётся открытой на панели</li>
+          <li xml:lang="ru">Кнопка «Домой» появляется в программах по мере их обновления; в Firefox, калькуляторе и Пасьянсах она доступна сразу</li>
+          <li xml:lang="ru">Значок микрофона на панели загорается только во время настоящей записи</li>
+          <li xml:lang="ru">В портретном положении часы на панели видны целиком и при значке записи</li>
+        </ul>
+      </description>
+    </release>
     <release version="2.10.0" date="2026-10-21">
       <description>
         <ul>
