@@ -11,8 +11,17 @@
 # repeat_radius, palm_major, palm_pressure and tap_radius are hundredths of
 # a percent of the screen's axis in ranges and set (7333), and go into the
 # file as percent ("73.33%"), which haltia-touchguard reads.
-#   haltia-touchguard-conf set KEY=VALUE...    write them and reload the filter
+#   haltia-touchguard-conf set KEY=VALUE...    try them: TRY, then reload the filter
+#   haltia-touchguard-conf keep [KEY=VALUE...] write them into CONF, forget the try
+#   haltia-touchguard-conf drop                forget what is tried
 #   haltia-touchguard-conf log on|off          log every decision (15 min) or stop
+#
+# A value is tried in TRY (tmpfs, read by the filter over CONF) and reaches
+# CONF only on keep («Оставить»). Each set starts a watch that drops what
+# is tried TRY_S seconds on unless it was kept or tried again, so a window
+# killed, crashed or closed by a session restart mid-try leaves nothing
+# behind: an untried value could turn every tap into a slide until a helper
+# came.
 #
 # The decisions go to EVENTS, made afresh for the user doas ran this for
 # (DOAS_USER) and readable by them alone: they hold where each touch landed.
@@ -22,6 +31,8 @@ CONF=/etc/haltia/touchguard.conf
 [ -e "$CONF" ] || [ ! -e /etc/b8k/touchguard.conf ] || CONF=/etc/b8k/touchguard.conf
 PIDFILE=/run/haltia/touchguard.pid
 EVENTS=/run/haltia/touchguard.events
+TRY=/run/haltia/touchguard.try
+TRY_S=20 # the window's 15 s to tap «Оставить», and a margin
 
 RANGES='hold_ms 0 300
 repeat_ms 0 1500
@@ -43,12 +54,40 @@ signal() {
 	kill -"$1" "$pid"
 }
 
-case ${1:-} in
-ranges)
-	printf '%s\n' "$RANGES"
-	;;
-set)
-	shift
+# merge FILE [TAIL]: FILE with the "key = value" lines on stdin put in,
+# each in place of the same key's line (comments stay), the rest at the end;
+# any "# token" line goes, and TAIL ends the file. One mv: a watch never sees
+# the new values under an old token. No lines: FILE is left as it is.
+merge() {
+	lines=$1.lines
+	grep '^[a-z_]* = ' >"$lines" || true
+	if [ ! -s "$lines" ]; then
+		rm -f "$lines"
+		return 0
+	fi
+	[ -f "$1" ] || : >"$1"
+	awk -v tail="${2:-}" '
+		FILENAME == ARGV[1] { k = $1; line[k] = $0; order[++n] = k; next }
+		/^# token / { next }
+		/^[ \t]*[a-z_]+[ \t]*=/ {
+			k = $0
+			sub(/^[ \t]*/, "", k)
+			sub(/[ \t]*=.*/, "", k)
+			if (k in line) { print line[k]; done[k] = 1; next }
+		}
+		{ print }
+		END {
+			for (i = 1; i <= n; i++)
+				if (!(order[i] in done)) { print line[order[i]]; done[order[i]] = 1 }
+			if (tail != "") print tail
+		}' "$lines" "$1" >"$1.new"
+	rm -f "$lines"
+	chmod 644 "$1.new"
+	mv "$1.new" "$1"
+}
+
+# check KEY=VALUE...: known keys, whole numbers in their ranges, or exit 2.
+check() {
 	[ $# -gt 0 ] || exit 2
 	for kv in "$@"; do
 		key=${kv%%=*} val=${kv#*=}
@@ -63,42 +102,62 @@ set)
 			exit 2
 		fi
 	done
-	# The file keeps its comments: a key's line is replaced in place, a key
-	# it lacks goes at the end.
-	tmp=$CONF.new
-	[ -f "$CONF" ] || : >"$CONF"
-	awk -v pairs="$*" '
-		BEGIN {
-			n = split(pairs, a, " ")
-			for (i = 1; i <= n; i++) {
-				split(a[i], kv, "=")
-				val[kv[1]] = kv[2] + 0
-				if (kv[1] ~ /^(repeat_radius|palm_major|palm_pressure|tap_radius)$/)
-					val[kv[1]] = sprintf("%d.%02d%%", val[kv[1]] / 100, val[kv[1]] % 100)
-				order[i] = kv[1]
-			}
-		}
-		/^[ \t]*[a-z_]+[ \t]*=/ {
-			k = $0
-			sub(/^[ \t]*/, "", k)
-			sub(/[ \t]*=.*/, "", k)
-			if (k in val) {
-				print k " = " val[k]
-				done[k] = 1
-				next
-			}
-		}
-		{ print }
-		END {
-			for (i = 1; i <= n; i++)
-				if (!(order[i] in done)) {
-					print order[i] " = " val[order[i]]
-					done[order[i]] = 1
-				}
-		}' "$CONF" >"$tmp"
-	chmod 644 "$tmp"
-	mv "$tmp" "$CONF"
+}
+
+# lines KEY=VALUE...: them as the filter reads them ("tap_radius = 9.00%").
+lines() {
+	for kv in "$@"; do
+		key=${kv%%=*} val=$(printf '%s' "${kv#*=}" | sed 's/^0*\(.\)/\1/')
+		case $key in
+		repeat_radius | palm_major | palm_pressure | tap_radius)
+			printf '%s = %d.%02d%%\n' "$key" $((val / 100)) $((val % 100)) ;;
+		*) printf '%s = %d\n' "$key" "$val" ;;
+		esac
+	done
+}
+
+# reload: tell the filter; a filter that is down reads the files as it
+# starts, so that is no failure of what was asked.
+reload() {
+	pid=$(cat "$PIDFILE" 2>/dev/null) && kill -HUP "$pid" 2>/dev/null ||
+		echo "haltia-touchguard-conf: the filter is not running; it reads this as it starts" >&2
+}
+
+case ${1:-} in
+ranges)
+	printf '%s\n' "$RANGES"
+	;;
+set)
+	shift
+	check "$@"
+	# What is tried: TRY, with a token for the watch, written in one go.
+	token=$(date +%s)$$
+	lines "$@" | merge "$TRY" "# token $token"
+	# The watch first: a filter that is down must not leave the try behind
+	# for its next start. Nobody kept or tried again in TRY_S s: drop it.
+	setsid sh -c '
+		sleep "$1"
+		[ "$(sed -n "s/^# token //p" "$2" 2>/dev/null)" = "$3" ] || exit 0
+		rm -f "$2"
+		pid=$(cat "$4" 2>/dev/null) && kill -HUP "$pid"
+	' watch "$TRY_S" "$TRY" "$token" "$PIDFILE" </dev/null >/dev/null 2>&1 &
 	signal HUP
+	;;
+keep)
+	# «Оставить»: the values the window shows go into the file (comments
+	# kept), whether or not a try is still there (the watch may have
+	# dropped it), and the try goes.
+	shift
+	if [ $# -gt 0 ]; then
+		check "$@"
+		lines "$@" | merge "$CONF"
+	fi
+	rm -f "$TRY"
+	reload
+	;;
+drop)
+	rm -f "$TRY"
+	reload
 	;;
 log)
 	case ${2:-} in
@@ -119,7 +178,7 @@ log)
 	esac
 	;;
 *)
-	echo "usage: haltia-touchguard-conf ranges | set KEY=VALUE... | log on|off" >&2
+	echo "usage: haltia-touchguard-conf ranges | set KEY=VALUE... | keep [KEY=VALUE...] | drop | log on|off" >&2
 	exit 2
 	;;
 esac
