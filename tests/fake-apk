@@ -9,7 +9,8 @@ FAKE_REPO: JSON {name: [versions, oldest first]} the repositories offer.
 FAKE_DEPS: JSON {"name-version": [names it depends on]}.
 FAKE_FAIL: words: "upgrade" (fails before changing anything, as when
   every download fails), "upgrade-half" (changes one package, then fails),
-  "add-files" (refuses to add .apk files), "update".
+  "add-files" (refuses to add .apk files), "update", "noisy" (prints 400 KB
+  to stdout during upgrade, before the progress pipe closes).
 FAKE_CALLS: each call's arguments are appended here, one JSON list a line.
 """
 import json
@@ -156,6 +157,10 @@ def main():
                 if dep not in db:
                     db[dep] = newest(dep)
         write_db(db)
+        if "noisy" in FAIL:
+            # Triggers that print a lot while the progress pipe is open.
+            sys.stdout.write("trigger output line\n" * 20000)
+            sys.stdout.flush()
         for opt in opts:
             if isinstance(opt, tuple) and opt[0] == "--progress-fd":
                 os.write(int(opt[1]), b"1/1\n")
