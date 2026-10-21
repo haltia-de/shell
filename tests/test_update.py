@@ -138,6 +138,19 @@ class Update(unittest.TestCase):
         self.assertEqual(hu.held(), {})
         self.assertEqual(hu.snapshots(), [])
 
+    def test_failed_upgrade_keeps_the_oldest_snapshots(self):
+        for sid in ("20260101000000", "20260102000000", "20260103000000",
+                    "20260104000000", "20260105000000"):
+            os.makedirs(os.path.join(hu.STATE, sid))
+        self.fail("upgrade")
+        self.assertEqual(hu.upgrade(), 1)
+        self.assertEqual(len(hu.snapshots()), 5)
+        self.assertIn("20260101000000", hu.snapshots())
+        self.fail("")
+        self.assertEqual(hu.upgrade(), 0)
+        self.assertEqual(len(hu.snapshots()), 5)
+        self.assertNotIn("20260101000000", hu.snapshots())
+
     def test_failed_rollback_keeps_snapshot_and_pending(self):
         self.assertEqual(hu.upgrade(), 0)
         world = self.world()

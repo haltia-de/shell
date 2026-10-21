@@ -584,9 +584,14 @@ def take_snapshot(changes_):
     write_json(os.path.join(path, "snapshot.json"), {
         "versions": installed(), "world": read_world(), "changes": changes_,
         "missing": missing, "time": int(time.time())})
+    return sid, missing
+
+
+def drop_old_snapshots():
+    """KEEP snapshots stay; only after a good upgrade, so that a failed one
+    never costs the oldest way back."""
     for old in snapshots()[KEEP:]:
         shutil.rmtree(os.path.join(STATE, old), ignore_errors=True)
-    return sid, missing
 
 
 def stage(name):
@@ -677,6 +682,7 @@ def upgrade(auto=False, names=()):
         return 1
     write_json(os.path.join(STATE, "pending.json"), {"snapshot": sid, "boots": 0,
                                                      "starts": [], "auto": auto})
+    drop_old_snapshots()
     # What check found and this installed is no longer to be updated.
     status = read_json(os.path.join(STATE, "status.json"), {})
     done = {c[0] for c in plan}
