@@ -20,7 +20,9 @@ screen is off:
 
 The program keeps the screen on while it rings and during the call with
 a logind idle inhibitor (haltia-kit's Awake), as a video does, and closes
-the notification when the ringing stops.
+the notification when the ringing stops. Replacing the notification (a
+new text while it rings) makes mako run this again; the same id within
+AGAIN_AFTER seconds is left alone.
 """
 import configparser
 import json
@@ -88,17 +90,44 @@ def front():
         return ""
 
 
+HANDLED = "call-handled"  # in $XDG_RUNTIME_DIR/haltia: "ID TIME" of the last call
+AGAIN_AFTER = 120  # s: the same notification replaced (mako runs this again) is left alone
+
+
+def handled_before(call_id):
+    """Whether this notification was brought to the front already: mako
+    runs on-notify again when a program replaces its notification (the
+    ringing's text changes), which must not wake and raise every time."""
+    path = os.path.join(os.environ.get("XDG_RUNTIME_DIR", "/tmp"), "haltia", HANDLED)
+    try:
+        with open(path) as fh:
+            old_id, at = fh.read().split()
+        if int(old_id) == call_id and time.time() - float(at) < AGAIN_AFTER:
+            return True
+    except (OSError, ValueError):
+        pass
+    try:
+        with open(path + ".new", "w") as fh:
+            fh.write("%d %d\n" % (call_id, time.time()))
+        os.replace(path + ".new", path)
+    except OSError:
+        pass
+    return False
+
+
 def main():
     started = time.monotonic()
+    call = ringing()
+    if call is None:
+        log("no %s notification" % CATEGORY)
+        return 1
+    if handled_before(call.get("id", 0)):
+        return 0
     quiet(os.path.join(LIBEXEC, "haltia-wake"), timeout=5)
     quiet(os.path.join(LIBEXEC, "haltia-home"), "hide", timeout=5)
     for _ in range(2):
         quiet(os.path.join(LIBEXEC, "haltia-press"), "call", timeout=5)
         time.sleep(0.15)
-    call = ringing()
-    if call is None:
-        log("no %s notification" % CATEGORY)
-        return 1
     if "default" in (call.get("actions") or {}):
         quiet("makoctl", "invoke", "-n", str(call["id"]), "default")
     ids = app_ids(call.get("desktop_entry") or call.get("app_name"))
