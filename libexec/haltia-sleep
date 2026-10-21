@@ -6,7 +6,9 @@ released; holding it for a second opens the power menu (haltia-ask power)
 in the user's session instead. Ten minutes without a touch or a key turn
 the lamp off as a short press would, so a tablet left lying on the table
 does not light the room for hours. Thirty seconds after the lamp goes off,
-the system sleeps (s2idle): through the device's hook
+the system sleeps (s2idle), unless a charger powers it (a Mains or USB
+power supply online: then it stays up with the lamp off, so Wi-Fi and the
+messenger keep working and a call can wake the lamp): through the device's hook
 /usr/lib/haltia/hooks/suspend when it is there (B8000-H moves its Wi-Fi
 drivers out of the way in it), else by writing "freeze" to
 /sys/power/state. A wake source (the power key) wakes it, and the same
@@ -55,6 +57,7 @@ IDLE_OFF = 600.0  # seconds without any input before the screen goes off
 SCREEN_CONF = ".config/haltia/screen"
 SCREEN_CHECK = 30.0  # seconds between looks at that file and the charger
 RESCAN_SEC = 30.0  # how often the input devices are looked at again
+POWER_SUPPLY = "/sys/class/power_supply"
 SUSPEND_HOOK = "/usr/lib/haltia/hooks/suspend"
 POWER_STATE = "/sys/power/state"
 DEVICE_CONF = "/etc/haltia/device.conf"
@@ -197,6 +200,40 @@ def idle_off():
     if _screen["keep"] and _screen["charging"]:
         return None
     return _screen["off"]
+
+
+_power = {"at": -SCREEN_CHECK, "on": False}
+
+
+def external_power():
+    """Whether a charger powers the tablet now: a power supply of type
+    Mains or USB (USB_DCP, USB_PD...) that is online. Not the battery's
+    status: a full battery says Full, and some chargers report Not
+    charging while they power the system. Looked at once in SCREEN_CHECK."""
+    now = time.monotonic()
+    if now - _power["at"] < SCREEN_CHECK:
+        return _power["on"]
+    on = False
+    try:
+        names = os.listdir(POWER_SUPPLY)
+    except OSError:
+        names = []
+    for name in names:
+        base = os.path.join(POWER_SUPPLY, name)
+        try:
+            with open(os.path.join(base, "type")) as fh:
+                kind = fh.read().strip()
+            with open(os.path.join(base, "online")) as fh:
+                online = fh.read().strip() == "1"
+        except OSError:
+            continue
+        if online and (kind == "Mains" or kind.startswith("USB")):
+            on = True
+            break
+    if on != _power["on"]:
+        log("POWER %s" % ("external" if on else "battery"))
+    _power.update(at=now, on=on)
+    return on
 
 
 def charging():
@@ -436,6 +473,13 @@ class Lamp:
         """Seconds until the screen-off timer asks for a system sleep."""
         if not self.asleep or suspend_command() is None:
             return None
+        if external_power():
+            # On the charger the system stays up with the screen off: Wi-Fi
+            # and the messenger keep working, a call wakes the screen
+            # (calls plan, step 7). Unplugged while dark, it sleeps
+            # SUSPEND_AFTER later; look again then.
+            self.since = time.monotonic()
+            return SCREEN_CHECK
         if awake_held("suspend"):
             self.since = time.monotonic()  # check again a full delay later
         if self.suspender is not None:
