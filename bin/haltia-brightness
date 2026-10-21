@@ -185,8 +185,14 @@ class Brightness:
                 sys.stderr.write("haltia-brightness: %s: %s\n" % (path, exc.message))
 
 
+DARK = "/run/haltia/screen-dark"
+
+
 def restore():
-    if not BACKLIGHT:
+    """The kept level, at a session start. Not while haltia-sleep keeps the
+    screen off (a session restarted at night): a lit screen with the touch
+    still grabbed ignored every finger until the power key."""
+    if not BACKLIGHT or os.path.exists(DARK):
         return 0
     level = read_int(SAVED, 0)
     if level >= LOWEST:
