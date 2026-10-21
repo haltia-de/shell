@@ -1096,13 +1096,16 @@ static int command(const char *cmd)
 
 static void arm_minute(int tfd)
 {
-	/* Fire at the start of every minute, so the clock turns on time. */
+	/* Fire at the start of every minute, so the clock turns on time. A
+	 * clock set back (Настройки, NTP) would leave an absolute timer waiting
+	 * for the old minute: CANCEL_ON_SET wakes it at once instead (the read
+	 * fails with ECANCELED and the caller arms it again). */
 	struct timespec now;
 	struct itimerspec t = { { 60, 0 }, { 0, 0 } };
 
 	clock_gettime(CLOCK_REALTIME, &now);
 	t.it_value.tv_sec = now.tv_sec - now.tv_sec % 60 + 60;
-	timerfd_settime(tfd, TFD_TIMER_ABSTIME, &t, NULL);
+	timerfd_settime(tfd, TFD_TIMER_ABSTIME | TFD_TIMER_CANCEL_ON_SET, &t, NULL);
 }
 
 int main(int argc, char **argv)
