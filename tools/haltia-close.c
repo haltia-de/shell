@@ -23,13 +23,13 @@
  * The second square stands at the top left, right of the panel (exclusive
  * zone 0, so it follows the panel; in portrait the panel is at the bottom
  * and it stands in the screen's corner), where a program's header has its
- * "←". It shows only while the program in front has no step back:
- * haltia-badges follows the program's GTK action app.back (org.gtk.Actions)
- * into haltia/launch/back, "APP_ID 1" while there is a step back, "APP_ID 0"
- * otherwise; a program without the action gets no line and always has the
- * button. A new program in front waits up to GRACE_MS for that line, so the
- * button does not flash over the "←" of a program open on a deeper page.
- * Not under a curtain, not over the home screen. Drawn as the "✕" but with
+ * "←". It shows only while haltia/launch/back says "APP_ID 0" for the
+ * program in front: haltia-badges follows the program's GTK action
+ * app.back (org.gtk.Actions), "1" while there is a step back, "0" when
+ * there is none, "-" for a program without the action (its own "←" may
+ * stand there), and "0" always for one not our own (back = none in
+ * apps.conf: Firefox, the calculator, the cards). No line for the program
+ * in front yet, no button. Not under a curtain, not over the home screen. Drawn as the "✕" but with
  * an arrow into a bar, pointing at the panel (left, or down in portrait),
  * blue under the finger; a tap runs haltia-launch home (the home screen up,
  * the program's panel button flashed).
@@ -50,7 +50,6 @@
 #include <sys/signalfd.h>
 #include <sys/stat.h>
 #include <sys/timerfd.h>
-#include <time.h>
 #include <unistd.h>
 #include <wayland-client.h>
 
@@ -66,7 +65,6 @@
 #define W (SQ + RIGHT + 6)
 #define H (TOP + SQ + 8)
 #define POLL_S 2 /* a look at the files now and then, besides the signal */
-#define GRACE_MS 300 /* a new front program's word on app.back */
 
 extern char **environ;
 
@@ -76,7 +74,7 @@ static struct wl_seat *seat;
 static struct zwlr_layer_shell_v1 *layer_shell;
 static struct wl_touch *touch;
 static struct wl_pointer *pointer;
-static int running = 1, portrait, wait_ms = -1;
+static int running = 1, portrait;
 static int32_t touch_id = -1;
 
 struct buffer {
@@ -134,26 +132,16 @@ static int exists(const char *name)
 	return !stat(path, &st);
 }
 
-static long long now_ms(void)
-{
-	struct timespec ts;
-
-	clock_gettime(CLOCK_MONOTONIC, &ts);
-	return (long long)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
-}
-
 /* What shows: the close button while something to close is in front (a
  * front app id, or a program under its curtain), and no home screen up; the
- * home button while a program in front has no step back. */
+ * home button while haltia-badges says the program in front has no step
+ * back ("APP_ID 0"). */
 static void wanted(int *close_on, int *home_on)
 {
-	static char seen[256];
-	static long long since;
 	char front[256], back[300], orient[32];
 	size_t len;
 
 	*close_on = *home_on = 0;
-	wait_ms = -1;
 	read_first("orientation", orient, sizeof(orient));
 	portrait = !strcmp(orient, "portrait");
 	if (exists("home.raised"))
@@ -165,21 +153,9 @@ static void wanted(int *close_on, int *home_on)
 	if (read_first("launch/front", front, sizeof(front)) < 0 || !front[0])
 		return;
 	*close_on = 1;
-	if (strcmp(front, seen)) {
-		snprintf(seen, sizeof(seen), "%s", front);
-		since = now_ms();
-	}
 	len = strlen(front);
 	read_first("launch/back", back, sizeof(back));
-	if (!strncmp(back, front, len) && back[len] == ' ') {
-		*home_on = back[len + 1] != '1';
-	} else {
-		long long left = since + GRACE_MS - now_ms();
-
-		*home_on = left <= 0;
-		if (left > 0)
-			wait_ms = (int)left;
-	}
+	*home_on = !strncmp(back, front, len) && !strcmp(back + len, " 0");
 }
 
 static void spawn(const char *a0, const char *a1)
@@ -640,7 +616,7 @@ int main(int argc, char **argv)
 		while (wl_display_prepare_read(display) != 0)
 			wl_display_dispatch_pending(display);
 		wl_display_flush(display);
-		if (poll(fds, 3, wait_ms) < 0 && errno != EINTR) {
+		if (poll(fds, 3, -1) < 0 && errno != EINTR) {
 			wl_display_cancel_read(display);
 			break;
 		}
@@ -652,8 +628,6 @@ int main(int argc, char **argv)
 		}
 		if (wl_display_dispatch_pending(display) < 0)
 			break;
-		if (wait_ms >= 0)
-			update(); /* the grace for a new front program may be over */
 		if (fds[1].revents & POLLIN) {
 			struct signalfd_siginfo si;
 

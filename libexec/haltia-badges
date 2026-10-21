@@ -422,12 +422,27 @@ def object_path(app_id):
     return "/" + app_id.replace(".", "/").replace("-", "_")
 
 
+def foreign_ids():
+    """The window app ids of programs not our own (back = none in apps.conf:
+    Firefox, the calculator, the cards), which have no app.back to say when
+    they are on their first screen: the home button always shows over them."""
+    conf = configparser.ConfigParser(interpolation=None)
+    try:
+        conf.read(apps_conf(), encoding="utf-8")
+    except configparser.Error:
+        return frozenset()
+    return frozenset(i for sec in conf.sections() if conf[sec].get("back") == "none"
+                     for i in conf[sec].get("app_ids", "").split())
+
+
 class BackStep:
     """Whether the program in front has a step back, for haltia-close's
     home button at the top left: its GTK action app.back, which
     GApplication publishes on the bus by itself (org.gtk.Actions), enabled
-    while there is one. haltia/launch/back holds "APP_ID 1" or "APP_ID 0";
-    a program without the action, or not on the bus, has none (0)."""
+    while there is one. haltia/launch/back holds "APP_ID 1" (a step back:
+    its own «←»), "APP_ID 0" (none: the home button) or "APP_ID -" (no
+    app.back, or not on the bus: no home button, which would cover a «←» of
+    its own). A program named in apps.conf with back = none always gets 0."""
 
     def __init__(self, bus):
         self.bus = bus
@@ -443,11 +458,25 @@ class BackStep:
         self.monitor = Gio.File.new_for_path(folder).monitor_directory(
             Gio.FileMonitorFlags.WATCH_MOVES, None)
         self.monitor.connect("changed", self.on_folder)
+        # The program in front leaving the bus, or starting again under the
+        # same window app id, is asked again.
+        bus.signal_subscribe("org.freedesktop.DBus", "org.freedesktop.DBus", "NameOwnerChanged",
+                             "/org/freedesktop/DBus", None, Gio.DBusSignalFlags.NONE,
+                             self.on_owner, None)
         self.look()
 
     def on_folder(self, _monitor, file, other, _event):
         if "front" in (file.get_basename(), other.get_basename() if other else None):
             self.look()
+
+    def on_owner(self, _bus, _sender, _path, _iface, _signal, params, _data):
+        name, _old, new = params.unpack()
+        if name != self.front:
+            return
+        if new:
+            self.describe(name)
+        else:
+            self.write(name, "-")
 
     def look(self):
         try:
@@ -463,39 +492,44 @@ class BackStep:
             self.sub = None
         if not front:
             return
-        if not Gio.dbus_is_name(front) or Gio.dbus_is_unique_name(front):
-            self.write(front, False)
+        if front in foreign_ids():
+            self.write(front, "0")
             return
-        path = object_path(front)
-        self.sub = self.bus.signal_subscribe(front, "org.gtk.Actions", "Changed", path, None,
+        if not Gio.dbus_is_name(front) or Gio.dbus_is_unique_name(front):
+            self.write(front, "-")
+            return
+        self.sub = self.bus.signal_subscribe(front, "org.gtk.Actions", "Changed",
+                                             object_path(front), None,
                                              Gio.DBusSignalFlags.NONE, self.on_changed, front)
+        self.describe(front)
 
+    def describe(self, front):
         def described(bus, result):
             try:
-                enabled = bus.call_finish(result).unpack()[0][0]
+                state = "1" if bus.call_finish(result).unpack()[0][0] else "0"
             except GLib.Error:
-                enabled = False  # no such action, or not a GApplication
+                state = "-"  # no such action, not a GApplication, or gone
             if front == self.front:
-                self.write(front, enabled)
+                self.write(front, state)
 
         # Never start a service of that name: the program is either there or not.
-        self.bus.call(front, path, "org.gtk.Actions", "Describe", GLib.Variant("(s)", (BACK,)),
-                      GLib.VariantType("((bgav))"), Gio.DBusCallFlags.NO_AUTO_START, 500, None,
-                      described)
+        self.bus.call(front, object_path(front), "org.gtk.Actions", "Describe",
+                      GLib.Variant("(s)", (BACK,)), GLib.VariantType("((bgav))"),
+                      Gio.DBusCallFlags.NO_AUTO_START, 500, None, described)
 
     def on_changed(self, _bus, _sender, _path, _iface, _signal, params, front):
         if front != self.front:
             return
         removed, enabled, _states, added = params.unpack()
         if BACK in removed:
-            self.write(front, False)
+            self.write(front, "-")
         if BACK in enabled:
-            self.write(front, enabled[BACK])
+            self.write(front, "1" if enabled[BACK] else "0")
         if BACK in added:
-            self.write(front, added[BACK][0])
+            self.write(front, "1" if added[BACK][0] else "0")
 
-    def write(self, front, enabled):
-        text = "%s %d\n" % (front, 1 if enabled else 0)
+    def write(self, front, state):
+        text = "%s %s\n" % (front, state)
         if text == self.written:
             return
         self.written = text
