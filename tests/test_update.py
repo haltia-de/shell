@@ -197,40 +197,52 @@ class Update(unittest.TestCase):
 
     def test_shell_update_waits_for_a_new_session(self):
         # SH2-1: the checks in the session that ran before the update see
-        # the old code in memory pass; only a session started after it counts.
+        # the old code in memory pass; only a session started after it
+        # (session_start() marks it, no clocks involved) counts.
         self.assertEqual(hu.upgrade(), 0)
         pending = hu.read_json(os.path.join(hu.STATE, "pending.json"), {})
         self.assertTrue(pending["session"])
-        with mock.patch.object(hu, "session_since", lambda _t: False):
-            self.assertEqual(hu.health(), 0)
+        self.assertEqual(hu.health(), 0)
         self.assertTrue(self.pending())
-        with mock.patch.object(hu, "session_since", lambda _t: True):
-            self.assertEqual(hu.health(), 0)
+        self.assertEqual(hu.session_start(), 0)
+        self.assertEqual(hu.health(), 0)
         self.assertFalse(self.pending())
+
+    def test_new_session_without_its_panel_rolls_back(self):
+        self.assertEqual(hu.upgrade(), 0)
+        os.makedirs(os.path.join(hu.HEALTH, "required.d"))
+        check = os.path.join(hu.HEALTH, "required.d", "10-session")
+        with open(check, "w") as fh:
+            fh.write("#!/bin/sh\necho 'waybar is not running' >&2\nexit 1\n")
+        os.chmod(check, 0o755)
+        self.assertEqual(hu.health(), 0)  # the old session: not judged
+        self.assertTrue(self.pending())
+        hu.session_start()
+        self.assertEqual(hu.health(), 0)  # judged, failed: rolled back
+        self.assertFalse(self.pending())
+        self.assertEqual(hu.installed(), BEFORE)
 
     def test_program_update_is_good_in_the_running_session(self):
         self.assertEqual(hu.upgrade(names=["py3-haltia-kit"]), 0)
         pending = hu.read_json(os.path.join(hu.STATE, "pending.json"), {})
         self.assertFalse(pending["session"])
-        with mock.patch.object(hu, "session_since", lambda _t: False):
-            self.assertEqual(hu.health(), 0)
+        self.assertEqual(hu.health(), 0)
         self.assertFalse(self.pending())
 
-    def test_session_since_reads_waybar_start(self):
-        # btime 1000, 100 ticks a second, waybar started 50 s after boot.
-        files = {"/proc/stat": "cpu 1 2 3\nbtime 1000\n",
-                 "/proc/77/stat": "77 (waybar) S" + " 0" * 18 + " 5000 0 0\n",
-                 "/proc/78/stat": "78 (sh) S" + " 0" * 18 + " 9000 0 0\n"}
-
-        def fake_open(path, *a, **k):
-            if path in files:
-                return mock.mock_open(read_data=files[path])()
-            raise FileNotFoundError(path)
-        with mock.patch.object(hu.os, "listdir", lambda _p: ["77", "78", "self"]), \
-                mock.patch.object(hu.os, "sysconf", lambda _n: 100), \
-                mock.patch("builtins.open", fake_open):
-            self.assertTrue(hu.session_since(1050))
-            self.assertFalse(hu.session_since(1051))
+    def test_only_packages_with_a_desktop_file_are_programs(self):
+        with open(hu.INSTALLED, "w") as fh:
+            fh.write("P:haltia-shell\nV:1-r0\nF:usr/share/applications\n"
+                     "R:io.github.haltia_de.Settings.desktop\n\n"
+                     "P:haltia-text\nV:1-r0\nF:usr/bin\nR:haltia-text\n"
+                     "F:usr/share/applications\nR:io.github.haltia_de.Text.desktop\n\n"
+                     "P:haltia-gst-webrtc\nV:1-r0\nF:usr/lib/gstreamer-1.0\nR:libgstwebrtc.so\n\n"
+                     "P:haltia-desktop\nV:1-r0\n\n")
+        self.assertEqual(hu.programs(), {"haltia-shell", "haltia-text"})
+        self.assertFalse(hu.needs_session([("haltia-text", "1", "2"),
+                                           ("haltia-text-pyc", "1", "2"),
+                                           ("py3-haltia-kit", "1", "2")]))
+        for name in ("haltia-gst-webrtc", "haltia-desktop", "haltia-shell", "libnice"):
+            self.assertTrue(hu.needs_session([(name, "1", "2")]), name)
 
     def test_log_outlives_a_closed_window(self):
         # SH2-2: Настройки closed during «Обновить всё»: the next line must

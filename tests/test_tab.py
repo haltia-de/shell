@@ -37,8 +37,10 @@ class Tab(unittest.TestCase):
         time.sleep(0.2)
         start = time.monotonic()
         apps().end_tab(os.getuid())
-        self.assertIsNotNone(proc.poll())  # gone, not merely signalled
-        self.assertLess(time.monotonic() - start, 1.5)
+        # Ended (a zombie: the test, like waybar, has not reaped it yet),
+        # and seen as ended at once rather than after the 1 s limit.
+        self.assertLess(time.monotonic() - start, 0.5)
+        self.assertIsNotNone(proc.poll())
 
 
 if __name__ == "__main__":

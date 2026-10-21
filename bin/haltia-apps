@@ -634,8 +634,20 @@ def end_tab(uid):
             continue
     end = time.monotonic() + 1
     while tabs and time.monotonic() < end:
-        tabs = [p for p in tabs if os.path.exists("/proc/" + p)]
-        time.sleep(0.05)
+        tabs = [p for p in tabs if alive(p)]
+        if tabs:
+            time.sleep(0.05)
+
+
+def alive(pid):
+    """A process that has not ended. haltia-tab is waybar's child, and
+    waybar does not reap: an ended one stays a zombie."""
+    try:
+        with open("/proc/%s/stat" % pid) as fh:
+            stat = fh.read()
+    except OSError:
+        return False
+    return stat[stat.rfind(")") + 2:stat.rfind(")") + 3] != "Z"
 
 
 def reload_session(uid):
