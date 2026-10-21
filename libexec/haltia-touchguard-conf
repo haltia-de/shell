@@ -12,7 +12,7 @@
 # a percent of the screen's axis in ranges and set (7333), and go into the
 # file as percent ("73.33%"), which haltia-touchguard reads.
 #   haltia-touchguard-conf set KEY=VALUE...    try them: TRY, then reload the filter
-#   haltia-touchguard-conf keep                write what is tried into CONF
+#   haltia-touchguard-conf keep [KEY=VALUE...] write them into CONF, forget the try
 #   haltia-touchguard-conf drop                forget what is tried
 #   haltia-touchguard-conf log on|off          log every decision (15 min) or stop
 #
@@ -54,9 +54,10 @@ signal() {
 	kill -"$1" "$pid"
 }
 
-# merge FILE: FILE with the "key = value" lines on stdin put in, each in
-# place of the same key's line (comments stay), the rest at the end. No
-# lines: FILE is left as it is.
+# merge FILE [TAIL]: FILE with the "key = value" lines on stdin put in,
+# each in place of the same key's line (comments stay), the rest at the end;
+# any "# token" line goes, and TAIL ends the file. One mv: a watch never sees
+# the new values under an old token. No lines: FILE is left as it is.
 merge() {
 	lines=$1.lines
 	grep '^[a-z_]* = ' >"$lines" || true
@@ -65,8 +66,9 @@ merge() {
 		return 0
 	fi
 	[ -f "$1" ] || : >"$1"
-	awk '
+	awk -v tail="${2:-}" '
 		FILENAME == ARGV[1] { k = $1; line[k] = $0; order[++n] = k; next }
+		/^# token / { next }
 		/^[ \t]*[a-z_]+[ \t]*=/ {
 			k = $0
 			sub(/^[ \t]*/, "", k)
@@ -77,18 +79,15 @@ merge() {
 		END {
 			for (i = 1; i <= n; i++)
 				if (!(order[i] in done)) { print line[order[i]]; done[order[i]] = 1 }
+			if (tail != "") print tail
 		}' "$lines" "$1" >"$1.new"
 	rm -f "$lines"
 	chmod 644 "$1.new"
 	mv "$1.new" "$1"
 }
 
-case ${1:-} in
-ranges)
-	printf '%s\n' "$RANGES"
-	;;
-set)
-	shift
+# check KEY=VALUE...: known keys, whole numbers in their ranges, or exit 2.
+check() {
 	[ $# -gt 0 ] || exit 2
 	for kv in "$@"; do
 		key=${kv%%=*} val=${kv#*=}
@@ -103,41 +102,62 @@ set)
 			exit 2
 		fi
 	done
-	# What is tried: TRY, its values as the filter reads them, and a token
-	# for the watch below.
+}
+
+# lines KEY=VALUE...: them as the filter reads them ("tap_radius = 9.00%").
+lines() {
+	for kv in "$@"; do
+		key=${kv%%=*} val=$(printf '%s' "${kv#*=}" | sed 's/^0*\(.\)/\1/')
+		case $key in
+		repeat_radius | palm_major | palm_pressure | tap_radius)
+			printf '%s = %d.%02d%%\n' "$key" $((val / 100)) $((val % 100)) ;;
+		*) printf '%s = %d\n' "$key" "$val" ;;
+		esac
+	done
+}
+
+# reload: tell the filter; a filter that is down reads the files as it
+# starts, so that is no failure of what was asked.
+reload() {
+	pid=$(cat "$PIDFILE" 2>/dev/null) && kill -HUP "$pid" 2>/dev/null ||
+		echo "haltia-touchguard-conf: the filter is not running; it reads this as it starts" >&2
+}
+
+case ${1:-} in
+ranges)
+	printf '%s\n' "$RANGES"
+	;;
+set)
+	shift
+	check "$@"
+	# What is tried: TRY, with a token for the watch, written in one go.
 	token=$(date +%s)$$
-	{
-		for kv in "$@"; do
-			key=${kv%%=*} val=$(printf '%s' "${kv#*=}" | sed 's/^0*\(.\)/\1/')
-			case $key in
-			repeat_radius | palm_major | palm_pressure | tap_radius)
-				printf '%s = %d.%02d%%\n' "$key" $((val / 100)) $((val % 100)) ;;
-			*) printf '%s = %d\n' "$key" "$val" ;;
-			esac
-		done
-	} | merge "$TRY"
-	sed -i '/^# token /d' "$TRY"
-	echo "# token $token" >>"$TRY"
-	signal HUP
-	# Nobody kept or tried again in TRY_S seconds: drop it.
+	lines "$@" | merge "$TRY" "# token $token"
+	# The watch first: a filter that is down must not leave the try behind
+	# for its next start. Nobody kept or tried again in TRY_S s: drop it.
 	setsid sh -c '
 		sleep "$1"
 		[ "$(sed -n "s/^# token //p" "$2" 2>/dev/null)" = "$3" ] || exit 0
 		rm -f "$2"
 		pid=$(cat "$4" 2>/dev/null) && kill -HUP "$pid"
 	' watch "$TRY_S" "$TRY" "$token" "$PIDFILE" </dev/null >/dev/null 2>&1 &
+	signal HUP
 	;;
 keep)
-	# «Оставить»: what is tried goes into the file, comments kept.
-	if [ -f "$TRY" ]; then
-		merge "$CONF" <"$TRY"
-		rm -f "$TRY"
+	# «Оставить»: the values the window shows go into the file (comments
+	# kept), whether or not a try is still there (the watch may have
+	# dropped it), and the try goes.
+	shift
+	if [ $# -gt 0 ]; then
+		check "$@"
+		lines "$@" | merge "$CONF"
 	fi
-	signal HUP
+	rm -f "$TRY"
+	reload
 	;;
 drop)
 	rm -f "$TRY"
-	signal HUP
+	reload
 	;;
 log)
 	case ${2:-} in
@@ -158,7 +178,7 @@ log)
 	esac
 	;;
 *)
-	echo "usage: haltia-touchguard-conf ranges | set KEY=VALUE... | keep | drop | log on|off" >&2
+	echo "usage: haltia-touchguard-conf ranges | set KEY=VALUE... | keep [KEY=VALUE...] | drop | log on|off" >&2
 	exit 2
 	;;
 esac

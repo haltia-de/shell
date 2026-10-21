@@ -491,7 +491,10 @@ class Setup:
         if self.pending is not None:
             GLib.source_remove(self.pending)
             self.apply()
-        err = helper("keep")
+        # The values themselves, not "what is tried": the helper's watch
+        # may have dropped the try already.
+        err = helper("keep", *("%s=%d" % (k, v) for k, v in self.applied.items()
+                               if self.kept.get(k) != v))
         if err:
             self.say("Не сохранено: " + err, "palm")
             return

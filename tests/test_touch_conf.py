@@ -64,7 +64,7 @@ class TouchConf(unittest.TestCase):
 
     def test_keep_writes_the_file_with_its_comments(self):
         self.run_helper("set", "hold_ms=80", "long_ms=900")
-        self.assertEqual(self.run_helper("keep").returncode, 0)
+        self.assertEqual(self.run_helper("keep", "hold_ms=80", "long_ms=900").returncode, 0)
         self.assertEqual(self.read(self.conf),
                          "# The touch filter.\nhold_ms = 80\n# a comment\n"
                          "tap_radius = 6.27%\nlong_ms = 900\n")
@@ -79,6 +79,34 @@ class TouchConf(unittest.TestCase):
     def test_keep_with_nothing_tried_leaves_the_file(self):
         self.assertEqual(self.run_helper("keep").returncode, 0)
         self.assertEqual(self.read(self.conf), CONF)
+
+    def test_keep_after_the_watch_dropped_the_try_still_saves(self):
+        self.run_helper("set", "hold_ms=80")
+        time.sleep(2.5)  # the watch has dropped it
+        self.assertEqual(self.run_helper("keep", "hold_ms=80").returncode, 0)
+        self.assertIn("hold_ms = 80\n", self.read(self.conf))
+
+    def test_keep_with_the_filter_down_saves_and_succeeds(self):
+        self.filter.kill()
+        self.filter.wait()
+        res = self.run_helper("keep", "hold_ms=70")
+        self.assertEqual(res.returncode, 0)
+        self.assertIn("hold_ms = 70\n", self.read(self.conf))
+
+    def test_set_with_the_filter_down_leaves_no_try(self):
+        self.filter.kill()
+        self.filter.wait()
+        self.assertNotEqual(self.run_helper("set", "hold_ms=80").returncode, 0)
+        time.sleep(2.5)
+        self.assertIsNone(self.read(self.try_))
+
+    def test_one_token_and_values_together(self):
+        self.run_helper("set", "hold_ms=80")
+        self.run_helper("set", "long_ms=900")
+        tried = self.read(self.try_)
+        self.assertEqual(tried.count("# token "), 1)
+        self.assertTrue(tried.rstrip("\n").splitlines()[-1].startswith("# token "))
+        self.assertIn("hold_ms = 80\n", tried)
 
     def test_a_try_nobody_keeps_goes_by_itself(self):
         self.run_helper("set", "hold_ms=80")
