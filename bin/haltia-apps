@@ -124,18 +124,21 @@ SHARE = "/usr/share/haltia"
 # At least this many slots for open programs, even with a long panel.
 MIN_SLOTS = 2
 # The panel along the bottom edge of a portrait screen: its height, and the
-# width its buttons share (800 px less the home button, the status card
-# and the clock).
+# width its buttons share (800 px less the home button, the status card,
+# the clock and room for the recording mark, which shows only while
+# something records: without that room it pushed the clock off the row).
 BOTTOM_HEIGHT = 100
 BOTTOM_ROOM = 480
+REC_ROOM = 44
 PORTRAIT_CSS = """
 /* Written by haltia-apps: the screen stands portrait, the panel is one row
    along the bottom edge (haltia-rotate). */
 .app { min-width: %dpx; margin: 2px; }
 #custom-home { min-width: 76px; margin: 4px 2px 4px 4px; }
-#custom-sep { min-height: 0; min-width: 3px; margin: 14px 5px; }
-#custom-status { min-width: 116px; margin: 8px 4px; }
-#custom-clock { padding: 0 10px 0 6px; }
+#custom-sep { min-height: 0; min-width: 3px; margin: 14px 3px; }
+#custom-status { min-width: 104px; margin: 8px 2px; }
+#custom-clock { padding: 0 6px 0 2px; }
+#custom-rec { min-width: 44px; margin: 2px 0; background-size: 44px 33px; }
 """
 FIELDS = ("label", "icon", "app_ids", "exec", "env", "home", "feedback", "back")
 ALIASES = {}  # old shell id -> the .desktop program that replaced it (build())
@@ -487,6 +490,9 @@ def write_waybar(path, apps, panel, slots):
         conf["position"] = "bottom"
         conf.pop("width", None)
         conf["height"] = BOTTOM_HEIGHT
+        # The buttons' own 2 px margins part them; waybar's 4 px between
+        # every module cost the clock its place.
+        conf["spacing"] = 0
         conf["modules-right"] = ["custom/rec", "custom/status", "custom/clock"]
     for app_id in panel:
         sig = apps[app_id]["signal"]
@@ -573,9 +579,11 @@ def write_style(path, apps, order, panel, slots):
                        ", ".join("%dpx %dpx" % (MARK, MARK) for _l in layers), size, size))
     if portrait():
         # The buttons share the row's room; crowded, the labels get smaller.
-        width = max(52, min(92, BOTTOM_ROOM // max(1, buttons) - 4))
+        width = max(52, min(92, (BOTTOM_ROOM - REC_ROOM) // max(1, buttons) - 4))
         extra.append(PORTRAIT_CSS % width)
-        if width < 80:
+        # A label wider than its button widens it ("Калькулятор" at 14 px
+        # needs 85 px), and a full row then pushed the clock off.
+        if width < 88:
             extra.append(".app { font-size: 12px; }")
     elif buttons > FULL_SIZE:
         # More buttons than fit at full size: shorter ones, smaller icons.
