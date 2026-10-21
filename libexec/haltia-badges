@@ -24,10 +24,19 @@ plays or is paused writes "Playing <bus name>" or "Paused <bus name>" to
 $XDG_RUNTIME_DIR/haltia/play/<id>, which haltia-launch status marks on the
 button (▶ or ‖) and haltia-ask media uses to pause or stop it; stopped, or
 gone from the bus, removes the file.
+
+And it tells the panel when a program records from a microphone (a
+PulseAudio source output on anything but a monitor, read again only when
+pactl subscribe tells of a source output) or uses a camera (a /dev/video*
+open in one of the user's processes, looked at every REC_EVERY seconds,
+only when the device has a camera and the screen is on): "mic", "cam" or
+both in $XDG_RUNTIME_DIR/haltia/rec, then the panel's custom/rec
+(signal REC_SIGNAL) reads it again (haltia-meter rec).
 """
 import configparser
 import glob
 import os
+import subprocess
 import signal
 
 import gi
@@ -263,8 +272,147 @@ def on_props(_bus, sender, _path, _iface, _signal, params, _data):
         play_mark(player[1], changed["PlaybackStatus"], player[0])
 
 
+REC_SIGNAL = 11
+REC_EVERY = 10  # s: the camera has no events to follow
+
+
+def short(*args):
+    """pactl list short ...: rows of tab-separated fields."""
+    try:
+        out = subprocess.run(["pactl", "list", "short"] + list(args), capture_output=True,
+                             text=True, timeout=5).stdout
+    except (OSError, subprocess.SubprocessError):
+        return []
+    return [line.split("\t") for line in out.splitlines() if line.strip()]
+
+
+def microphone():
+    """Some program records from a source that is not a monitor (the
+    speaker's own sound)."""
+    names = {row[0]: row[1] for row in short("sources") if len(row) > 1}
+    return any(len(row) > 1 and not names.get(row[1], "").endswith(".monitor")
+               for row in short("source-outputs"))
+
+
+def cameras():
+    return glob.glob("/dev/video*")
+
+
+def screen_on():
+    """The backlight is lit (no backlight: a desktop, counted as on)."""
+    lit = None
+    for path in glob.glob("/sys/class/backlight/*/brightness"):
+        try:
+            with open(path) as fh:
+                lit = bool(lit) or int(fh.read().strip() or 0) > 0
+        except (OSError, ValueError):
+            continue
+    return lit is not False
+
+
+def camera():
+    """One of the user's processes has a video device open."""
+    me = os.getuid()
+    for pid in os.listdir("/proc"):
+        if not pid.isdigit():
+            continue
+        fds = "/proc/%s/fd" % pid
+        try:
+            if os.stat("/proc/" + pid).st_uid != me:
+                continue
+            for fd in os.listdir(fds):
+                if os.readlink(os.path.join(fds, fd)).startswith("/dev/video"):
+                    return True
+        except OSError:
+            continue
+    return False
+
+
+class Recording:
+    """custom/rec: what records now, told to the panel when it changes."""
+
+    def __init__(self):
+        run = os.environ.get("XDG_RUNTIME_DIR", "/tmp")
+        self.path = os.path.join(run, "haltia", "rec")
+        self.shown = None
+        self.pending = None
+        self.mic = microphone()
+        self.cam = False
+        self.look_camera()
+        GLib.timeout_add_seconds(REC_EVERY, self.look_camera)
+        self.follow()
+
+    def look_camera(self):
+        """The camera: no events to follow, so a look every REC_EVERY
+        seconds, and none on a device without one or with the screen dark
+        (nobody sees the panel then; it is looked at again when it lights)."""
+        if cameras() and screen_on():
+            self.cam = camera()
+        elif not cameras():
+            self.cam = False
+        self.show()
+        return True
+
+    def check(self):
+        """A source output came or went: the microphone read again."""
+        self.pending = None
+        self.mic = microphone()
+        self.show()
+        return False
+
+    def show(self):
+        now = " ".join(w for w, on in (("mic", self.mic), ("cam", self.cam)) if on)
+        if now != self.shown:
+            self.shown = now
+            try:
+                if now:
+                    with open(self.path + ".new", "w") as fh:
+                        fh.write(now + "\n")
+                    os.replace(self.path + ".new", self.path)
+                elif os.path.exists(self.path):
+                    os.unlink(self.path)
+            except OSError:
+                pass
+            redraw(REC_SIGNAL)
+
+    def soon(self):
+        # Events come in bursts (a stream is made, then moved, then runs).
+        if self.pending is None:
+            self.pending = GLib.timeout_add(200, self.check)
+
+    def follow(self):
+        """pactl subscribe, line by line; again 5 s after it ends (the
+        sound server restarted)."""
+        # Its event lines are translated ("Событие «появление» в отношении
+        # выхода источника"): in C, they name a source-output.
+        launcher = Gio.SubprocessLauncher.new(Gio.SubprocessFlags.STDOUT_PIPE |
+                                              Gio.SubprocessFlags.STDERR_SILENCE)
+        launcher.setenv("LC_ALL", "C", True)
+        try:
+            proc = launcher.spawnv(["pactl", "subscribe"])
+        except GLib.Error:
+            GLib.timeout_add_seconds(5, lambda: self.follow() and False)
+            return
+        stream = Gio.DataInputStream.new(proc.get_stdout_pipe())
+
+        def got(src, result):
+            try:
+                line, _len = src.read_line_finish_utf8(result)
+            except GLib.Error:
+                line = None
+            if line is None:
+                self.soon()
+                GLib.timeout_add_seconds(5, lambda: self.follow() and False)
+                return
+            if "source-output" in line:
+                self.soon()
+            src.read_line_async(GLib.PRIORITY_DEFAULT, None, got)
+        stream.read_line_async(GLib.PRIORITY_DEFAULT, None, got)
+
+
 def main():
     bus = Gio.bus_get_sync(Gio.BusType.SESSION, None)
+    Recording()
 
     def on_player_owner(_bus, _sender, _path, _iface, _signal, params, _data):
         name, old, new = params.unpack()

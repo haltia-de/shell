@@ -1,0 +1,150 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0
+"""haltia-call: an incoming call comes to the front (mako runs this for a
+notification of category call.incoming; share/mako.conf).
+
+A program that rings asks the standard way: a notification
+(org.freedesktop.Notifications; Gio.Notification with priority URGENT and
+category "call.incoming") with urgency critical, category call.incoming,
+the desktop-entry hint of its id, and a "default" action that shows its
+call window (never answers). Then, within a second or two, also when the
+screen is off:
+
+  - the screen comes on (haltia-wake: haltia-sleep owns the backlight);
+  - the home screen goes down, if it was up;
+  - the motor buzzes twice;
+  - the notification's default action is invoked: the program shows its
+    call window (mako takes the card away);
+  - if no window of the program is in front a second later, one of them
+    is activated (haltia-focus).
+
+The program keeps the screen on while it rings and during the call with
+a logind idle inhibitor (haltia-kit's Awake), as a video does, and closes
+the notification when the ringing stops. Replacing the notification (a
+new text while it rings) makes mako run this again; the same id within
+AGAIN_AFTER seconds is left alone.
+"""
+import configparser
+import json
+import os
+import subprocess
+import sys
+import time
+
+LIBEXEC = "/usr/libexec/haltia"
+CATEGORY = "call.incoming"
+
+
+def log(text):
+    sys.stderr.write("haltia-call: %s\n" % text)
+
+
+def quiet(*args, timeout=10):
+    try:
+        return subprocess.run(list(args), capture_output=True, text=True,
+                              timeout=timeout)
+    except (OSError, subprocess.SubprocessError) as exc:
+        log("%s: %s" % (args[0], exc))
+        return None
+
+
+def ringing():
+    """The newest notification of an incoming call, from makoctl list -j:
+    {"id", "desktop_entry", "app_name", "actions", ...}, or None."""
+    res = quiet("makoctl", "list", "-j")
+    try:
+        items = json.loads(res.stdout) if res else []
+    except ValueError:
+        items = []
+    calls = [n for n in items if isinstance(n, dict) and n.get("category") == CATEGORY]
+    return max(calls, key=lambda n: n.get("id", 0)) if calls else None
+
+
+def app_ids(entry):
+    """The window app ids of the program with this desktop entry, from the
+    session's apps.conf (its own id when it has no section)."""
+    if not entry:
+        return []
+    if entry.endswith(".desktop"):
+        entry = entry[:-len(".desktop")]
+    conf = configparser.ConfigParser(interpolation=None, strict=False)
+    run = os.environ.get("XDG_RUNTIME_DIR", "")
+    try:
+        conf.read(os.path.join(run, "haltia", "apps.conf"), encoding="utf-8")
+    except configparser.Error:
+        pass
+    for sid in conf.sections():
+        ids = conf[sid].get("app_ids", "").split()
+        if sid == entry or entry in ids:
+            return ids or [sid]
+    return [entry]
+
+
+def front():
+    """The app id of the window in front (haltia-focus writes it)."""
+    run = os.environ.get("XDG_RUNTIME_DIR", "")
+    try:
+        with open(os.path.join(run, "haltia", "launch", "front")) as fh:
+            return fh.read().strip()
+    except OSError:
+        return ""
+
+
+HANDLED = "call-handled"  # in $XDG_RUNTIME_DIR/haltia: "ID TIME" of the last call
+AGAIN_AFTER = 120  # s: the same notification replaced (mako runs this again) is left alone
+
+
+def handled_before(call_id):
+    """Whether this notification was brought to the front already: mako
+    runs on-notify again when a program replaces its notification (the
+    ringing's text changes), which must not wake and raise every time."""
+    path = os.path.join(os.environ.get("XDG_RUNTIME_DIR", "/tmp"), "haltia", HANDLED)
+    try:
+        with open(path) as fh:
+            old_id, at = fh.read().split()
+        if int(old_id) == call_id and time.time() - float(at) < AGAIN_AFTER:
+            return True
+    except (OSError, ValueError):
+        pass
+    try:
+        with open(path + ".new", "w") as fh:
+            fh.write("%d %d\n" % (call_id, time.time()))
+        os.replace(path + ".new", path)
+    except OSError:
+        pass
+    return False
+
+
+def main():
+    started = time.monotonic()
+    call = ringing()
+    if call is None:
+        log("no %s notification" % CATEGORY)
+        return 1
+    if handled_before(call.get("id", 0)):
+        return 0
+    quiet(os.path.join(LIBEXEC, "haltia-wake"), timeout=5)
+    quiet(os.path.join(LIBEXEC, "haltia-home"), "hide", timeout=5)
+    for _ in range(2):
+        quiet(os.path.join(LIBEXEC, "haltia-press"), "call", timeout=5)
+        time.sleep(0.15)
+    if "default" in (call.get("actions") or {}):
+        quiet("makoctl", "invoke", "-n", str(call["id"]), "default")
+    ids = app_ids(call.get("desktop_entry") or call.get("app_name"))
+    # The program shows its call window on the action, and phoc puts a new
+    # window in front. Only when none of its windows is in front after a
+    # second does the shell activate one (haltia-focus picks a window not
+    # in front: a program that mapped its call window long ago).
+    for _ in range(10):
+        if front() in ids:
+            break
+        time.sleep(0.1)
+    else:
+        if ids:
+            quiet("/usr/bin/haltia-focus", "activate", *ids)
+    log("%s in front after %.1f s" % (" ".join(ids) or "?", time.monotonic() - started))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -487,7 +487,7 @@ def write_waybar(path, apps, panel, slots):
         conf["position"] = "bottom"
         conf.pop("width", None)
         conf["height"] = BOTTOM_HEIGHT
-        conf["modules-right"] = ["custom/status", "custom/clock"]
+        conf["modules-right"] = ["custom/rec", "custom/status", "custom/clock"]
     for app_id in panel:
         sig = apps[app_id]["signal"]
         conf["custom/" + app_id] = {
