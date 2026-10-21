@@ -124,11 +124,12 @@ SHARE = "/usr/share/haltia"
 # At least this many slots for open programs, even with a long panel.
 MIN_SLOTS = 2
 # The panel along the bottom edge of a portrait screen: its height, and the
-# width its buttons share (800 px less the home button, the status card,
+# width its buttons share (800 px less the home button, the status card
+# (its three icons stacked: Wi-Fi, speaker, battery),
 # the clock and room for the recording mark, which shows only while
 # something records: without that room it pushed the clock off the row).
 BOTTOM_HEIGHT = 100
-BOTTOM_ROOM = 480
+BOTTOM_ROOM = 500
 REC_ROOM = 44
 PORTRAIT_CSS = """
 /* Written by haltia-apps: the screen stands portrait, the panel is one row
@@ -136,7 +137,8 @@ PORTRAIT_CSS = """
 .app { min-width: %dpx; margin: 2px; }
 #custom-home { min-width: 76px; margin: 4px 2px 4px 4px; }
 #custom-sep { min-height: 0; min-width: 3px; margin: 14px 3px; }
-#custom-status { min-width: 104px; margin: 8px 2px; }
+#custom-status { min-width: 40px; margin: 4px 2px;
+  background-position: 50%% 0%%, 50%% 50%%, 50%% 100%%; }
 #custom-clock { padding: 0 6px 0 2px; }
 #custom-rec { min-width: 44px; margin: 2px 0; background-size: 44px 33px; }
 """
