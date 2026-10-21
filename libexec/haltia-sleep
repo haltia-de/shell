@@ -50,6 +50,9 @@ KEY_POWER = 116
 BUS_VIRTUAL = 0x06
 
 LEVEL_PATH = "/run/haltia/sleep/level"
+# There while the screen is off on purpose: haltia-brightness --restore (a
+# session started again in the dark) leaves it off.
+DARK_PATH = "/run/haltia/screen-dark"
 LONG_PRESS = 1.0  # seconds held before the power menu opens
 SUSPEND_AFTER = 30.0  # seconds with the screen off before a system sleep
 IDLE_OFF = 600.0  # seconds without any input before the screen goes off
@@ -59,6 +62,10 @@ IDLE_OFF = 600.0  # seconds without any input before the screen goes off
 SCREEN_CONF = ".config/haltia/screen"
 SCREEN_CHECK = 30.0  # seconds between looks at that file and the charger
 RESCAN_SEC = 30.0  # how often the input devices are looked at again
+# A suspend hook that is still running this long (awake time: the clock
+# stops while the system sleeps) is stuck: logged and killed.
+SUSPEND_DEADLINE = 120.0
+FILTER_NAME = "haltia-touchguard touchscreen"
 POWER_SUPPLY = "/sys/class/power_supply"
 SUSPEND_HOOK = "/usr/lib/haltia/hooks/suspend"
 POWER_STATE = "/sys/power/state"
@@ -369,14 +376,19 @@ def suspend_command():
 
 
 def touch_nodes():
-    found = []
+    """The touch devices to grab while dark: the filter's own while it runs
+    (grabbing the real screen under it made a restarting filter fail with
+    EBUSY), else the screens themselves."""
+    found, filtered = [], []
     for node in sorted(os.listdir("/sys/class/input")):
         if not node.startswith("event"):
             continue
-        name = input_name(node).lower()
-        if "synaptics" in name or "touch" in name:
+        name = input_name(node)
+        if name == FILTER_NAME:
+            filtered.append("/dev/input/" + node)
+        elif "synaptics" in name.lower() or "touch" in name.lower():
             found.append("/dev/input/" + node)
-    return found
+    return filtered or found
 
 
 def event_nodes():
@@ -425,6 +437,17 @@ def saved_level(path):
     return level
 
 
+def mark_dark(dark):
+    try:
+        if dark:
+            os.makedirs(os.path.dirname(DARK_PATH), exist_ok=True)
+            open(DARK_PATH, "w").close()
+        elif os.path.lexists(DARK_PATH):
+            os.unlink(DARK_PATH)
+    except OSError as exc:
+        log("DARK_MARK_FAIL %s" % exc.errno)
+
+
 def remember(level):
     os.makedirs(os.path.dirname(LEVEL_PATH), exist_ok=True)
     tmp = LEVEL_PATH + ".tmp"
@@ -440,6 +463,9 @@ class Lamp:
         self.asleep = read_level(self.path) <= 0
         self.since = time.monotonic()
         self.suspender = None
+        self.suspend_started = 0.0
+        self.stuck_told = False
+        mark_dark(self.asleep)
         if self.asleep:
             self._grab_touch()
 
@@ -454,6 +480,7 @@ class Lamp:
         if current > 0:
             remember(current)
         self._grab_touch()
+        mark_dark(True)
         write_level(self.path, 0)
         kick_frame()
         self.asleep = True
@@ -463,6 +490,7 @@ class Lamp:
         updates_when_dark()
 
     def wake(self):
+        mark_dark(False)
         write_level(self.path, saved_level(self.path))
         kick_frame()
         self._ungrab_touch()
@@ -486,8 +514,20 @@ class Lamp:
             self.since = time.monotonic()  # check again a full delay later
         if self.suspender is not None:
             if self.suspender.poll() is None:
-                return None  # asleep or just woken; it is still running
+                if time.monotonic() - self.suspend_started < SUSPEND_DEADLINE:
+                    return None  # asleep or just woken; it is still running
+                # Stuck (a module reload that hangs, sync on a hung card):
+                # without this the tablet never slept again.
+                if not self.stuck_told:
+                    log("SUSPEND_STUCK %d s" % SUSPEND_DEADLINE)
+                    self.stuck_told = True
+                try:
+                    os.killpg(self.suspender.pid, 9)
+                    self.suspender.wait(timeout=1)
+                except (OSError, subprocess.TimeoutExpired):
+                    return None  # unkillable (D state): nothing more to do
             self.suspender = None
+            self.stuck_told = False
             self.since = time.monotonic()  # woke without a key: wait again
         return max(0.0, self.since + SUSPEND_AFTER - time.monotonic())
 
@@ -496,7 +536,9 @@ class Lamp:
         # wakes the tablet.
         try:
             command = suspend_command()
-            self.suspender = subprocess.Popen(command)
+            # Its own process group, so a stuck hook dies with its children.
+            self.suspender = subprocess.Popen(command, start_new_session=True)
+            self.suspend_started = time.monotonic()
             log("SUSPEND %s" % command[0])
         except (OSError, TypeError) as exc:
             log("SUSPEND_FAIL %s" % getattr(exc, "errno", exc))
@@ -512,6 +554,7 @@ class Lamp:
                 log("TOUCH_GRAB_FAIL %s %s" % (path, exc.errno))
                 continue
             self.touch.append(fd)
+            log("TOUCH_GRAB %s" % path)
 
     def _ungrab_touch(self):
         for fd in self.touch:
@@ -792,6 +835,10 @@ def listen():
                 activity = activity_nodes(path)
                 seen_nodes = nodes
                 log("ACTIVITY_RESCAN %d" % len(activity))
+                # The touch filter restarted while dark: its new device
+                # must be grabbed too, or touches in a bag reach the program.
+                if lamp.asleep:
+                    lamp._grab_touch()
             due = lamp.suspend_due()
             idle = None
             off_after = idle_off()

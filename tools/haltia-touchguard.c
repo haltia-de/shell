@@ -845,9 +845,17 @@ int main(int argc, char **argv)
 	}
 	/* Let the new device settle before the session loses the old one. */
 	usleep(200000);
-	if (ioctl(in_fd, EVIOCGRAB, 1) < 0) {
-		logf_("grab: %s", strerror(errno));
-		return 1;
+	/* haltia-sleep may hold the screen while it is dark (EBUSY): wait for
+	 * it to let go rather than exit, as supervise-daemon gives up after
+	 * ten starts a minute and the filter would stay off until a reboot. */
+	for (int told = 0; ioctl(in_fd, EVIOCGRAB, 1) < 0; told = 1) {
+		if (errno != EBUSY || !running) {
+			logf_("grab: %s", strerror(errno));
+			return 1;
+		}
+		if (!told)
+			logf_("grab: the screen is busy, waiting");
+		sleep(1);
 	}
 	log_config();
 	write_pidfile();
