@@ -43,6 +43,7 @@ import glob
 import json
 import os
 import subprocess
+import sys
 import signal
 
 import gi
@@ -533,11 +534,20 @@ class BackStep:
                                              Gio.DBusSignalFlags.NONE, self.on_changed, front)
         self.describe(front)
 
-    def describe(self, front):
+    def describe(self, front, tries=3):
         def described(bus, result):
             try:
                 state = "1" if bus.call_finish(result).unpack()[0][0] else "0"
-            except GLib.Error:
+            except GLib.Error as exc:
+                # A program still building its first window answers late
+                # (Settings on its first start after a boot): ask again.
+                busy = exc.matches(Gio.io_error_quark(), Gio.IOErrorEnum.TIMED_OUT) or \
+                    Gio.DBusError.get_remote_error(exc) == "org.freedesktop.DBus.Error.NoReply"
+                if busy and tries > 1 and front == self.front:
+                    GLib.timeout_add_seconds(1, lambda: self.describe(front, tries - 1) and False)
+                    return
+                sys.stderr.write("haltia-badges: %s has no app.back: %s\n" % (front, exc.message))
+                sys.stderr.flush()
                 state = "-"  # no such action, not a GApplication, or gone
             if front == self.front:
                 self.write(front, state)
@@ -545,7 +555,7 @@ class BackStep:
         # Never start a service of that name: the program is either there or not.
         self.bus.call(front, object_path(front), "org.gtk.Actions", "Describe",
                       GLib.Variant("(s)", (BACK,)), GLib.VariantType("((bgav))"),
-                      Gio.DBusCallFlags.NO_AUTO_START, 500, None, described)
+                      Gio.DBusCallFlags.NO_AUTO_START, 2000, None, described)
 
     def on_changed(self, _bus, _sender, _path, _iface, _signal, params, front):
         if front != self.front:

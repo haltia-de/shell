@@ -9,6 +9,8 @@ import importlib.machinery
 import importlib.util
 import os
 import shutil
+import subprocess
+import sys
 import tempfile
 import time
 import unittest
@@ -22,6 +24,27 @@ try:
     from gi.repository import Gio, GLib
 except (ImportError, ValueError):
     Gio = None
+
+
+BUSY = """
+import sys, time
+import gi
+gi.require_version("Gio", "2.0")
+from gi.repository import Gio, GLib
+conn = Gio.DBusConnection.new_for_address_sync(
+    sys.argv[1], Gio.DBusConnectionFlags.AUTHENTICATION_CLIENT
+    | Gio.DBusConnectionFlags.MESSAGE_BUS_CONNECTION, None, None)
+group = Gio.SimpleActionGroup()
+action = Gio.SimpleAction.new("back", None)
+action.set_enabled(False)
+group.add_action(action)
+conn.export_action_group(sys.argv[3], group)
+conn.call_sync("org.freedesktop.DBus", "/org/freedesktop/DBus", "org.freedesktop.DBus",
+               "RequestName", GLib.Variant("(su)", (sys.argv[2], 0)), None,
+               Gio.DBusCallFlags.NONE, -1, None)
+time.sleep(3)  # busy: its main loop does not run, so nothing answers
+GLib.MainLoop().run()
+"""
 
 
 def badges():
@@ -147,6 +170,25 @@ class BackStep(unittest.TestCase):
         self.front("io.github.haltia_de.Nobody")
         self.module.BackStep(self.bus)
         self.wait_for("io.github.haltia_de.Nobody -\n")
+
+    def test_a_busy_program_is_asked_again(self):
+        """A program whose main loop is busy (building its first window)
+        answers Describe only after the first call timed out."""
+        script = os.path.join(self.run_dir, "busy.py")
+        with open(script, "w") as fh:
+            fh.write(BUSY)
+        proc = subprocess.Popen([sys.executable, script, self.dbus.get_bus_address(), APP_ID,
+                                 self.module.object_path(APP_ID)])
+        self.addCleanup(proc.kill)
+        self.front(APP_ID)
+        end = time.monotonic() + 5
+        while time.monotonic() < end and not self.bus.call_sync(
+                "org.freedesktop.DBus", "/org/freedesktop/DBus", "org.freedesktop.DBus",
+                "NameHasOwner", GLib.Variant("(s)", (APP_ID,)), None,
+                Gio.DBusCallFlags.NONE, -1, None).unpack()[0]:
+            time.sleep(0.05)  # it owns the name, its loop not yet running
+        self.module.BackStep(self.bus)
+        self.wait_for(APP_ID + " 0\n", seconds=8)
 
     def test_foreign_program_always_has_the_button(self):
         with open(os.path.join(self.run_dir, "haltia", "apps.conf"), "w") as fh:
