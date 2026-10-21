@@ -31,7 +31,8 @@ TERM_WAIT = 2.0
 SHELL = {"waybar", "phoc", "phoc-gpu", "haltia-home", "haltia-close", "haltia-launcher",
          "haltia-focus", "haltia-badges", "haltia-volume", "haltia-rotate", "haltia-wvkbd",
          "wvkbd-b8k", "mako", "pulseaudio", "dbus-daemon", "dbus-run-session", "lisgd",
-         "haltia-ask", "haltia-launch", "haltia-stop", "haltia-splash", "fuzzel", "sh",
+         "haltia-ask", "haltia-launch", "haltia-stop", "haltia-splash", "haltia-keep",
+         "haltia-portal", "haltia-restart", "fuzzel", "sh",
          "python3", "python", "env", "setsid"}
 # Commands that run another: a process is the shell's by what they run.
 INTERPRETERS = {"sh", "bash", "python3", "python", "env", "setsid"}

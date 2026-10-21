@@ -1,16 +1,26 @@
 #!/usr/bin/python3
 # SPDX-License-Identifier: GPL-2.0
-"""haltia-panel-signal N: make the panel refresh the modules on signal N now.
+"""haltia-panel-signal N | reload: signal the panel, the one way.
 
-Sends SIGRTMIN+N to the panel (the process running the real
-/usr/bin/waybar), but only once it catches that signal: an uncaught
-real-time signal would kill the bar, and the whole session with it. Used
-by root helpers (NetworkManager's dispatcher, b8k-suspend, b8k-netwatch)
-so the Wi-Fi icon follows the network at once instead of at its next poll.
+    haltia-panel-signal N       the modules on signal N refresh now
+                                (SIGRTMIN+N)
+    haltia-panel-signal reload  waybar rereads its config and style
+                                (SIGUSR2)
+
+Only the process running the real /usr/bin/waybar (its /proc/PID/exe), of
+this user unless run as root, and only once it catches that signal: an
+uncaught real-time signal, or a SIGUSR2 before waybar sets its handlers,
+ends the bar and the whole session with it; a name alone could match
+another program. The shell's Python helpers load this file as a module
+(panel()); the C ones have the same in tools/panel-signal.h. Root helpers
+(NetworkManager's dispatcher, b8k-suspend, b8k-netwatch) run it so the
+Wi-Fi icon follows the network at once.
 """
 import os
 import signal
 import sys
+
+PANEL_EXE = "/usr/bin/waybar"
 
 
 def catches(pid, signum):
@@ -24,29 +34,61 @@ def catches(pid, signum):
     return False
 
 
-def main():
-    try:
-        n = int(sys.argv[1])
-    except (IndexError, ValueError):
-        sys.stderr.write("usage: haltia-panel-signal N\n")
-        return 2
-    signum = signal.SIGRTMIN + n
-    if n <= 0 or signum > signal.SIGRTMAX:
-        return 2
+def panels():
+    """The pids of the panel: this user's, or any user's for root."""
+    me = os.getuid()
+    found = []
     for name in os.listdir("/proc"):
         if not name.isdigit():
             continue
-        pid = int(name)
         try:
-            if os.readlink("/proc/%d/exe" % pid) != "/usr/bin/waybar":
+            if me != 0 and os.stat("/proc/" + name).st_uid != me:
+                continue
+            if os.readlink("/proc/%s/exe" % name) != PANEL_EXE:
                 continue
         except OSError:
             continue
+        found.append(int(name))
+    return found
+
+
+def send(signum):
+    """signum to every panel that catches it; True when one got it."""
+    sent = False
+    for pid in panels():
         if catches(pid, signum):
             try:
                 os.kill(pid, signum)
+                sent = True
             except OSError:
                 pass
+    return sent
+
+
+def refresh(n):
+    """The modules on signal n refresh (SIGRTMIN+n)."""
+    signum = signal.SIGRTMIN + n
+    return 0 < n and signum <= signal.SIGRTMAX and send(signum)
+
+
+def reload():
+    """waybar rereads its config and style."""
+    return send(signal.SIGUSR2)
+
+
+def main():
+    arg = sys.argv[1] if len(sys.argv) == 2 else ""
+    if arg == "reload":
+        reload()
+        return 0
+    try:
+        n = int(arg)
+    except ValueError:
+        sys.stderr.write("usage: haltia-panel-signal N|reload\n")
+        return 2
+    if n <= 0 or signal.SIGRTMIN + n > signal.SIGRTMAX:
+        return 2
+    refresh(n)
     return 0
 
 

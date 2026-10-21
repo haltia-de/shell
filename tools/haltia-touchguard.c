@@ -134,6 +134,7 @@ static long long palm_until;    /* ms: the grace after the palm left */
 static long long last_up = -1000000;
 static int last_x, last_y;
 static volatile sig_atomic_t running = 1, reload, log_on, log_off;
+static int lost; /* the screen went away: end with a failure */
 
 static long long now_ms(void)
 {
@@ -793,6 +794,23 @@ static void log_config(void)
 	      cfg.multitouch, nslots);
 }
 
+/* Our own pid for haltia-touchguard-conf (signals) and the init script's
+ * reload: under supervise-daemon the service's pidfile is the
+ * supervisor's. Not for a test instance on a made-up screen. */
+static void write_pidfile(void)
+{
+	FILE *f;
+
+	if (env("TOUCHGUARD_SCREEN"))
+		return;
+	f = fopen("/run/haltia/touchguard.pid.new", "w");
+	if (!f)
+		return;
+	fprintf(f, "%d\n", (int)getpid());
+	if (fclose(f) == 0)
+		rename("/run/haltia/touchguard.pid.new", "/run/haltia/touchguard.pid");
+}
+
 int main(int argc, char **argv)
 {
 	struct input_event evs[64];
@@ -832,6 +850,7 @@ int main(int argc, char **argv)
 		return 1;
 	}
 	log_config();
+	write_pidfile();
 
 	while (running) {
 		struct pollfd pf = { in_fd, POLLIN, 0 };
@@ -882,8 +901,11 @@ int main(int argc, char **argv)
 				continue;
 			break;
 		}
-		if (pf.revents & (POLLERR | POLLHUP))
+		if (pf.revents & (POLLERR | POLLHUP)) {
+			logf_("the touchscreen went away");
+			lost = 1;
 			break;
+		}
 		if (!(pf.revents & POLLIN)) {
 			check_hold(now_ms());
 			check_long(now_ms());
@@ -893,6 +915,8 @@ int main(int argc, char **argv)
 		if (n < 0) {
 			if (errno == EAGAIN || errno == EINTR)
 				continue;
+			logf_("read: %s", strerror(errno));
+			lost = 1;
 			break;
 		}
 		for (int k = 0; k < (int)(n / sizeof(evs[0])); k++) {
@@ -954,5 +978,7 @@ int main(int argc, char **argv)
 	cancel_all();
 	ioctl(in_fd, EVIOCGRAB, 0);
 	ioctl(out_fd, UI_DEV_DESTROY);
-	return 0;
+	/* A lost screen is a failure: supervise-daemon starts this again,
+	 * which looks the screen up afresh (open_screen). */
+	return lost ? 1 : 0;
 }

@@ -51,6 +51,8 @@
 #include <unistd.h>
 #include <wayland-client.h>
 
+#include "panel-signal.h"
+
 #include "wlr-layer-shell-unstable-v1-client-protocol.h"
 
 #define APPS "/usr/share/haltia/apps.conf"
@@ -708,34 +710,7 @@ static void redraw(void)
  * uncaught real-time signal would end waybar and the session with it). */
 static void signal_panel(void)
 {
-	int signum = SIGRTMIN + HOME_SIGNAL;
-	DIR *proc = opendir("/proc");
-	struct dirent *e;
-
-	if (!proc)
-		return;
-	while ((e = readdir(proc))) {
-		char path[64], line[256];
-		unsigned long long caught = 0;
-		int is_bar = 0;
-		FILE *f;
-
-		if (e->d_name[0] < '1' || e->d_name[0] > '9')
-			continue;
-		snprintf(path, sizeof(path), "/proc/%s/status", e->d_name);
-		if (!(f = fopen(path, "r")))
-			continue;
-		while (fgets(line, sizeof(line), f)) {
-			if (!strncmp(line, "Name:", 5))
-				is_bar = !strcmp(line + 5 + strspn(line + 5, " \t"), "waybar\n");
-			else if (!strncmp(line, "SigCgt:", 7))
-				caught = strtoull(line + 7, NULL, 16);
-		}
-		fclose(f);
-		if (is_bar && (caught >> (signum - 1) & 1))
-			kill((pid_t)atoi(e->d_name), signum);
-	}
-	closedir(proc);
+	panel_signal(SIGRTMIN + HOME_SIGNAL);
 }
 
 /* The close button (haltia-close) hides while the home screen is up. */

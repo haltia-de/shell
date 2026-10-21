@@ -11,6 +11,31 @@ import struct
 import subprocess
 import sys
 
+
+_panel = None
+
+
+def panel():
+    """haltia-panel-signal as a module (loaded on first use): signalling
+    the panel, the one way."""
+    global _panel
+    if _panel is None:
+        import importlib.machinery
+        import importlib.util
+        here = os.path.dirname(os.path.realpath(__file__))
+        for path in (os.path.join(here, "haltia-panel-signal"),
+                     os.path.join(here, "..", "bin", "haltia-panel-signal"),
+                     "/usr/bin/haltia-panel-signal"):
+            if os.path.exists(path):
+                loader = importlib.machinery.SourceFileLoader("haltia_panel_signal", path)
+                spec = importlib.util.spec_from_loader("haltia_panel_signal", loader)
+                _panel = importlib.util.module_from_spec(spec)
+                loader.exec_module(_panel)
+                break
+        else:
+            raise OSError("haltia-panel-signal is missing")
+    return _panel
+
 MANAGER = "zwlr_foreign_toplevel_manager_v1"
 EV_TITLE, EV_APP_ID, EV_STATE, EV_DONE, EV_CLOSED = 0, 1, 4, 5, 6
 REQ_ACTIVATE = 4
@@ -256,34 +281,6 @@ def load_classes():
     return found
 
 
-def waybar_pids():
-    pids = []
-    for name in os.listdir("/proc"):
-        if not name.isdigit():
-            continue
-        try:
-            comm = open("/proc/%s/comm" % name).read().strip()
-        except OSError:
-            continue
-        if comm == "waybar":
-            pids.append(int(name))
-    return pids
-
-
-def catches(pid, signum):
-    # A bar that has not set up its handlers yet dies of a real-time
-    # signal, and the whole session goes with it. Signal only once the
-    # bar catches it; the bar reads the state file when it starts anyway.
-    try:
-        with open("/proc/%d/status" % pid) as fh:
-            for line in fh:
-                if line.startswith("SigCgt:"):
-                    return bool(int(line.split()[1], 16) >> (signum - 1) & 1)
-    except (OSError, ValueError):
-        pass
-    return False
-
-
 def front_path():
     return os.path.join(os.path.dirname(state_path()), "front")
 
@@ -341,15 +338,11 @@ def publish(found, prev):
     # slots may all shift, so every slot reads its program again.
     if any(sig <= 0 for _bid, sig, _names in changed):
         sigs += SLOTS
-    for pid in waybar_pids():
-        for sig in sigs:
-            signum = signal.SIGRTMIN + sig
-            if not catches(pid, signum):
-                continue
-            try:
-                os.kill(pid, signum)
-            except OSError:
-                pass
+    # A bar that has not set up its handlers yet dies of a real-time
+    # signal: panel() signals only one that catches it, and the bar reads
+    # the state file when it starts anyway.
+    for sig in sigs:
+        panel().refresh(sig)
     sys.stderr.write(
         "buttons " + " ".join("%s=%s" % (bid, cur[bid]) for bid, _s, _n in changed) + "\n"
     )

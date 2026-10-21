@@ -14,6 +14,8 @@
 #    in /run/haltia/touchguard-levels), into default on a first install
 #    or when the old filter runs and nothing else is known, and nowhere when
 #    it had been turned off; the old filter stops and the new one starts;
+#  - a filter started the old way (start-stop-daemon) restarts under
+#    supervise-daemon, which starts it again should it end;
 #  - the power key's loop restarts from its new place;
 #  - files an install.sh of 1.x left behind (a package's go with it) go.
 set -u
@@ -70,6 +72,24 @@ rm -rf /run/openrc/started/b8k-touchguard /run/openrc/daemons/b8k-touchguard \
 if [ -n "$levels" ] && [ -x /etc/init.d/haltia-touchguard ]; then
 	rc-service haltia-touchguard restart >/dev/null 2>&1 ||
 		rc-service haltia-touchguard start >/dev/null 2>&1
+fi
+
+# The filter runs under supervise-daemon now (it starts it again when the
+# screen goes away or it crashes). One started the old way, by
+# start-stop-daemon, would not be stopped by the new script: it is ended
+# here and started again under the supervisor, with the new binary.
+tg_pid=$(cat /run/haltia/touchguard.pid 2>/dev/null)
+if [ -n "$tg_pid" ] && [ -x /etc/init.d/haltia-touchguard ] && kill -0 "$tg_pid" 2>/dev/null; then
+	tg_parent=$(sed 's/.*) //' "/proc/$tg_pid/stat" 2>/dev/null | cut -d' ' -f2)
+	case $(cat "/proc/$tg_parent/comm" 2>/dev/null) in
+	supervise-daem*) ;;
+	*)
+		kill "$tg_pid" 2>/dev/null
+		sleep 1
+		rc-service haltia-touchguard zap >/dev/null 2>&1
+		rc-service haltia-touchguard start >/dev/null 2>&1
+		;;
+	esac
 fi
 
 # The power key's loop, from its new place.

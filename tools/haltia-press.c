@@ -25,6 +25,8 @@
 #include <time.h>
 #include <unistd.h>
 
+#include "panel-signal.h"
+
 #define BUZZ_MS 70  /* shorter is not felt: the motor needs time to spin up */
 #define MARK_MS 300
 
@@ -50,45 +52,12 @@ static int read_line(const char *path, char *buf, size_t len)
 	return 0;
 }
 
-/* Signal every waybar of this user that catches SIGRTMIN+sig. */
+/* The panel's SIGRTMIN+sig, only once it catches it (panel-signal.h). */
 static void signal_bar(int sig)
 {
-	int signum = SIGRTMIN + sig;
-	DIR *proc;
-	struct dirent *de;
-
-	if (sig <= 0 || signum > SIGRTMAX)
+	if (sig <= 0 || SIGRTMIN + sig > SIGRTMAX)
 		return;
-	proc = opendir("/proc");
-	if (!proc)
-		return;
-	while ((de = readdir(proc))) {
-		char path[64], line[256];
-		FILE *f;
-		int catches = 0;
-
-		if (de->d_name[0] < '0' || de->d_name[0] > '9')
-			continue;
-		snprintf(path, sizeof(path), "/proc/%s/comm", de->d_name);
-		if (read_line(path, line, sizeof(line)) || strcmp(line, "waybar"))
-			continue;
-		snprintf(path, sizeof(path), "/proc/%s/status", de->d_name);
-		f = fopen(path, "r");
-		if (!f)
-			continue;
-		while (fgets(line, sizeof(line), f)) {
-			if (!strncmp(line, "SigCgt:", 7)) {
-				unsigned long long mask = strtoull(line + 7, NULL, 16);
-
-				catches = (mask >> (signum - 1)) & 1;
-				break;
-			}
-		}
-		fclose(f);
-		if (catches)
-			kill((pid_t)atoi(de->d_name), signum);
-	}
-	closedir(proc);
+	panel_signal(SIGRTMIN + sig);
 }
 
 static void buzz(void)
