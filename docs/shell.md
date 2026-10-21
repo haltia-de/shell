@@ -212,7 +212,7 @@ org.freedesktop.portal.Desktop.service`, который `haltia-launcher` пиш
 
 Описания изменений оболочки — в `NEWS.md` (по-русски и по-английски);
 раздел `<releases>` в `data/io.github.haltia_de.Shell.metainfo.xml`
-собирается из него `news.py` из haltia-de/ci (`python3 ../b8k-ci/news.py
+собирается из него `news.py` из haltia-de/ci (`python3 ../ci/news.py
 metainfo NEWS.md data/io.github.haltia_de.Shell.metainfo.xml`), CI выпуска
 проверяет, что они совпадают.
 
