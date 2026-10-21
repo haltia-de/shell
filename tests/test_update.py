@@ -291,7 +291,16 @@ class Update(unittest.TestCase):
                 mock.patch("urllib.request.urlopen", lambda *_a, **_k: Answer(whole)):
             hu.update_catalogs()
             self.assertTrue(os.path.exists(hu.catalog_path(repo)))
+        # A good gzip header over a corrupt body (zlib.error) is not kept.
+        os.unlink(hu.catalog_path(repo))
+        corrupt = whole[:10] + bytes(b ^ 0xff for b in whole[10:-8]) + whole[-8:]
+        with mock.patch.object(hu, "repositories", lambda: [repo]), \
+                mock.patch("urllib.request.urlopen", lambda *_a, **_k: Answer(corrupt)):
+            hu.update_catalogs()
+            self.assertFalse(os.path.exists(hu.catalog_path(repo)))
         # A small download that unpacks past the reader's bound is refused.
+        os.makedirs(os.path.dirname(hu.catalog_path(repo)), exist_ok=True)
+        open(hu.catalog_path(repo), "wb").close()
         os.unlink(hu.catalog_path(repo))
         bomb = gzip.compress(b"\0" * (hu.CATALOG_MAX * 8 + 1))
         self.assertLess(len(bomb), hu.CATALOG_MAX)

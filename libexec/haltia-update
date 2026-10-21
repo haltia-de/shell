@@ -318,6 +318,7 @@ def update_catalogs():
     import gzip
     import http.client
     import io
+    import zlib
     import urllib.error
     import urllib.request
     for repo in repositories():
@@ -356,8 +357,8 @@ def update_catalogs():
                     unpacked += len(chunk)
                     if unpacked > CATALOG_MAX * 8:
                         raise ValueError("too large unpacked")
-        except (OSError, EOFError, ValueError):
-            continue
+        except (OSError, EOFError, ValueError, zlib.error):
+            continue  # zlib.error: a corrupt deflate stream inside a good header
         os.makedirs(os.path.dirname(path), exist_ok=True)
         with open(path + ".new", "wb") as fh:
             fh.write(data)
