@@ -26,8 +26,9 @@ button (▶ or ‖) and haltia-ask media uses to pause or stop it; stopped, or
 gone from the bus, removes the file.
 
 And it tells the panel when a program records from a microphone (a
-PulseAudio source output on anything but a monitor, read again only when
-pactl subscribe tells of a source output) or uses a camera (a /dev/video*
+PulseAudio source output on anything but a monitor, neither corked nor a
+filter's own stream, read again only when pactl subscribe tells of a source
+output) or uses a camera (a /dev/video*
 open in one of the user's processes, looked at every REC_EVERY seconds,
 only when the device has a camera and the screen is on): "mic", "cam" or
 both in $XDG_RUNTIME_DIR/haltia/rec, then the panel's custom/rec
@@ -39,6 +40,7 @@ launch/back, for haltia-close's home button at the top left.
 """
 import configparser
 import glob
+import json
 import os
 import subprocess
 import signal
@@ -292,10 +294,38 @@ def short(*args):
 
 def microphone():
     """Some program records from a source that is not a monitor (the
-    speaker's own sound)."""
+    speaker's own sound). A corked stream captures nothing, and a filter's
+    own stream is no program recording (module-echo-cancel's, which the
+    B8000-H keeps loaded for calls): neither counts. A filter's stream is
+    one a module made, with no client; media.role alone is the program's
+    word, so a client's "filter" stream still counts."""
     names = {row[0]: row[1] for row in short("sources") if len(row) > 1}
-    return any(len(row) > 1 and not names.get(row[1], "").endswith(".monitor")
-               for row in short("source-outputs"))
+    try:
+        # In C: pactl warns of translated text and its JSON breaks.
+        out = subprocess.run(["pactl", "-f", "json", "list", "source-outputs"],
+                             capture_output=True, text=True, timeout=5,
+                             env=dict(os.environ, LC_ALL="C")).stdout
+        outputs = json.loads(out)
+        if not isinstance(outputs, list):
+            raise ValueError("not a list")
+    except (OSError, subprocess.SubprocessError, ValueError):
+        # A pactl without JSON (before PulseAudio 16) or a broken answer:
+        # the plain look, which may count a corked stream, rather than
+        # hiding a recording.
+        return any(len(row) > 1 and not names.get(row[1], "").endswith(".monitor")
+                   for row in short("source-outputs"))
+    for stream in outputs:
+        if not isinstance(stream, dict):
+            continue
+        props = stream.get("properties") or {}
+        if not isinstance(props, dict):
+            props = {}
+        filter_own = props.get("media.role") == "filter" and stream.get("client") is None
+        if stream.get("corked") or filter_own:
+            continue
+        if not names.get(str(stream.get("source")), "").endswith(".monitor"):
+            return True
+    return False
 
 
 def cameras():
