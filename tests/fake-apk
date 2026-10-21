@@ -1,0 +1,199 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0
+"""A stand-in for apk in tests/test_update.py: just enough of add, del,
+upgrade, fetch, update, policy, search and version over a database in
+the format of /lib/apk/db/installed and a world file.
+
+FAKE_DB, FAKE_WORLD: the database and world it changes.
+FAKE_REPO: JSON {name: [versions, oldest first]} the repositories offer.
+FAKE_DEPS: JSON {"name-version": [names it depends on]}.
+FAKE_FAIL: words: "upgrade" (fails before changing anything, as when
+  every download fails), "upgrade-half" (changes one package, then fails),
+  "add-files" (refuses to add .apk files), "update".
+FAKE_CALLS: each call's arguments are appended here, one JSON list a line.
+"""
+import json
+import os
+import re
+import sys
+
+env = os.environ
+DB, WORLD = env["FAKE_DB"], env["FAKE_WORLD"]
+REPO = json.loads(env.get("FAKE_REPO", "{}"))
+DEPS = json.loads(env.get("FAKE_DEPS", "{}"))
+FAIL = env.get("FAKE_FAIL", "").split()
+
+
+def read_db():
+    found, name = {}, None
+    try:
+        with open(DB) as fh:
+            for line in fh:
+                if line.startswith("P:"):
+                    name = line[2:].strip()
+                elif line.startswith("V:") and name:
+                    found[name] = line[2:].strip()
+    except OSError:
+        pass
+    return found
+
+
+def write_db(db):
+    with open(DB, "w") as fh:
+        for name, ver in sorted(db.items()):
+            fh.write("P:%s\nV:%s\n\n" % (name, ver))
+
+
+def read_world():
+    try:
+        with open(WORLD) as fh:
+            return fh.read().split()
+    except OSError:
+        return []
+
+
+def write_world(entries):
+    with open(WORLD, "w") as fh:
+        fh.write("\n".join(entries) + "\n")
+
+
+def name_of(entry):
+    return re.split(r"[<>=~@]", entry.lstrip("!"), maxsplit=1)[0]
+
+
+def set_entry(world, name, entry):
+    out = [e for e in world if name_of(e) != name]
+    return out + [entry]
+
+
+def solve(db, world):
+    """Drop what nothing in world needs; a pin must hold."""
+    for e in world:
+        if "=" in e and "<" not in e and ">" not in e:
+            name, ver = e.split("=", 1)
+            if db.get(name) != ver:
+                sys.stderr.write("ERROR: unable to select packages: %s\n" % e)
+                return None
+    need, todo = set(), [name_of(e) for e in world if not e.startswith("!")]
+    while todo:
+        name = todo.pop()
+        if name in need or name not in db:
+            continue
+        need.add(name)
+        todo += DEPS.get("%s-%s" % (name, db[name]), [])
+    return {n: v for n, v in db.items() if n in need}
+
+
+def newest(name):
+    vers = REPO.get(name, [])
+    return vers[-1] if vers else None
+
+
+def options(args):
+    out, opts = [], set()
+    i = 0
+    while i < len(args):
+        a = args[i]
+        if a == "--":
+            out += args[i + 1:]
+            break
+        if a in ("--wait", "--progress-fd", "-o"):
+            opts.add((a, args[i + 1]))
+            i += 2
+            continue
+        if a.startswith("-"):
+            opts.add(a)
+        else:
+            out.append(a)
+        i += 1
+    return out, opts
+
+
+def from_file(path, db):
+    base = os.path.basename(path)
+    for name in sorted(set(REPO) | set(db), key=len, reverse=True):
+        if base.startswith(name + "-"):
+            rest = base[len(name) + 1:]
+            ver = rest.split(".apk")[0]
+            ver = re.sub(r"\.[0-9a-f]{8,}$", "", ver)
+            return name, ver
+    return None, None
+
+
+def main():
+    args = sys.argv[1:]
+    if env.get("FAKE_CALLS"):
+        with open(env["FAKE_CALLS"], "a") as fh:
+            fh.write(json.dumps(args) + "\n")
+    if not args:
+        return 1
+    cmd, rest = args[0], args[1:]
+    items, opts = options(rest)
+    db, world = read_db(), read_world()
+    if cmd == "--print-arch":
+        print("armv7")
+        return 0
+    if cmd == "update":
+        return 1 if "update" in FAIL else 0
+    if cmd in ("fetch", "policy", "search"):
+        return 1 if cmd == "fetch" else 0
+    if cmd == "version":
+        return 0
+    if cmd == "upgrade":
+        names = items or sorted(db)
+        plan = [(n, db[n], newest(n)) for n in names
+                if n in db and newest(n) and newest(n) != db[n]]
+        if "--simulate" in opts:
+            for i, (n, old, new) in enumerate(plan, 1):
+                print("(%d/%d) Upgrading %s (%s -> %s)" % (i, len(plan), n, old, new))
+            return 0
+        if "upgrade" in FAIL:
+            sys.stderr.write("ERROR: fetching failed\n")
+            return 1
+        for n, _old, new in plan[:1] if "upgrade-half" in FAIL else plan:
+            db[n] = new
+            for dep in DEPS.get("%s-%s" % (n, new), []):
+                if dep not in db:
+                    db[dep] = newest(dep)
+        write_db(db)
+        for opt in opts:
+            if isinstance(opt, tuple) and opt[0] == "--progress-fd":
+                os.write(int(opt[1]), b"1/1\n")
+        if "upgrade-half" in FAIL:
+            sys.stderr.write("ERROR: half way\n")
+            return 1
+        return 0
+    if cmd in ("add", "del"):
+        new_db, new_world = dict(db), list(world)
+        for item in items:
+            if cmd == "del":
+                new_world = [e for e in new_world if name_of(e) != item]
+            elif item.endswith(".apk"):
+                if "add-files" in FAIL:
+                    sys.stderr.write("ERROR: %s: BAD signature\n" % item)
+                    return 1
+                name, ver = from_file(item, db)
+                new_db[name] = ver
+                new_world = set_entry(new_world, name, "%s><Q1fakechecksum=" % name)
+            elif "=" in item:
+                name, ver = item.split("=", 1)
+                if "--no-network" in opts or ver not in REPO.get(name, []):
+                    sys.stderr.write("ERROR: unable to select package: %s\n" % item)
+                    return 1
+                new_db[name] = ver
+                new_world = set_entry(new_world, name, item)
+            else:
+                if item not in new_db:
+                    new_db[item] = newest(item)
+                new_world = set_entry(new_world, item, item)
+        solved = solve(new_db, new_world)
+        if solved is None:
+            return 1
+        write_db(solved)
+        write_world(new_world)
+        return 0
+    sys.stderr.write("fake-apk: %s not faked\n" % cmd)
+    return 1
+
+
+sys.exit(main())

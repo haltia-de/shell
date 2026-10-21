@@ -54,6 +54,7 @@ CONF = "/etc/haltia/update.conf"
 LOCK = "/run/haltia/update.lock"
 CACHE = "/var/cache/apk"
 WORLD = "/etc/apk/world"
+INSTALLED = "/lib/apk/db/installed"
 HEALTH = "/etc/haltia/health"
 KEEP = 5  # snapshots kept
 MIN_FREE = 300 * 1024 * 1024
@@ -61,6 +62,10 @@ MIN_CHARGE = 30
 RESTARTS = 3  # session starts within RESTART_WINDOW while pending: roll back
 RESTART_WINDOW = 300
 BOOTS = 2  # boots without a good mark while pending: roll back at the next
+CHECK_TIMEOUT = 120  # one health check
+# How long a command that must not be refused waits for the lock: a look
+# from the window holds it for a moment (busy()), an update for minutes.
+LOCK_WAIT = {"health": 60, "boot": 60, "session-start": 10}
 # A package name, never something apk would read as an option.
 PACKAGE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._+-]*")
 LANG = "{http://www.w3.org/XML/1998/namespace}lang"
@@ -149,7 +154,7 @@ def apk(*args, check=False):
 def installed():
     """{name: version} from apk's database."""
     found, name = {}, None
-    with open("/lib/apk/db/installed") as fh:
+    with open(INSTALLED) as fh:
         for line in fh:
             if line.startswith("P:"):
                 name = line[2:].strip()
@@ -197,6 +202,30 @@ def newer(a, b):
     return apk("version", "-t", a, b).stdout.strip() == ">"
 
 
+def read_world():
+    try:
+        with open(WORLD) as fh:
+            return fh.read().split()
+    except OSError:
+        return []
+
+
+def write_world(entries):
+    """world replaced at once, and on the disk before the rename: a power
+    cut must not leave apk an empty or half world."""
+    with open(WORLD + ".haltia-new", "w") as fh:
+        fh.write("\n".join(entries) + "\n")
+        fh.flush()
+        os.fsync(fh.fileno())
+    os.replace(WORLD + ".haltia-new", WORLD)
+
+
+def entry_name(entry):
+    """The package a world entry is about: name, name=1.2, name><Q1...,
+    name@tag, !name."""
+    return re.split(r"[<>=~@]", entry.lstrip("!"), maxsplit=1)[0]
+
+
 def unhold_checksums():
     """Images up to Pertin Haltia v2.2.0 held each Haltia package at its
     file's checksum in world (haltia-shell><Q1...), so nothing ever showed
@@ -210,9 +239,7 @@ def unhold_checksums():
     plain = [re.sub(r"^((?:haltia-|py3-haltia-)[A-Za-z0-9._+-]*)><.*$", r"\1", l)
              for l in lines]
     if plain != lines:
-        with open(WORLD + ".haltia-new", "w") as fh:
-            fh.write("\n".join(plain) + "\n")
-        os.replace(WORLD + ".haltia-new", WORLD)
+        write_world(plain)
         note("world: checksum holds of Haltia packages dropped")
 
 
@@ -557,12 +584,18 @@ def take_snapshot(changes_):
     for name, old, _new in changes_:
         if not fetch(name, old, os.path.join(path, "apk")):
             missing.append(name)
+    # world as it was, entry for entry, for whoever looks into a rollback.
     write_json(os.path.join(path, "snapshot.json"), {
-        "versions": installed(), "changes": changes_, "missing": missing,
-        "time": int(time.time())})
+        "versions": installed(), "world": read_world(), "changes": changes_,
+        "missing": missing, "time": int(time.time())})
+    return sid, missing
+
+
+def drop_old_snapshots():
+    """KEEP snapshots stay; only after a good upgrade, so that a failed one
+    never costs the oldest way back."""
     for old in snapshots()[KEEP:]:
         shutil.rmtree(os.path.join(STATE, old), ignore_errors=True)
-    return sid, missing
 
 
 def stage(name):
@@ -653,6 +686,7 @@ def upgrade(auto=False, names=()):
         return 1
     write_json(os.path.join(STATE, "pending.json"), {"snapshot": sid, "boots": 0,
                                                      "starts": [], "auto": auto})
+    drop_old_snapshots()
     # What check found and this installed is no longer to be updated.
     status = read_json(os.path.join(STATE, "status.json"), {})
     done = {c[0] for c in plan}
@@ -700,8 +734,22 @@ def news():
 
 
 def rollback(sid=None, reason="asked", names=()):
-    """Back to the versions of snapshot sid (the last by default): all it
-    changed, or only the packages named (with their subpackages)."""
+    """Back to the versions of snapshot sid (the last by default): what it
+    changed, or only the packages named (with their subpackages).
+
+    Only what the update changed and differs now is put back: from the
+    files kept with the snapshot, then from a repository for one without a
+    file. Other differences from the snapshot (the person installed or
+    updated something since) are left and logged. apk writes a checksum
+    hold (name><Q1...) for every file it adds, so world is then rewritten
+    from the one before the rollback (what the person changed since the
+    snapshot stays), with the old versions of Haltia's packages pinned
+    (name=1.2) and remembered as bad unless the upgrade only failed to
+    install. System packages come back unpinned: a pin would keep their
+    security fixes out. A last apk add applies that world, which also
+    removes what the upgrade added. A failure at any step after the files
+    puts that world back, without the holds, and leaves the snapshot,
+    pending.json and held.json as they were: 1."""
     sid = sid or (snapshots()[:1] or [None])[0]
     if not sid:
         log("no snapshot")
@@ -715,29 +763,81 @@ def rollback(sid=None, reason="asked", names=()):
     want, now = snap["versions"], installed()
     if wanted:
         want = {n: v for n, v in want.items() if group(n) in wanted}
-    back = [(n, v) for n, v in want.items() if now.get(n) != v]
+    back = sorted((n, v) for n, v in want.items() if now.get(n) != v)
+    changed = {c[0] for c in snap.get("changes", [])}
+    if changed:
+        left = [b for b in back if b[0] not in changed]
+        back = [b for b in back if b[0] in changed]
+        if left:
+            note("rollback %s: not changed by that update, left as they are: %s"
+                 % (sid, ", ".join("%s %s" % (n, now.get(n, "-")) for n, _v in left)))
     folder = os.path.join(STATE, sid, "apk")
-    files = [os.path.join(folder, f) for f in os.listdir(folder)
-             if not wanted or any(f.startswith("%s-%s." % (n, v)) for n, v in back)]
+    try:
+        kept = os.listdir(folder)
+    except OSError:
+        kept = []
+    files, unfiled = [], []
+    for name, ver in back:
+        found = [f for f in kept if f.startswith("%s-%s." % (name, ver)) and f.endswith(".apk")]
+        if found:
+            files.append(os.path.join(folder, found[0]))
+        else:
+            unfiled.append((name, ver))
+    before = read_world()
     stage("rollback")
+    errors = []
     if files:
-        res = apk("add", "--no-network", *files)
+        res = apk("add", "--no-network", "--", *files)
         if res.returncode:
+            # apk changed nothing: world is still as it was.
             clear_progress()
-            note("rollback %s: %s" % (sid, res.stderr.strip()[-200:]))
+            note("rollback %s (%s) failed: %s" % (sid, reason, res.stderr.strip()[-200:]))
             log("rollback failed")
             return 1
-    # Pin what came back (from a repository when no file was kept), and
-    # remember the bad version: not when the upgrade only failed to install,
-    # which says nothing about the version.
-    bad = held()
-    for name, ver in back:
-        if name in now:
-            apk("add", "%s=%s" % (name, ver) if reason != "failed" else name)
-            if reason != "failed":
-                bad[name] = now[name]
-    write_json(os.path.join(STATE, "held.json"), bad)
+    came = {n for n, _v in back} - {n for n, _v in unfiled}
+    for name, ver in unfiled:
+        res = apk("add", "--", "%s=%s" % (name, ver))
+        if res.returncode:
+            errors.append(res.stderr.strip()[-200:])
+        else:
+            came.add(name)
+    if errors:
+        # The files are in, but not everything came back: world as it was
+        # before, without the checksum holds apk just wrote.
+        write_world(before)
+    else:
+        target = list(before)
+        if reason != "failed":
+            for name, ver in back:
+                if name in now and name in came and is_haltia(name):
+                    pin = "%s=%s" % (name, ver)
+                    at = [i for i, e in enumerate(target)
+                          if not e.startswith("!") and entry_name(e) == name]
+                    if at:
+                        target[at[0]] = pin
+                        target = [e for i, e in enumerate(target) if i not in at[1:]]
+                    else:
+                        target.append(pin)
+        if back or target != read_world():
+            write_world(target)
+            res = apk("add", "--no-network")
+            if res.returncode:
+                # The packages are back, but this world does not resolve.
+                write_world(before)
+                errors.append(res.stderr.strip()[-200:])
     clear_progress()
+    if errors:
+        note("rollback %s (%s) failed: %s" % (sid, reason, " | ".join(errors)))
+        log("rollback failed")
+        return 1
+    # Remember the bad version: not when the upgrade only failed to
+    # install, which says nothing about the version.
+    if reason != "failed":
+        bad = held()
+        for name, _ver in back:
+            if name in now and is_haltia(name):
+                bad[name] = now[name]
+        write_json(os.path.join(STATE, "held.json"), bad)
     if not wanted:
         try:
             os.unlink(os.path.join(STATE, "pending.json"))
@@ -748,7 +848,7 @@ def rollback(sid=None, reason="asked", names=()):
     write_json(path, snap)
     if reason not in ("asked", "failed"):
         tell("rolled back", sorted({group(n) for n, _v in back}))
-    note("rollback %s (%s): %s" % (sid, reason, ", ".join("%s %s" % b for b in back)))
+    note("rollback %s (%s): %s" % (sid, reason, ", ".join("%s %s" % b for b in back) or "nothing to change"))
     log("rolled back")
     return 0
 
@@ -775,9 +875,18 @@ def run_checks(kind):
         path = os.path.join(folder, name)
         if not os.access(path, os.X_OK):
             continue
-        res = subprocess.run([path], capture_output=True, text=True, timeout=120)
-        if res.returncode:
-            note("health %s/%s failed: %s" % (kind, name, (res.stderr or "").strip()[-200:]))
+        try:
+            res = subprocess.run([path], capture_output=True, text=True,
+                                 timeout=CHECK_TIMEOUT)
+            failed, why = res.returncode != 0, (res.stderr or "").strip()[-200:]
+        except subprocess.TimeoutExpired:
+            failed, why = True, "no answer in %d s" % CHECK_TIMEOUT
+        except OSError as exc:
+            failed, why = True, str(exc)
+        if failed:
+            # A check that hangs counts as failed: health must end with a
+            # good mark or a rollback, never with neither.
+            note("health %s/%s failed: %s" % (kind, name, why))
             ok = False
     return ok
 
@@ -844,15 +953,29 @@ def status():
 
 
 def busy():
-    """An update or rollback runs now (it holds the lock)."""
+    """An update or rollback runs now (it holds the lock). A shared lock:
+    two windows looking at once do not count each other as busy."""
     try:
         with open(LOCK, "a") as fh:
-            fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            fcntl.flock(fh, fcntl.LOCK_SH | fcntl.LOCK_NB)
             return False
     except BlockingIOError:
         return True
     except OSError:
         return False
+
+
+def take_lock(fh, wait):
+    """The update lock, waiting at most wait seconds."""
+    end = time.monotonic() + wait
+    while True:
+        try:
+            fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return True
+        except BlockingIOError:
+            if time.monotonic() >= end:
+                return False
+            time.sleep(0.5)
 
 
 def state():
@@ -922,8 +1045,10 @@ def main():
     if os.geteuid() != 0:
         sys.stderr.write("haltia-update: run as root (doas)\n")
         return 2
-    # Reading needs no lock (the window asks while an update runs); the
-    # session's and the boot's marks wait for one; the rest refuse to wait.
+    # Reading needs no lock (the window asks while an update runs); health
+    # and the session's and the boot's marks wait for one a bounded time
+    # (LOCK_WAIT: a look from the window holds it for a moment, and the
+    # session start must not hang on an update); the rest refuse to wait.
     if cmd == "history":
         return history()
     if cmd == "status":
@@ -939,12 +1064,9 @@ def main():
         for line in reversed(lines):
             log(line)
         return 0
-    wait = cmd in ("session-start", "boot")
     os.makedirs(os.path.dirname(LOCK), exist_ok=True)
     lock = open(LOCK, "a")
-    try:
-        fcntl.flock(lock, fcntl.LOCK_EX | (0 if wait else fcntl.LOCK_NB))
-    except BlockingIOError:
+    if not take_lock(lock, LOCK_WAIT.get(cmd, 0)):
         log("busy: another update runs")
         return 4
     try:

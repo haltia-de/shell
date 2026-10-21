@@ -107,6 +107,15 @@ class SleepRead(unittest.TestCase):
         with self.assertRaises(OSError):
             self.read(path, os.getuid())
 
+    def test_link_even_to_the_users_own_file_is_refused(self):
+        real = os.path.join(self.dir, "real")
+        with open(real, "w") as fh:
+            fh.write("off_after=60\n")
+        path = os.path.join(self.dir, "screen")
+        os.symlink(real, path)
+        with self.assertRaises(OSError):
+            self.read(path, os.getuid())
+
     def test_file_of_another_user_is_refused(self):
         path = os.path.join(self.dir, "screen")
         open(path, "w").close()
