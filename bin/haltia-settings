@@ -118,12 +118,45 @@ dialog button { font-size: 22px; min-height: 60px; padding: 0 24px; }
 
 
 def run(*args, timeout=10):
-    """A command's output, or "" when it fails."""
+    """A command's output, or "" when it fails. Blocks: on the GTK thread
+    only through background()."""
     try:
         return subprocess.run(list(args), capture_output=True, text=True,
                               timeout=timeout).stdout.strip()
     except (OSError, subprocess.SubprocessError):
         return ""
+
+
+def background(fetch, apply=None):
+    """fetch() in a worker thread, then apply(its result) in the main loop.
+    fetch runs commands, reads files and D-Bus, never GTK: the window
+    stays live while haltia-update, pactl or nmcli take their time (a
+    Python start through doas is about a second on the tablet)."""
+    import threading
+
+    def done(result):
+        apply(result)
+        return False
+
+    def work():
+        try:
+            result = fetch()
+        except Exception as exc:  # noqa: BLE001 - a status that cannot be had
+            sys.stderr.write("haltia-settings: %s\n" % exc)
+            return
+        if apply is not None:
+            GLib.idle_add(done, result)
+    threading.Thread(target=work, daemon=True).start()
+
+
+def spawn(*args):
+    """A command whose answer nobody waits for, off the GTK thread."""
+    background(lambda: run(*args))
+
+
+def panel_volume():
+    """The panel's speaker shows the new volume (signal 10)."""
+    run("/usr/bin/haltia-panel-signal", "10")
 
 
 def ask_text(parent, title, value=""):
@@ -301,11 +334,6 @@ class Network:
     def __init__(self, app):
         self.app = app
         self.client = None
-        if NM:
-            try:
-                self.client = NM.Client.new(None)
-            except GLib.Error:
-                self.client = None
         self.widget, box = page_box()
         line = Gtk.Box(spacing=16)
         label = Gtk.Label(label="Wi-Fi", xalign=0)
@@ -334,6 +362,21 @@ class Network:
         box.pack_start(section("Сохранённые"), False, False, 0)
         self.saved = listbox(self.on_saved)
         box.pack_start(self.saved, False, False, 0)
+        self.pending = None
+        self.status.set_text("Узнаю, что с Wi-Fi…")
+        self.switch.set_sensitive(False)
+        # NetworkManager's client reads every device and access point over
+        # D-Bus: asynchronously, the page shows at once.
+        if NM:
+            NM.Client.new_async(None, self.connected)
+        else:
+            self.refresh()
+
+    def connected(self, _source, result):
+        try:
+            self.client = NM.Client.new_finish(result)
+        except GLib.Error:
+            self.client = None
         if self.client:
             self.client.connect("notify::wireless-enabled", lambda *_a: self.refresh())
             self.client.connect("notify::active-connections", lambda *_a: self.refresh())
@@ -342,7 +385,7 @@ class Network:
                 dev.connect("access-point-added", lambda *_a: self.later())
                 dev.connect("access-point-removed", lambda *_a: self.later())
                 dev.connect("notify::state", lambda *_a: self.later())
-        self.pending = None
+        self.switch.set_sensitive(True)
         self.refresh()
 
     def device(self):
@@ -353,14 +396,17 @@ class Network:
                 return d
         return None
 
-    def summary(self):
-        dev = self.device()
-        if not dev:
+    @staticmethod
+    def peek():
+        """The list's line, from nmcli (in a worker thread)."""
+        devices = run("nmcli", "-t", "-f", "TYPE,STATE,CONNECTION", "device").splitlines()
+        wifi = [d.split(":", 2) for d in devices if d.startswith("wifi:")]
+        if not wifi:
             return "нет Wi-Fi"
-        if not self.client.wireless_get_enabled():
+        if run("nmcli", "-t", "-f", "WIFI", "general") != "enabled":
             return "выключен"
-        ap = dev.get_active_access_point()
-        return self.name(ap) if ap else "не подключено"
+        state, name = (wifi[0] + ["", ""])[1:3]
+        return name if state == "connected" and name else "не подключено"
 
     @staticmethod
     def name(ap):
@@ -539,11 +585,12 @@ class Sound:
         self.pending = None
         self.refresh()
 
-    def summary(self):
-        vol = self.volume()
+    @staticmethod
+    def peek():
+        vol = Sound.volume()
         if vol is None:
             return "нет звука"
-        return "без звука" if self.muted() else "%d %%" % vol
+        return "без звука" if Sound.muted() else "%d %%" % vol
 
     @staticmethod
     def volume():
@@ -557,18 +604,9 @@ class Sound:
     def muted():
         return run("pactl", "get-sink-mute", "@DEFAULT_SINK@").split()[-1:] in (["yes"], ["да"])
 
-    def refresh(self):
-        vol = self.volume()
-        self.scale.handler_block_by_func(self.on_volume)
-        self.scale.set_value(vol or 0)
-        self.scale.handler_unblock_by_func(self.on_volume)
-        self.mute.handler_block_by_func(self.on_mute)
-        self.mute.set_active(self.muted())
-        self.mute.handler_unblock_by_func(self.on_mute)
-        set_quietly(self.buzz, self.on_buzz, self.buzz_ms() > 0)
-        for child in self.outputs.get_children():
-            self.outputs.remove(child)
-        default = run("pactl", "get-default-sink")
+    @staticmethod
+    def status():
+        """Everything the page shows (in a worker thread)."""
         desc, name = {}, None
         for line in run("pactl", "list", "sinks").splitlines():
             line = line.strip()
@@ -576,15 +614,30 @@ class Sound:
                 name = line.split(":", 1)[1].strip()
             elif (line.startswith("Description:") or line.startswith("Описание:")) and name:
                 desc[name] = line.split(":", 1)[1].strip()
-        for name, text in desc.items():
+        return {"volume": Sound.volume(), "muted": Sound.muted(),
+                "default": run("pactl", "get-default-sink"), "sinks": desc,
+                "buzz": Sound.buzz_ms()}
+
+    def refresh(self):
+        background(self.status, self.show_status)
+
+    def show_status(self, st):
+        self.scale.handler_block_by_func(self.on_volume)
+        self.scale.set_value(st["volume"] or 0)
+        self.scale.handler_unblock_by_func(self.on_volume)
+        self.mute.handler_block_by_func(self.on_mute)
+        self.mute.set_active(st["muted"])
+        self.mute.handler_unblock_by_func(self.on_mute)
+        set_quietly(self.buzz, self.on_buzz, st["buzz"] > 0)
+        for child in self.outputs.get_children():
+            self.outputs.remove(child)
+        default = st["default"]
+        for name, text in st["sinks"].items():
             row = Gtk.ListBoxRow()
             row.add(row_box(text, None, "✓" if name == default else ""))
             row.sink = name
             self.outputs.add(row)
         self.outputs.show_all()
-
-    def signal_panel(self):
-        subprocess.call(["/usr/bin/haltia-panel-signal", "10"], stderr=subprocess.DEVNULL)
 
     def on_volume(self, scale):
         if self.pending is None:
@@ -593,22 +646,26 @@ class Sound:
     def apply_volume(self):
         self.pending = None
         level = int(self.scale.get_value())
-        run("pactl", "set-sink-volume", "@DEFAULT_SINK@", "%d%%" % level)
-        if level > 0 and self.muted():
-            run("pactl", "set-sink-mute", "@DEFAULT_SINK@", "0")
-            self.mute.handler_block_by_func(self.on_mute)
-            self.mute.set_active(False)
-            self.mute.handler_unblock_by_func(self.on_mute)
-        self.signal_panel()
+
+        def work():
+            run("pactl", "set-sink-volume", "@DEFAULT_SINK@", "%d%%" % level)
+            unmuted = level > 0 and Sound.muted()
+            if unmuted:
+                run("pactl", "set-sink-mute", "@DEFAULT_SINK@", "0")
+            panel_volume()
+            return unmuted
+        background(work, lambda unmuted: unmuted and set_quietly(self.mute, self.on_mute,
+                                                                  False))
         return False
 
     def on_mute(self, switch, _param):
-        run("pactl", "set-sink-mute", "@DEFAULT_SINK@", "1" if switch.get_active() else "0")
-        self.signal_panel()
+        on = "1" if switch.get_active() else "0"
+        background(lambda: (run("pactl", "set-sink-mute", "@DEFAULT_SINK@", on),
+                            panel_volume()))
 
     def on_output(self, _lb, row):
-        run("pactl", "set-default-sink", row.sink)
-        self.refresh()
+        sink = row.sink
+        background(lambda: run("pactl", "set-default-sink", sink), lambda _r: self.refresh())
 
     @staticmethod
     def buzz_ms():
@@ -625,8 +682,8 @@ class Sound:
         return BUZZ_MS
 
     def on_buzz(self, switch, _param):
-        run("doas", "-n", "/usr/libexec/haltia/haltia-touchguard-conf", "set",
-            "buzz_ms=%d" % (BUZZ_MS if switch.get_active() else 0))
+        spawn("doas", "-n", "/usr/libexec/haltia/haltia-touchguard-conf", "set",
+              "buzz_ms=%d" % (BUZZ_MS if switch.get_active() else 0))
 
 
 # --- the screen ---------------------------------------------------------------
@@ -662,8 +719,9 @@ class Screen:
                                     "Пока планшет заряжается, экран горит", self.on_charging)
         self.refresh()
 
-    def settings(self):
-        values = read_keys(self.CONF)
+    @classmethod
+    def settings(cls):
+        values = read_keys(cls.CONF)
         off = int(values.get("off_after", "600")) if values.get("off_after", "").isdigit() else 600
         return off, values.get("charging") == "on"
 
@@ -671,14 +729,16 @@ class Screen:
         write_keys(self.CONF, {"off_after": off, "charging": "on" if charging else "off"},
                    "Настройки → Экран (haltia-sleep reads it)")
 
-    def summary(self):
-        off, charging = self.settings()
+    @classmethod
+    def peek(cls):
+        off, charging = cls.settings()
         text = "гаснет через %d мин" % (off // 60)
         return text + (", на зарядке горит" if charging else "")
 
     def refresh(self):
-        set_quietly(self.rotate, self.on_rotate,
-                    run("/usr/bin/haltia-rotate", "status") != "off")
+        # haltia-rotate is a Python start: its answer comes when it comes.
+        background(lambda: run("/usr/bin/haltia-rotate", "status") != "off",
+                   lambda on: set_quietly(self.rotate, self.on_rotate, on))
         off, charging = self.settings()
         self.off.show_value(off)
         set_quietly(self.charging, self.on_charging, charging)
@@ -690,7 +750,7 @@ class Screen:
 
     @staticmethod
     def on_rotate(switch, _param):
-        run("/usr/bin/haltia-rotate", "on" if switch.get_active() else "off")
+        spawn("/usr/bin/haltia-rotate", "on" if switch.get_active() else "off")
 
     def on_off(self, value):
         self.save(value, self.settings()[1])
@@ -791,9 +851,20 @@ class DateTime:
             sys.stderr.write("haltia-settings: %s: %s\n" % (method, getattr(exc, "message", exc)))
             return False
 
-    def summary(self):
-        zone = self.prop("Timezone") or ""
-        return dict((z, n) for n, z in ZONES).get(zone, zone) or "—"
+    @staticmethod
+    def zone_name(zone):
+        return dict((z, n) for n, z in ZONES).get(zone or "", zone or "") or "—"
+
+    @classmethod
+    def peek(cls):
+        try:
+            bus = Gio.bus_get_sync(Gio.BusType.SYSTEM, None)
+            v = bus.call_sync(cls.BUS[0], cls.BUS[1], "org.freedesktop.DBus.Properties",
+                              "Get", GLib.Variant("(ss)", (cls.BUS[2], "Timezone")), None,
+                              0, 3000, None)
+            return cls.zone_name(v.unpack()[0])
+        except GLib.Error:
+            return "—"
 
     def tick(self):
         now = time.localtime()
@@ -808,9 +879,12 @@ class DateTime:
 
     def refresh(self):
         self.tick()
-        self.zone_box.sub.set_text(self.summary())
+        background(lambda: (self.prop("Timezone"), bool(self.prop("NTP"))), self.show_props)
+
+    def show_props(self, props):
+        zone, ntp = props
+        self.zone_box.sub.set_text(self.zone_name(zone))
         self.zone_box.sub.show()
-        ntp = bool(self.prop("NTP"))
         self.ntp.handler_block_by_func(self.on_ntp)
         self.ntp.set_active(ntp)
         self.ntp.handler_unblock_by_func(self.on_ntp)
@@ -890,15 +964,22 @@ class Programs:
     def __init__(self):
         self.items = []
         self.pending = None
-        self.load()
 
-    def load(self):
+    @staticmethod
+    def fetch():
+        """haltia-apps programs (in a worker thread: a Python start)."""
         import json
         try:
-            self.items = json.loads(run("/usr/bin/haltia-apps", "programs", timeout=20) or "[]")
+            return json.loads(run("/usr/bin/haltia-apps", "programs", timeout=20) or "[]")
         except ValueError:
-            self.items = []
-        return self.items
+            return []
+
+    def load(self, done):
+        """Read them again, then done() in the main loop."""
+        def got(items):
+            self.items = items
+            done()
+        background(self.fetch, got)
 
     def pinned(self):
         return [i for i in self.items if i["pinned"]]
@@ -956,13 +1037,13 @@ class Places:
         box.pack_start(self.list, False, False, 0)
         self.refresh()
 
-    def summary(self):
-        pinned = [i["label"] for i in self.app.programs.pinned()]
+    @staticmethod
+    def peek():
+        pinned = [i["label"] for i in Programs.fetch() if i["pinned"]]
         return "на панели: %s" % ", ".join(pinned) if pinned else "на панели ничего"
 
     def refresh(self):
-        self.app.programs.load()
-        self.fill()
+        self.app.programs.load(self.fill)
 
     def shown(self):
         return [i for i in self.app.programs.items if i["pinned"] or i["home"]]
@@ -1074,8 +1155,9 @@ class Notify:
         box.pack_start(button("+", "step", lambda: self.step(key, 1)), False, False, 0)
         return value
 
-    def values(self):
-        v = read_keys(self.CONF)
+    @classmethod
+    def values(cls):
+        v = read_keys(cls.CONF)
         out = {"vibrate": v.get("vibrate", "on"), "timeout": v.get("timeout", "12"),
                "quiet": v.get("quiet", "off"), "quiet_from": v.get("quiet_from", "22"),
                "quiet_to": v.get("quiet_to", "8")}
@@ -1090,8 +1172,8 @@ class Notify:
         write_keys(self.CONF, v, "Настройки → Уведомления (haltia-mako reads it)")
         if key == "timeout":
             # mako takes a new timeout only from its config.
-            run("/usr/libexec/haltia/haltia-mako", "config")
-            run("makoctl", "reload")
+            background(lambda: (run("/usr/libexec/haltia/haltia-mako", "config"),
+                                run("makoctl", "reload")))
         self.refresh()
 
     def step(self, key, d):
@@ -1101,8 +1183,9 @@ class Notify:
         self.set("vibrate" if switch is self.vibrate else "quiet",
                  "on" if switch.get_active() else "off")
 
-    def summary(self):
-        v = self.values()
+    @classmethod
+    def peek(cls):
+        v = cls.values()
         parts = ["с вибрацией" if v["vibrate"] == "on" else "без вибрации"]
         if v["quiet"] == "on":
             parts.append("ночью тихо")
@@ -1202,11 +1285,10 @@ class Helper:
         self.subpages = {"log": self.log_page, "rollback": self.back_page}
         self.refresh()
 
-    def summary(self):
-        return ""
-
     def refresh(self):
-        self.app.programs.load()
+        self.app.programs.load(self.fill)
+
+    def fill(self):
         for child in self.list.get_children():
             self.list.remove(child)
         for item in self.app.programs.items:
@@ -1266,18 +1348,22 @@ class Helper:
         self.app.open_subpage("helper/touch", "Касания", wide=True)
 
     def open_log(self):
-        lines = run(*UPDATE, "log", timeout=20).splitlines() or ["Журнал пуст."]
-        set_reading(self.log_view, [("\n".join(lines), "mono")])
+        set_reading(self.log_view, [("Читаю журнал…", "note")])
         self.app.open_subpage("helper/log", "Журнал обновлений")
+        background(lambda: run(*UPDATE, "log", timeout=20).splitlines() or ["Журнал пуст."],
+                   lambda lines: set_reading(self.log_view, [("\n".join(lines), "mono")]))
 
     def open_rollback(self):
-        import json
         for child in self.back_box.get_children():
             self.back_box.remove(child)
-        try:
-            history = json.loads(run(*UPDATE, "state", timeout=20) or "{}").get("history", [])
-        except ValueError:
-            history = []
+        self.back_box.pack_start(row_box("Читаю сохранённые обновления…"), False, False, 0)
+        self.back_box.show_all()
+        self.app.open_subpage("helper/rollback", "Вернуть обновление целиком")
+        background(lambda: Updates.fetch()[0].get("history", []), self.fill_rollback)
+
+    def fill_rollback(self, history):
+        for child in self.back_box.get_children():
+            self.back_box.remove(child)
         if not history:
             self.back_box.pack_start(row_box("Сохранённых обновлений нет"), False, False, 0)
         lb = listbox(lambda *_a: None)
@@ -1293,7 +1379,6 @@ class Helper:
             lb.add(row)
         self.back_box.pack_start(lb, False, False, 0)
         self.back_box.show_all()
-        self.app.open_subpage("helper/rollback", "Вернуть обновление целиком")
 
     def rollback(self, entry):
         if dialogs and not dialogs.ask(
@@ -1465,6 +1550,8 @@ class Updates:
         self.app = app
         self.busy = False
         self.st = {}
+        self.old = []  # what still runs its old version
+        self.polling = False
         self.watch = None
         self.restart_pkgs = ()
         self.notes_for = None
@@ -1553,20 +1640,37 @@ class Updates:
         self.refresh()
 
     # --- state ---------------------------------------------------------------
-    def load(self):
+    @staticmethod
+    def fetch():
+        """haltia-update state (a Python start through doas) and what has
+        not taken up its new version yet (haltia-restart, the shell), read
+        once per refresh, in a worker thread."""
         import json
         try:
-            self.st = json.loads(run(*UPDATE, "state") or "{}")
+            st = json.loads(run(*UPDATE, "state", timeout=30) or "{}")
         except ValueError:
-            self.st = {}
-        return self.st
+            st = {}
+        old = [x for x in run(RESTART, "pending").splitlines() if x.strip()]
+        if st and shell_updated_since_start(st):
+            old.append("оболочка (полностью — после перезапуска планшета)")
+        return st, old
 
-    def summary(self):
-        n = len(self.load().get("programs", []))
+    @staticmethod
+    def peek():
+        n = len(Updates.fetch()[0].get("programs", []))
         return "есть обновления: %d" % n if n else "всё обновлено"
 
-    def refresh(self):
-        st = self.load()
+    def refresh(self, then=None):
+        """The state read again in the background; then() after it shows."""
+        def got(result):
+            self.st, self.old = result
+            self.show_state()
+            if then:
+                then()
+        background(self.fetch, got)
+
+    def show_state(self):
+        st = self.st
         self.auto.handler_block_by_func(self.on_auto)
         self.auto.set_active(bool(st.get("auto")))
         self.auto.handler_unblock_by_func(self.on_auto)
@@ -1586,13 +1690,25 @@ class Updates:
         self.fill_history()
 
     def poll(self):
-        st = self.load()
-        if st.get("busy"):
-            self.show_progress(st.get("progress") or {})
+        """Every 2 s while an update runs without us: its progress, read in
+        the background (one read at a time)."""
+        if self.polling:
             return True
-        self.watch = None
-        self.refresh()
-        return False
+        self.polling = True
+
+        def got(result):
+            self.polling = False
+            st = result[0]
+            if st.get("busy"):
+                self.show_progress(st.get("progress") or {})
+                return
+            if self.watch is not None:
+                GLib.source_remove(self.watch)
+                self.watch = None
+            self.st, self.old = result
+            self.show_state()
+        background(self.fetch, got)
+        return True
 
     def fill_state(self):
         st = self.st
@@ -1608,9 +1724,7 @@ class Updates:
         if st.get("pending"):
             when_ += " Последнее обновление проверяется."
         # What has not taken up its new version yet (haltia-restart).
-        old = [x for x in run(RESTART, "pending").splitlines() if x.strip()]
-        if shell_updated_since_start(st):
-            old.append("оболочка (полностью — после перезапуска планшета)")
+        old = self.old
         if old:
             when_ += " Заработают после перезапуска: %s." % ", ".join(old)
         self.state.set_text(when_)
@@ -1725,16 +1839,20 @@ class Updates:
         self.busy = False
         self.work.hide()
         self.leave_notes()
-        self.refresh()
-        self.state.set_text(RESULTS.get(last, "Не получилось." if code else "Готово."))
-        if code == 0 and last in ("updated", "rolled back"):
-            packages = self.restart_pkgs
-            if packages is None:  # everything: what the newest update changed
-                history = self.st.get("history", [])
-                packages = [n for p in (history[0]["programs"] if history else [])
-                            for n in p["packages"]]
-            restart_after([group(n) for n in packages])
+        packages_ = self.restart_pkgs
         self.restart_pkgs = ()
+
+        def after():
+            self.state.set_text(RESULTS.get(last, "Не получилось." if code else "Готово."))
+            if code == 0 and last in ("updated", "rolled back"):
+                packages = packages_
+                if packages is None:  # everything: what the newest update changed
+                    history = self.st.get("history", [])
+                    packages = [n for p in (history[0]["programs"] if history else [])
+                                for n in p["packages"]]
+                restart_after([group(n) for n in packages])
+            self.app.update_entry("updates")
+        self.refresh(after)
 
     def check(self):
         self.start(["check"], "Ищу обновления…")
@@ -1766,7 +1884,7 @@ class Updates:
         self.start(["rollback"], "Возвращаю прежние версии…", packages=None)
 
     def on_auto(self, switch, _param):
-        run(*UPDATE, "auto", "on" if switch.get_active() else "off")
+        spawn(*UPDATE, "auto", "on" if switch.get_active() else "off")
 
     # --- «Что нового» ----------------------------------------------------------
     def on_row(self, _lb, row):
@@ -1830,12 +1948,12 @@ class About:
         box.pack_start(self.list, False, False, 0)
         self.refresh()
 
-    def summary(self):
-        return ""
-
     def refresh(self):
-        for child in self.list.get_children():
-            self.list.remove(child)
+        background(self.fetch, self.fill)
+
+    @staticmethod
+    def fetch():
+        """[(name, value)] (in a worker thread: apk, free, df, nmcli)."""
         model = ""
         for path in ("/proc/device-tree/model", "/sys/class/dmi/id/product_name"):
             try:
@@ -1864,6 +1982,11 @@ class About:
                                                        "full": ", заряжена"}.get(state, ""))))
         if addr:
             items.append(("Адрес в сети", addr.split("/")[0]))
+        return items
+
+    def fill(self, items):
+        for child in self.list.get_children():
+            self.list.remove(child)
         for name, value in items:
             row = Gtk.ListBoxRow(activatable=False)
             row.add(row_box(name, value))
@@ -1954,9 +2077,14 @@ class Settings(Gtk.Application):
         self.win.show_all()
         self.on_size()
 
+    @staticmethod
+    def section_class(key):
+        return globals()[dict(SECTIONS + (("helper", "Helper"),))[key]]
+
     def add_entry(self, key):
         row = Gtk.ListBoxRow()
-        content = row_box(self.page(key).title, " ")
+        # The class's title: the page itself is built when first opened.
+        content = row_box(self.section_class(key).title, " ")
         row.add(content)
         row.key = key
         row.content = content
@@ -1966,15 +2094,22 @@ class Settings(Gtk.Application):
         self.update_entry(key)
 
     def update_entry(self, key):
-        text = self.pages[key].summary()
-        sub = self.entries[key].content.sub
-        sub.set_text(text)
-        sub.set_visible(bool(text))
+        """The line under a section's name: its peek() in the background
+        (none: no line)."""
+        peek = getattr(self.section_class(key), "peek", None)
+        if peek is None:
+            self.entries[key].content.sub.hide()
+            return
+
+        def show(text):
+            sub = self.entries[key].content.sub
+            sub.set_text(text)
+            sub.set_visible(bool(text))
+        background(peek, show)
 
     def page(self, key):
         if key not in self.pages:
-            cls = dict(SECTIONS + (("helper", "Helper"),))[key]
-            self.pages[key] = globals()[cls](self)
+            self.pages[key] = self.section_class(key)(self)
             self.stack.add_named(self.pages[key].widget, key)
             self.pages[key].widget.show_all()
             for name, widget in getattr(self.pages[key], "subpages", {}).items():
@@ -1992,8 +2127,10 @@ class Settings(Gtk.Application):
             self.current = None
             self.header.set_title("Настройки")
         else:
+            built = key in self.pages
             page = self.page(key)
-            page.refresh()
+            if built:
+                page.refresh()  # a new page has just read its state itself
             self.current = key
             self.stack.set_visible_child_name(key)
             self.header.set_title(page.title)
