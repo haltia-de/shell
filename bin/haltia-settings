@@ -23,6 +23,7 @@ import os
 import re
 import subprocess
 import sys
+import threading
 import time
 
 import gi
@@ -129,6 +130,8 @@ def run(*args, timeout=10):
 
 _latest = {}  # background(latest=KEY): the newest call for each key
 _queue = []  # background(serial=True): one worker thread for these
+_queue_lock = threading.Lock()
+_draining = [False]
 
 
 def background(fetch, apply=None, fallback=None, latest=None, serial=False):
@@ -142,7 +145,6 @@ def background(fetch, apply=None, fallback=None, latest=None, serial=False):
     one's result is applied, so a slow old read never undoes a newer one.
     serial: queued for one worker, for the many lines of the section list
     at once, which would otherwise start their commands all together."""
-    import threading
     token = None
     if latest is not None:
         token = _latest[latest] = _latest.get(latest, 0) + 1
@@ -166,13 +168,24 @@ def background(fetch, apply=None, fallback=None, latest=None, serial=False):
     if not serial:
         threading.Thread(target=work, daemon=True).start()
         return
-    _queue.append(work)
-    if len(_queue) == 1:
-        def drain():
-            while _queue:
-                _queue[0]()
-                _queue.pop(0)
-        threading.Thread(target=drain, daemon=True).start()
+    # One worker at a time, under a lock: a job queued just as the worker
+    # took the last one used to start a second worker, so one job ran twice
+    # and another raised IndexError (SH2-48).
+    def drain():
+        while True:
+            with _queue_lock:
+                if not _queue:
+                    _draining[0] = False
+                    return
+                job = _queue.pop(0)
+            job()
+
+    with _queue_lock:
+        _queue.append(work)
+        if _draining[0]:
+            return
+        _draining[0] = True
+    threading.Thread(target=drain, daemon=True).start()
 
 
 def spawn(*args):

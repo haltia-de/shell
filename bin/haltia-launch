@@ -82,7 +82,15 @@ slot_id() {
 		}' "$APPS" "$dir/state"
 }
 
-label_of() { field "$1" label; }
+label_of() { field "$1" label | json_text; }
+
+# json_text: stdin made safe for waybar's JSON and its Pango markup. A label
+# from another program's .desktop Name (a quote, a backslash, an ampersand)
+# blanked the button or worse.
+json_text() {
+	sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g' \
+		-e 's/\\/\\\\/g' -e 's/"/\\"/g'
+}
 # A web app opens the site in its own Firefox window, without tabs or an address bar.
 bin_of() { field "$1" exec; }
 aliases_of() { field "$1" app_ids; }
