@@ -230,13 +230,16 @@ static int resolve(int frac, int ax, int base)
 	return (base ? axes[ax].min : 0) + (int)(((long long)frac * span(ax) + FRAC / 2) / FRAC);
 }
 
-/* What the file does not name keeps its default. */
-static void read_config(const char *path)
+/* Values being tried (haltia-touchguard-conf set): over the file's until
+ * «Оставить» writes them there, gone on a reboot (tmpfs) and dropped by the
+ * helper's own watch when nobody keeps them. */
+#define TRY_FILE "/run/haltia/touchguard.try"
+
+static void read_values(const char *path)
 {
 	char line[256];
 	FILE *f = fopen(path, "r");
 
-	cfg = defaults;
 	if (!f)
 		return;
 	while (fgets(line, sizeof(line), f)) {
@@ -270,6 +273,14 @@ static void read_config(const char *path)
 			cfg.multitouch = v != 0;
 	}
 	fclose(f);
+}
+
+/* What the files do not name keeps its default. */
+static void read_config(const char *path)
+{
+	cfg = defaults;
+	read_values(path);
+	read_values(TRY_FILE);
 }
 
 static void resolve_config(void)
