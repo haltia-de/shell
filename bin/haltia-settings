@@ -127,15 +127,29 @@ def run(*args, timeout=10):
         return ""
 
 
-def background(fetch, apply=None):
+_latest = {}  # background(latest=KEY): the newest call for each key
+_queue = []  # background(serial=True): one worker thread for these
+
+
+def background(fetch, apply=None, fallback=None, latest=None, serial=False):
     """fetch() in a worker thread, then apply(its result) in the main loop.
     fetch runs commands, reads files and D-Bus, never GTK: the window
     stays live while haltia-update, pactl or nmcli take their time (a
-    Python start through doas is about a second on the tablet)."""
+    Python start through doas is about a second on the tablet).
+
+    fallback: what apply gets when fetch raises (otherwise apply is not
+    called then). latest: a key; of several calls with it, only the newest
+    one's result is applied, so a slow old read never undoes a newer one.
+    serial: queued for one worker, for the many lines of the section list
+    at once, which would otherwise start their commands all together."""
     import threading
+    token = None
+    if latest is not None:
+        token = _latest[latest] = _latest.get(latest, 0) + 1
 
     def done(result):
-        apply(result)
+        if latest is None or _latest.get(latest) == token:
+            apply(result)
         return False
 
     def work():
@@ -143,10 +157,22 @@ def background(fetch, apply=None):
             result = fetch()
         except Exception as exc:  # noqa: BLE001 - a status that cannot be had
             sys.stderr.write("haltia-settings: %s\n" % exc)
-            return
+            if fallback is None:
+                return
+            result = fallback
         if apply is not None:
             GLib.idle_add(done, result)
-    threading.Thread(target=work, daemon=True).start()
+
+    if not serial:
+        threading.Thread(target=work, daemon=True).start()
+        return
+    _queue.append(work)
+    if len(_queue) == 1:
+        def drain():
+            while _queue:
+                _queue[0]()
+                _queue.pop(0)
+        threading.Thread(target=drain, daemon=True).start()
 
 
 def spawn(*args):
@@ -334,6 +360,7 @@ class Network:
     def __init__(self, app):
         self.app = app
         self.client = None
+        self.ready = False
         self.widget, box = page_box()
         line = Gtk.Box(spacing=16)
         label = Gtk.Label(label="Wi-Fi", xalign=0)
@@ -377,6 +404,7 @@ class Network:
             self.client = NM.Client.new_finish(result)
         except GLib.Error:
             self.client = None
+        self.ready = True
         if self.client:
             self.client.connect("notify::wireless-enabled", lambda *_a: self.refresh())
             self.client.connect("notify::active-connections", lambda *_a: self.refresh())
@@ -424,6 +452,8 @@ class Network:
         return False
 
     def refresh(self):
+        if NM and not self.ready:
+            return  # connected() shows the page once the client is there
         for lb in (self.list, self.saved):
             for child in lb.get_children():
                 lb.remove(child)
@@ -619,7 +649,7 @@ class Sound:
                 "buzz": Sound.buzz_ms()}
 
     def refresh(self):
-        background(self.status, self.show_status)
+        background(self.status, self.show_status, latest=(id(self), "status"))
 
     def show_status(self, st):
         self.scale.handler_block_by_func(self.on_volume)
@@ -738,7 +768,8 @@ class Screen:
     def refresh(self):
         # haltia-rotate is a Python start: its answer comes when it comes.
         background(lambda: run("/usr/bin/haltia-rotate", "status") != "off",
-                   lambda on: set_quietly(self.rotate, self.on_rotate, on))
+                   lambda on: set_quietly(self.rotate, self.on_rotate, on),
+                   latest=(id(self), "rotate"))
         off, charging = self.settings()
         self.off.show_value(off)
         set_quietly(self.charging, self.on_charging, charging)
@@ -1640,34 +1671,64 @@ class Updates:
         self.refresh()
 
     # --- state ---------------------------------------------------------------
-    @staticmethod
-    def fetch():
+    CACHE_FOR = 10  # s: the list's line and the page opened with it share one read
+    _cache = None  # (time, result)
+    _lock = None
+
+    @classmethod
+    def fetch(cls, fresh=False):
         """haltia-update state (a Python start through doas) and what has
-        not taken up its new version yet (haltia-restart, the shell), read
-        once per refresh, in a worker thread."""
+        not taken up its new version yet (haltia-restart, the shell), in a
+        worker thread. One read serves every caller within CACHE_FOR
+        seconds (the section's line and the page as the window opens);
+        fresh reads anew. Never raises: ({}, []) when it cannot be had."""
         import json
-        try:
-            st = json.loads(run(*UPDATE, "state", timeout=30) or "{}")
-        except ValueError:
-            st = {}
-        old = [x for x in run(RESTART, "pending").splitlines() if x.strip()]
-        if st and shell_updated_since_start(st):
-            old.append("оболочка (полностью — после перезапуска планшета)")
-        return st, old
+        import threading
+        if cls._lock is None:
+            cls._lock = threading.Lock()
+        with cls._lock:
+            if not fresh and cls._cache and time.monotonic() - cls._cache[0] < cls.CACHE_FOR:
+                return cls._cache[1]
+            try:
+                try:
+                    st = json.loads(run(*UPDATE, "state", timeout=30) or "{}")
+                except ValueError:
+                    st = {}
+                old = [x for x in run(RESTART, "pending").splitlines() if x.strip()]
+                if st and shell_updated_since_start(st):
+                    old.append("оболочка (полностью — после перезапуска планшета)")
+                result = (st, old)
+            except Exception as exc:  # noqa: BLE001 - the page must not stay greyed
+                sys.stderr.write("haltia-settings: updates: %s\n" % exc)
+                result = ({}, [])
+            cls._cache = (time.monotonic(), result)
+            return result
 
     @staticmethod
-    def peek():
-        n = len(Updates.fetch()[0].get("programs", []))
+    def text(st):
+        n = len(st.get("programs", []))
         return "есть обновления: %d" % n if n else "всё обновлено"
 
-    def refresh(self, then=None):
+    @classmethod
+    def peek(cls):
+        return cls.text(cls.fetch()[0])
+
+    def line(self):
+        """The list's line from the state the page read last."""
+        return self.text(self.st)
+
+    def refresh(self, then=None, fresh=False):
         """The state read again in the background; then() after it shows."""
         def got(result):
             self.st, self.old = result
             self.show_state()
+            self.app.update_entry("updates")
             if then:
                 then()
-        background(self.fetch, got)
+        # A refresh with then (after an update: restarting what it changed)
+        # must always end; a plain one gives way to a newer one.
+        background(lambda: self.fetch(fresh), got, fallback=({}, []),
+                   latest="updates" if then is None else None)
 
     def show_state(self):
         st = self.st
@@ -1707,7 +1768,10 @@ class Updates:
                 self.watch = None
             self.st, self.old = result
             self.show_state()
-        background(self.fetch, got)
+            self.app.update_entry("updates")
+        # Not a latest= call: its result must always come, or polling would
+        # stay set and the page never read again.
+        background(lambda: self.fetch(fresh=True), got, fallback=({}, []))
         return True
 
     def fill_state(self):
@@ -1851,8 +1915,7 @@ class Updates:
                     packages = [n for p in (history[0]["programs"] if history else [])
                                 for n in p["packages"]]
                 restart_after([group(n) for n in packages])
-            self.app.update_entry("updates")
-        self.refresh(after)
+        self.refresh(after, fresh=True)
 
     def check(self):
         self.start(["check"], "Ищу обновления…")
@@ -2096,16 +2159,19 @@ class Settings(Gtk.Application):
     def update_entry(self, key):
         """The line under a section's name: its peek() in the background
         (none: no line)."""
-        peek = getattr(self.section_class(key), "peek", None)
-        if peek is None:
-            self.entries[key].content.sub.hide()
-            return
-
         def show(text):
             sub = self.entries[key].content.sub
             sub.set_text(text)
             sub.set_visible(bool(text))
-        background(peek, show)
+        page = self.pages.get(key)
+        if page is not None and hasattr(page, "line"):
+            show(page.line())  # from what the page has read already
+            return
+        peek = getattr(self.section_class(key), "peek", None)
+        if peek is None:
+            self.entries[key].content.sub.hide()
+            return
+        background(peek, show, serial=True)
 
     def page(self, key):
         if key not in self.pages:
