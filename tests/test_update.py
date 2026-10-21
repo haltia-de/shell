@@ -164,6 +164,28 @@ class Update(unittest.TestCase):
         snap = hu.read_json(os.path.join(hu.STATE, sid, "snapshot.json"), {})
         self.assertNotIn("rolled_back", snap)
 
+    def test_files_in_then_repository_fails_leaves_no_holds(self):
+        # musl's old version is neither kept nor in the repository any more.
+        os.unlink(os.path.join(hu.CACHE, "musl-1.2-r0.1234abcd.apk"))
+        repo = dict(REPO, musl=["1.3-r0"])
+        os.environ["FAKE_REPO"] = json.dumps(repo)
+        self.assertEqual(hu.upgrade(), 0)
+        world = self.world()
+        self.assertEqual(hu.rollback(), 1)
+        self.assertFalse([e for e in self.world() if "><" in e])
+        self.assertEqual(self.world(), world)
+        self.assertTrue(self.pending())
+        self.assertEqual(hu.held(), {})
+
+    def test_what_the_person_added_since_stays(self):
+        self.assertEqual(hu.upgrade(), 0)
+        os.environ["FAKE_REPO"] = json.dumps(dict(REPO, nano=["1.0-r0"]))
+        self.assertEqual(hu.apk("add", "nano").returncode, 0)
+        self.assertEqual(hu.rollback(), 0)
+        self.assertIn("nano", self.world())
+        self.assertEqual(hu.installed().get("nano"), "1.0-r0")
+        self.assertEqual(hu.installed()["haltia-shell"], "2.8.0-r0")
+
     def test_partial_rollback_keeps_the_rest(self):
         self.assertEqual(hu.upgrade(), 0)
         self.assertEqual(hu.rollback(names=["haltia-shell"]), 0)

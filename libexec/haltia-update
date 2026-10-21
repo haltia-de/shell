@@ -211,8 +211,12 @@ def read_world():
 
 
 def write_world(entries):
+    """world replaced at once, and on the disk before the rename: a power
+    cut must not leave apk an empty or half world."""
     with open(WORLD + ".haltia-new", "w") as fh:
         fh.write("\n".join(entries) + "\n")
+        fh.flush()
+        os.fsync(fh.fileno())
     os.replace(WORLD + ".haltia-new", WORLD)
 
 
@@ -580,7 +584,7 @@ def take_snapshot(changes_):
     for name, old, _new in changes_:
         if not fetch(name, old, os.path.join(path, "apk")):
             missing.append(name)
-    # world as it was, entry for entry: a rollback puts it back exactly.
+    # world as it was, entry for entry, for whoever looks into a rollback.
     write_json(os.path.join(path, "snapshot.json"), {
         "versions": installed(), "world": read_world(), "changes": changes_,
         "missing": missing, "time": int(time.time())})
@@ -730,19 +734,22 @@ def news():
 
 
 def rollback(sid=None, reason="asked", names=()):
-    """Back to the versions of snapshot sid (the last by default): all it
+    """Back to the versions of snapshot sid (the last by default): what it
     changed, or only the packages named (with their subpackages).
 
-    Only what differs from the snapshot is installed, from the files kept
-    with it (a repository for one without a file). apk writes a checksum
-    hold (name><Q1...) for every file it adds, so world is then written
-    as it should be: as the snapshot kept it, or as it was for a partial
-    rollback, with the old versions of Haltia's packages pinned (name=1.2)
-    and remembered as bad unless the upgrade only failed to install.
-    System packages come back unpinned: a pin would keep their security
-    fixes out. A last apk add applies that world, which also removes what
-    the upgrade added. Any step that fails leaves the snapshot,
-    pending.json and held.json as they were and returns 1."""
+    Only what the update changed and differs now is put back: from the
+    files kept with the snapshot, then from a repository for one without a
+    file. Other differences from the snapshot (the person installed or
+    updated something since) are left and logged. apk writes a checksum
+    hold (name><Q1...) for every file it adds, so world is then rewritten
+    from the one before the rollback (what the person changed since the
+    snapshot stays), with the old versions of Haltia's packages pinned
+    (name=1.2) and remembered as bad unless the upgrade only failed to
+    install. System packages come back unpinned: a pin would keep their
+    security fixes out. A last apk add applies that world, which also
+    removes what the upgrade added. A failure at any step after the files
+    puts that world back, without the holds, and leaves the snapshot,
+    pending.json and held.json as they were: 1."""
     sid = sid or (snapshots()[:1] or [None])[0]
     if not sid:
         log("no snapshot")
@@ -757,6 +764,13 @@ def rollback(sid=None, reason="asked", names=()):
     if wanted:
         want = {n: v for n, v in want.items() if group(n) in wanted}
     back = sorted((n, v) for n, v in want.items() if now.get(n) != v)
+    changed = {c[0] for c in snap.get("changes", [])}
+    if changed:
+        left = [b for b in back if b[0] not in changed]
+        back = [b for b in back if b[0] in changed]
+        if left:
+            note("rollback %s: not changed by that update, left as they are: %s"
+                 % (sid, ", ".join("%s %s" % (n, now.get(n, "-")) for n, _v in left)))
     folder = os.path.join(STATE, sid, "apk")
     try:
         kept = os.listdir(folder)
@@ -770,22 +784,29 @@ def rollback(sid=None, reason="asked", names=()):
         else:
             unfiled.append((name, ver))
     before = read_world()
-    base = snap["world"] if not wanted and "world" in snap else before
     stage("rollback")
     errors = []
     if files:
         res = apk("add", "--no-network", "--", *files)
         if res.returncode:
-            errors.append(res.stderr.strip()[-200:])
-    came = {n for n, _v in back} - {n for n, _v in unfiled} if not errors else set()
-    for name, ver in unfiled if not errors else ():
+            # apk changed nothing: world is still as it was.
+            clear_progress()
+            note("rollback %s (%s) failed: %s" % (sid, reason, res.stderr.strip()[-200:]))
+            log("rollback failed")
+            return 1
+    came = {n for n, _v in back} - {n for n, _v in unfiled}
+    for name, ver in unfiled:
         res = apk("add", "--", "%s=%s" % (name, ver))
         if res.returncode:
             errors.append(res.stderr.strip()[-200:])
         else:
             came.add(name)
-    if not errors:
-        target = [e for e in base]
+    if errors:
+        # The files are in, but not everything came back: world as it was
+        # before, without the checksum holds apk just wrote.
+        write_world(before)
+    else:
+        target = list(before)
         if reason != "failed":
             for name, ver in back:
                 if name in now and name in came and is_haltia(name):
@@ -797,17 +818,13 @@ def rollback(sid=None, reason="asked", names=()):
                         target = [e for i, e in enumerate(target) if i not in at[1:]]
                     else:
                         target.append(pin)
-        added = read_world()
-        if back or target != added:
+        if back or target != read_world():
             write_world(target)
             res = apk("add", "--no-network")
-        else:
-            res = None  # nothing installed, world untouched: no apk at all
-        if res is not None and res.returncode:
-            # The packages are back, but this world does not resolve: the
-            # one apk wrote, which does.
-            write_world(added)
-            errors.append(res.stderr.strip()[-200:])
+            if res.returncode:
+                # The packages are back, but this world does not resolve.
+                write_world(before)
+                errors.append(res.stderr.strip()[-200:])
     clear_progress()
     if errors:
         note("rollback %s (%s) failed: %s" % (sid, reason, " | ".join(errors)))
