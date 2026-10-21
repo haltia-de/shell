@@ -156,11 +156,13 @@ _screen = {"at": -SCREEN_CHECK, "off": IDLE_OFF, "keep": False, "charging": Fals
 
 
 def read_user_file(path, uid, limit=4096):
-    """A small file of the user's, read as root without trusting it: opened
-    without blocking (a FIFO would stop the power key's loop), taken only
-    when what was opened is a regular file of that user (not a link to
-    /dev/zero or to root's files), and at most limit bytes of it."""
-    fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_NOCTTY | os.O_CLOEXEC)
+    """A small file of the user's, read as root without trusting it: never
+    through a symbolic link (opening /dev/watchdog or another device has
+    effects of its own), opened without blocking (a FIFO would stop the
+    power key's loop), taken only when what was opened is a regular file
+    of that user, and at most limit bytes of it."""
+    fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_NOCTTY | os.O_CLOEXEC |
+                 os.O_NOFOLLOW)
     try:
         st = os.fstat(fd)
         if not stat.S_ISREG(st.st_mode) or st.st_uid != uid:
