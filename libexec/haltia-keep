@@ -4,42 +4,48 @@
 # start it again when it ends (haltia-launcher: the home screen, «✕», the
 # window watcher, volume keys, turning, badges).
 #
-# A second later each time; more than MAX ends within WINDOW seconds mean
-# it cannot run here, and it is left off (said in its log). --session: it
-# stops for good with the session, when the compositor's socket is gone or
-# is another compositor's (the session loop starts the next one under the
-# same name at once). One that ends well (0) within its first QUIET
-# seconds has nothing to do (another copy holds its lock) and stays off. A
-# SIGTERM to this script stops the daemon too; a
-# SIGTERM to the daemon alone (haltia-restart after an update, haltia-apps
-# reload) starts the new version.
+# A second later each time. More than MAX ends within WINDOW seconds mean
+# it cannot run now: it is left off for REST seconds, then tried again.
+# One that ends well (0) within its first QUIET seconds has nothing to do
+# (another copy holds its lock, no device for it) and stays off.
+# --session: it stops for good with the session, when the compositor's
+# socket is gone or is another compositor's (the session loop starts the
+# next one under the same name at once: its inode and change time, as an
+# inode number alone comes back for the new file); that is checked before every
+# start. haltia-launcher ends every keeper of the user as a session
+# starts, too. A SIGTERM to this script stops the daemon as well; a SIGTERM
+# to the daemon alone (haltia-restart after an update, haltia-apps reload)
+# starts the new version.
 MAX=5
 WINDOW=60
 QUIET=3
+REST=300
+# Whatever the starter held open (a lock's fd: flock) is not ours to keep.
+exec 3>&- 4>&- 5>&- 6>&- 7>&- 8>&- 9>&-
 socket=${XDG_RUNTIME_DIR:-/nonexistent}/${WAYLAND_DISPLAY:-wayland-0}
 session=
 if [ "${1:-}" = --session ]; then
-	session=$(stat -L -c %i "$socket" 2>/dev/null) || exit 1
+	session=$(stat -L -c '%i %Z' "$socket" 2>/dev/null) || exit 1
 	shift
 fi
 [ $# -gt 0 ] || { echo "usage: haltia-keep [--session] COMMAND [ARGS...]" >&2; exit 2; }
 child=
 trap '[ -n "$child" ] && kill "$child" 2>/dev/null; exit 0' TERM INT HUP
-ends=
 secs() {
 	read -r up _ </proc/uptime
 	echo "${up%%.*}"
 }
-while :; do
+ours() {
+	[ -z "$session" ] || [ "$(stat -L -c '%i %Z' "$socket" 2>/dev/null)" = "$session" ]
+}
+ends=
+while ours; do
 	began=$(secs)
 	"$@" &
 	child=$!
 	wait "$child"
 	code=$?
 	child=
-	if [ -n "$session" ] && [ "$(stat -L -c %i "$socket" 2>/dev/null)" != "$session" ]; then
-		exit 0
-	fi
 	now=$(secs)
 	if [ "$code" -eq 0 ] && [ $((now - began)) -lt "$QUIET" ]; then
 		exit 0
@@ -54,8 +60,13 @@ while :; do
 	done
 	ends=$recent
 	if [ "$n" -gt "$MAX" ]; then
-		echo "haltia-keep: $1 ended $n times in ${WINDOW} s (last: $code), left off" >&2
-		exit 1
+		echo "haltia-keep: $1 ended $n times in ${WINDOW} s (last: $code), off for ${REST} s" >&2
+		ends=
+		sleep "$REST" &
+		child=$!
+		wait "$child"
+		child=
+		continue
 	fi
 	echo "haltia-keep: $1 ended ($code), starting it again" >&2
 	sleep 1

@@ -107,7 +107,10 @@ def step(level, by):
 def main():
     path = find_keypad()
     if not path:
-        sys.exit("haltia-volume: no device with volume keys")
+        # Nothing to do on this machine: a clean end, which haltia-keep
+        # leaves off instead of starting it again and again.
+        sys.stderr.write("haltia-volume: no device with volume keys\n")
+        return 0
     try:
         dev = open(path, "rb", buffering=0)
     except OSError as exc:
@@ -143,4 +146,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

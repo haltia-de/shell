@@ -43,6 +43,15 @@ if [ -x /usr/bin/haltia-apps ] && /usr/bin/haltia-apps >"$run"/haltia/apps.log 2
 	panel=yes
 fi
 stamp apps
+# The keepers of an earlier session (haltia-keep) end first, and their
+# daemons with them: one that outlived its compositor would otherwise start
+# a daemon of this session it does not watch over.
+for d in /proc/[0-9]*; do
+	[ -O "$d" ] || continue
+	case $(tr '\0' '\n' <"$d/cmdline" 2>/dev/null | sed -n 2p) in
+	/usr/libexec/haltia/haltia-keep) kill "${d#/proc/}" 2>/dev/null ;;
+	esac
+done
 # The home screen: every program as a tile, on the background layer right
 # of the panel; the panel's home button raises it over the windows. It and
 # the daemons below run under haltia-keep, which starts one that ends

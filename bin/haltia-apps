@@ -596,7 +596,9 @@ def kept_by_keeper(pid):
             stat = fh.read()
         ppid = int(stat[stat.rindex(")") + 2:].split()[1])
         with open("/proc/%d/cmdline" % ppid, "rb") as fh:
-            return b"haltia-keep" in fh.read()
+            args = fh.read().split(b"\0")
+        # /bin/sh /usr/libexec/haltia/haltia-keep ...
+        return len(args) > 1 and os.path.basename(args[1]) == b"haltia-keep"
     except (OSError, ValueError, IndexError):
         return False
 
