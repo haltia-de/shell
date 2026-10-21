@@ -7,7 +7,7 @@
 # session user, waits for the panel and the home screen, and takes
 # a screenshot. Anything tied to the B8000-H (its backlight, touchscreen,
 # power key, paths of its own) shows up here as a failure or in the
-# picture, not on the next tablet (ADR 0004, lenovo-b8000h-linux).
+# picture, not on the next tablet (ADR 0004 in haltia-de/haltia).
 #
 #   sh ci/headless-session.sh OUT        (as root, in a throwaway container)
 #
