@@ -62,7 +62,8 @@ class Wake(unittest.TestCase):
         self.ns["session_user"] = lambda: "root" if os.getuid() else "nobody"
         if os.getuid() == 0:
             self.skipTest("root is always heard")
-        self.assertEqual(self.ask(b"wake\n"), (False, b"no\n"))
+        # Closed at once, unread and unanswered.
+        self.assertEqual(self.ask(b"wake\n"), (False, b""))
 
     def test_a_silent_client_costs_little(self):
         heard, _answer = self.ask(b"")

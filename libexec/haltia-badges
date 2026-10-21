@@ -26,9 +26,10 @@ button (▶ or ‖) and haltia-ask media uses to pause or stop it; stopped, or
 gone from the bus, removes the file.
 
 And it tells the panel when a program records from a microphone (a
-PulseAudio source output on anything but a monitor, followed through
-pactl subscribe) or uses a camera (a /dev/video* open in one of the
-user's processes, looked at every REC_EVERY seconds): "mic", "cam" or
+PulseAudio source output on anything but a monitor, read again only when
+pactl subscribe tells of a source output) or uses a camera (a /dev/video*
+open in one of the user's processes, looked at every REC_EVERY seconds,
+only when the device has a camera and the screen is on): "mic", "cam" or
 both in $XDG_RUNTIME_DIR/haltia/rec, then the panel's custom/rec
 (signal REC_SIGNAL) reads it again (haltia-meter rec).
 """
@@ -293,6 +294,22 @@ def microphone():
                for row in short("source-outputs"))
 
 
+def cameras():
+    return glob.glob("/dev/video*")
+
+
+def screen_on():
+    """The backlight is lit (no backlight: a desktop, counted as on)."""
+    lit = None
+    for path in glob.glob("/sys/class/backlight/*/brightness"):
+        try:
+            with open(path) as fh:
+                lit = bool(lit) or int(fh.read().strip() or 0) > 0
+        except (OSError, ValueError):
+            continue
+    return lit is not False
+
+
 def camera():
     """One of the user's processes has a video device open."""
     me = os.getuid()
@@ -319,13 +336,32 @@ class Recording:
         self.path = os.path.join(run, "haltia", "rec")
         self.shown = None
         self.pending = None
-        self.check()
-        GLib.timeout_add_seconds(REC_EVERY, self.check)
+        self.mic = microphone()
+        self.cam = False
+        self.look_camera()
+        GLib.timeout_add_seconds(REC_EVERY, self.look_camera)
         self.follow()
 
+    def look_camera(self):
+        """The camera: no events to follow, so a look every REC_EVERY
+        seconds, and none on a device without one or with the screen dark
+        (nobody sees the panel then; it is looked at again when it lights)."""
+        if cameras() and screen_on():
+            self.cam = camera()
+        elif not cameras():
+            self.cam = False
+        self.show()
+        return True
+
     def check(self):
+        """A source output came or went: the microphone read again."""
         self.pending = None
-        now = " ".join(w for w, on in (("mic", microphone()), ("cam", camera())) if on)
+        self.mic = microphone()
+        self.show()
+        return False
+
+    def show(self):
+        now = " ".join(w for w, on in (("mic", self.mic), ("cam", self.cam)) if on)
         if now != self.shown:
             self.shown = now
             try:
@@ -338,7 +374,6 @@ class Recording:
             except OSError:
                 pass
             redraw(REC_SIGNAL)
-        return True
 
     def soon(self):
         # Events come in bursts (a stream is made, then moved, then runs).

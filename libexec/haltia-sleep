@@ -670,6 +670,7 @@ def check():
 
 
 WAKE_SOCKET = "/run/haltia/wake.sock"
+WAKE_EVERY = 15.0  # s: at most one wake of a dark screen this often
 
 
 def open_wake_socket():
@@ -688,9 +689,10 @@ def open_wake_socket():
 
 
 def wake_request(sock):
-    """One connection on the wake socket: True when it asks to wake and
-    comes from root or the session user (SO_PEERCRED). Never blocks for
-    long: a client that says nothing gets 0.2 s."""
+    """One connection on the wake socket: True when it comes from root or
+    the session user (SO_PEERCRED, looked at first: anyone else is closed
+    at once, unread) and asks to wake. Only those get 0.2 s to say so,
+    inside this real-time loop."""
     try:
         conn, _addr = sock.accept()
     except OSError:
@@ -700,10 +702,10 @@ def wake_request(sock):
             creds = conn.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED,
                                     struct.calcsize("3i"))
             _pid, uid, _gid = struct.unpack("3i", creds)
-            allowed = uid == 0 or uid == pwd.getpwnam(session_user()).pw_uid
+            if uid != 0 and uid != pwd.getpwnam(session_user()).pw_uid:
+                return False
             conn.settimeout(0.2)
-            asked = conn.recv(16).strip() == b"wake"
-            if allowed and asked:
+            if conn.recv(16).strip() == b"wake":
                 conn.sendall(b"ok\n")
                 return True
             conn.sendall(b"no\n")
@@ -773,6 +775,7 @@ def listen():
     except OSError as exc:
         log("WAKE_SOCKET_FAIL %s" % exc.errno)
         waker = None
+    woke_at = -WAKE_EVERY
     activity = activity_nodes(path)
     seen_nodes = event_nodes()
     last_input = time.monotonic()
@@ -802,11 +805,18 @@ def listen():
                 ready.remove(waker)
                 if wake_request(waker):
                     # A call: the screen comes on and stays a full idle
-                    # time (the program holds it on while it rings).
-                    last_input = time.monotonic()
-                    if lamp.asleep:
+                    # time (the program holds it on while it rings). A
+                    # dark screen wakes at most once in WAKE_EVERY: a
+                    # program in a loop cannot keep turning it on.
+                    now = time.monotonic()
+                    if not lamp.asleep:
+                        last_input = now
+                    elif now - woke_at >= WAKE_EVERY:
+                        woke_at = last_input = now
                         log("WAKE_ASKED")
                         lamp.wake()
+                    else:
+                        log("WAKE_TOO_SOON")
                     if not ready:
                         continue
             for fd in ready:
