@@ -1714,8 +1714,9 @@ class Updates:
         return cls.text(cls.fetch()[0])
 
     def line(self):
-        """The list's line from the state the page read last."""
-        return self.text(self.st)
+        """The list's line from the state the page read last; none while
+        there is no state (not read yet, or no update service)."""
+        return self.text(self.st) if self.st else ""
 
     def refresh(self, then=None, fresh=False):
         """The state read again in the background; then() after it shows."""
