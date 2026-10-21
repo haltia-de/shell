@@ -113,11 +113,33 @@ def read_json(path, default):
         return default
 
 
-def write_json(path, data):
+def write_json(path, data, durable=True):
+    """Replaced at once and on the disk before the rename: pending.json and
+    snapshot.json matter most right after a bad update, when the power may
+    be cut, and read back empty they would mean no rollback (SH2-5). The
+    progress, written a hundred times an update, need not be."""
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path + ".new", "w") as fh:
         json.dump(data, fh, ensure_ascii=False, indent=1)
+        if durable:
+            fh.flush()
+            os.fsync(fh.fileno())
     os.replace(path + ".new", path)
+    if durable:
+        sync_dir(os.path.dirname(path))
+
+
+def sync_dir(path):
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY)
+    except OSError:
+        return
+    try:
+        os.fsync(fd)
+    except OSError:
+        pass
+    finally:
+        os.close(fd)
 
 
 def conf():
@@ -240,6 +262,7 @@ def write_world(entries):
         fh.flush()
         os.fsync(fh.fileno())
     os.replace(WORLD + ".haltia-new", WORLD)
+    sync_dir(os.path.dirname(WORLD))
 
 
 def entry_name(entry):
@@ -292,6 +315,10 @@ def catalog_path(repo):
 def update_catalogs():
     """Each repository's AppStream catalog, when it has one and it changed:
     what is new in every version, without downloading packages."""
+    import gzip
+    import http.client
+    import io
+    import zlib
     import urllib.error
     import urllib.request
     for repo in repositories():
@@ -312,10 +339,26 @@ def update_catalogs():
                     if os.path.exists(f):
                         os.unlink(f)
             continue  # 304: ours is current
-        except OSError:
-            continue
+        except (OSError, http.client.HTTPException):
+            continue  # IncompleteRead (a chunked answer cut short) included
         if len(data) > CATALOG_MAX:
             continue
+        # Kept under its ETag, a download cut short would be answered 304
+        # from now on: keep only a catalog that unpacks whole (SH2-20), and
+        # within the bound the reader takes (catalog_component), never
+        # unpacked all at once into this root process's memory.
+        try:
+            unpacked = 0
+            with gzip.GzipFile(fileobj=io.BytesIO(data)) as fh:
+                while True:
+                    chunk = fh.read(65536)
+                    if not chunk:
+                        break
+                    unpacked += len(chunk)
+                    if unpacked > CATALOG_MAX * 8:
+                        raise ValueError("too large unpacked")
+        except (OSError, EOFError, ValueError, zlib.error):
+            continue  # zlib.error: a corrupt deflate stream inside a good header
         os.makedirs(os.path.dirname(path), exist_ok=True)
         with open(path + ".new", "wb") as fh:
             fh.write(data)
@@ -625,35 +668,42 @@ def stage(name):
     as they come) and for a window opened while it runs (progress.json)."""
     log("stage %s" % name)
     write_json(os.path.join(STATE, "progress.json"), {"stage": name, "percent": 0,
-                                                       "time": int(time.time())})
+                                                       "time": int(time.time())},
+               durable=False)
 
 
 def run_apk_with_progress(args):
     """apk with its progress on a pipe: "progress PERCENT" lines. Returns
-    the finished process (stderr kept)."""
+    the finished process (stderr kept). Its stdout and stderr go to files:
+    read only after the progress pipe closed, more than a pipe's 64 KB of
+    trigger output blocked apk, and the update hung with the lock held
+    (SH2-19)."""
+    import tempfile
     rfd, wfd = os.pipe()
     # Options before the "--" that ends them (package names follow it).
     at = args.index("--") if "--" in args else len(args)
     args = args[:at] + ["--progress-fd", str(wfd)] + args[at:]
-    proc = subprocess.Popen(args, pass_fds=(wfd,),
-                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-    os.close(wfd)
-    shown = -1
-    with os.fdopen(rfd) as pipe:
-        for line in pipe:
-            done, _sep, total = line.strip().partition("/")
-            try:
-                percent = int(int(done) * 100 / max(int(total), 1))
-            except ValueError:
-                continue
-            if percent != shown:
-                shown = percent
-                log("progress %d" % percent)
-                prog = read_json(os.path.join(STATE, "progress.json"), {})
-                prog["percent"] = percent
-                write_json(os.path.join(STATE, "progress.json"), prog)
-    out, err = proc.communicate()
-    proc.stdout_text, proc.stderr_text = out, err
+    with tempfile.TemporaryFile("w+") as out, tempfile.TemporaryFile("w+") as err:
+        proc = subprocess.Popen(args, pass_fds=(wfd,), stdout=out, stderr=err, text=True)
+        os.close(wfd)
+        shown = -1
+        with os.fdopen(rfd) as pipe:
+            for line in pipe:
+                done, _sep, total = line.strip().partition("/")
+                try:
+                    percent = int(int(done) * 100 / max(int(total), 1))
+                except ValueError:
+                    continue
+                if percent != shown:
+                    shown = percent
+                    log("progress %d" % percent)
+                    prog = read_json(os.path.join(STATE, "progress.json"), {})
+                    prog["percent"] = percent
+                    write_json(os.path.join(STATE, "progress.json"), prog, durable=False)
+        proc.wait()
+        out.seek(0)
+        err.seek(0)
+        proc.stdout_text, proc.stderr_text = out.read(), err.read()
     return proc
 
 

@@ -259,6 +259,56 @@ class Update(unittest.TestCase):
             fresh.log("progress 10")
             fresh.log("progress 20")
 
+    def test_lots_of_trigger_output_does_not_hang_the_update(self):
+        # SH2-19: stdout used to be read only after the progress pipe closed.
+        self.fail("noisy")
+        start = time.monotonic()
+        self.assertEqual(hu.upgrade(), 0)
+        self.assertLess(time.monotonic() - start, 30)
+        self.assertEqual(hu.installed()["haltia-shell"], "2.9.0-r0")
+
+    def test_a_catalog_cut_short_is_not_kept(self):
+        # SH2-20: kept under its ETag, a broken one would be answered 304.
+        import gzip
+        import io
+        whole = gzip.compress(b"<components/>" * 100)
+
+        class Answer(io.BytesIO):
+            headers = {"ETag": "\"abc\""}
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_a):
+                return False
+        repo = "https://example.org/alpine/v3.24"
+        with mock.patch.object(hu, "repositories", lambda: [repo]), \
+                mock.patch.object(hu, "STATE", hu.STATE), \
+                mock.patch("urllib.request.urlopen", lambda *_a, **_k: Answer(whole[:40])):
+            hu.update_catalogs()
+            self.assertFalse(os.path.exists(hu.catalog_path(repo)))
+        with mock.patch.object(hu, "repositories", lambda: [repo]), \
+                mock.patch("urllib.request.urlopen", lambda *_a, **_k: Answer(whole)):
+            hu.update_catalogs()
+            self.assertTrue(os.path.exists(hu.catalog_path(repo)))
+        # A good gzip header over a corrupt body (zlib.error) is not kept.
+        os.unlink(hu.catalog_path(repo))
+        corrupt = whole[:10] + bytes(b ^ 0xff for b in whole[10:-8]) + whole[-8:]
+        with mock.patch.object(hu, "repositories", lambda: [repo]), \
+                mock.patch("urllib.request.urlopen", lambda *_a, **_k: Answer(corrupt)):
+            hu.update_catalogs()
+            self.assertFalse(os.path.exists(hu.catalog_path(repo)))
+        # A small download that unpacks past the reader's bound is refused.
+        os.makedirs(os.path.dirname(hu.catalog_path(repo)), exist_ok=True)
+        open(hu.catalog_path(repo), "wb").close()
+        os.unlink(hu.catalog_path(repo))
+        bomb = gzip.compress(b"\0" * (hu.CATALOG_MAX * 8 + 1))
+        self.assertLess(len(bomb), hu.CATALOG_MAX)
+        with mock.patch.object(hu, "repositories", lambda: [repo]), \
+                mock.patch("urllib.request.urlopen", lambda *_a, **_k: Answer(bomb)):
+            hu.update_catalogs()
+            self.assertFalse(os.path.exists(hu.catalog_path(repo)))
+
     def test_hanging_check_counts_as_failed(self):
         os.makedirs(os.path.join(hu.HEALTH, "required.d"))
         check = os.path.join(hu.HEALTH, "required.d", "hangs")
