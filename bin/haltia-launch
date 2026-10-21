@@ -321,12 +321,16 @@ open)
 	# shellcheck disable=SC2086
 	$bin ${HALTIA_LAUNCH_ARGS:-} >"$run"/haltia/app-"$id".log 2>&1 9>&- &
 	# The program's process, for haltia-stop when it hangs and «✕» cannot
-	# close it.
-	mkdir -p "$dir/pid" && echo $! >"$dir/pid/$id"
+	# close it: the pid and its start time (field 22 of /proc/PID/stat),
+	# which haltia-stop compares, as the file outlives the program and the
+	# pid may be another process's by then.
+	pid=$!
+	start=$(sed 's/.*) //' "/proc/$pid/stat" 2>/dev/null | cut -d' ' -f20)
+	mkdir -p "$dir/pid" && echo "$pid ${start:-0}" >"$dir/pid/$id"
 	# While it starts, the close button stops it (haltia-ask close-front kills
 	# the pid and the curtain, and removes this file) and the home button
 	# takes the curtain away (haltia-home).
-	echo "$id $! ${splash_pid:-0}" >"$dir/starting"
+	echo "$id $pid ${splash_pid:-0}" >"$dir/starting"
 	/usr/libexec/haltia/haltia-close update 2>/dev/null || true
 	i=0
 	while [ "$i" -lt 40 ] && [ -e "$dir/starting" ]; do
