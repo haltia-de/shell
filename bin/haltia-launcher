@@ -165,8 +165,12 @@ if command -v nm-applet >/dev/null && ! pgrep -x -u "$(id -u)" nm-applet >/dev/n
 	setsid nm-applet >"$run"/nm-applet.log 2>&1 &
 fi
 if [ -x /usr/libexec/haltia/haltia-keyboard ]; then
+	# Under haltia-keep: a keyboard that crashed left no way to type a
+	# Wi-Fi password or a message until the session restarted. Only one
+	# may run, and the keeper starts it again only after it has ended.
 	pidof haltia-wvkbd >/dev/null 2>&1 || \
-		/usr/libexec/haltia/haltia-keyboard >"$run"/haltia/keyboard.log 2>&1 &
+		setsid /usr/libexec/haltia/haltia-keep --session /usr/libexec/haltia/haltia-keyboard \
+			>"$run"/haltia/keyboard.log 2>&1 &
 elif [ -x /usr/bin/squeekboard ]; then
 	squeekboard >"$run"/squeekboard.log 2>&1 &
 fi
