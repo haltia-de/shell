@@ -828,6 +828,52 @@ def brightness_module():
         return None
 
 
+# --- USB ----------------------------------------------------------------------
+USB_CMD = next((p for p in ("/usr/sbin/b8k-usb", "/usr/local/sbin/b8k-usb")
+                if os.access(p, os.X_OK)), None)
+
+
+def usb_role():
+    """The port's role now: "host" (a keyboard can go in) or "device"."""
+    import glob
+    for path in glob.glob("/sys/class/usb_role/*/role"):
+        try:
+            with open(path) as fh:
+                return fh.read().strip()
+        except OSError:
+            continue
+    return "device"
+
+
+class Usb:
+    """The USB port: a device (to a computer) or host for a keyboard, through
+    the device's b8k-usb (the role switch and the charger's OTG boost). Was
+    the power menu's «USB: клавиатура»; only where b8k-usb is."""
+
+    title = "USB"
+
+    def __init__(self, app):
+        self.app = app
+        self.widget, box = page_box()
+        self.keyboard = switch_line(
+            box, "Клавиатура по USB",
+            "Включено: в порт можно вставить клавиатуру, планшет даёт ей питание. "
+            "Выключено: планшет подключается кабелем к компьютеру", self.on_keyboard)
+        self.refresh()
+
+    @staticmethod
+    def peek():
+        return "клавиатура" if usb_role() == "host" else "к компьютеру"
+
+    def refresh(self):
+        background(usb_role, lambda role: set_quietly(self.keyboard, self.on_keyboard,
+                                                       role == "host"),
+                   latest=(id(self), "usb"))
+
+    def on_keyboard(self, switch, _param):
+        spawn("doas", "-n", USB_CMD, "host" if switch.get_active() else "device")
+
+
 # --- date and time --------------------------------------------------------
 class DateTime:
     """The time zone, the time from the network or set by hand (timedated)."""
@@ -2134,7 +2180,8 @@ SIDEBAR = 360  # px, the list of sections beside a page
 NARROW = 1000  # px: a screen narrower than this (portrait) shows one at a time
 SECTIONS = (("network", "Network"), ("sound", "Sound"), ("screen", "Screen"),
             ("places", "Places"), ("notify", "Notify"), ("time", "DateTime"),
-            ("updates", "Updates"), ("about", "About"))
+            ("updates", "Updates")) + ((("usb", "Usb"),) if USB_CMD else ()) + \
+    (("about", "About"),)
 
 
 class Settings(Gtk.Application):
