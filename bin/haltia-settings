@@ -2123,20 +2123,53 @@ class Updates:
 
 
 # --- about ----------------------------------------------------------------
+AUTHOR = "Михаил Невский"
+PROJECT_URL = "https://github.com/haltia-de"
+
+
+def os_release():
+    """«Alpine Linux 3.24.3» from /etc/os-release."""
+    keys = {}
+    try:
+        with open("/etc/os-release") as fh:
+            for line in fh:
+                k, sep, v = line.strip().partition("=")
+                if sep:
+                    keys[k] = v.strip('"')
+    except OSError:
+        pass
+    return " ".join(filter(None, (keys.get("NAME"), keys.get("VERSION_ID")))) or \
+        keys.get("PRETTY_NAME", "")
+
+
 class About:
-    """The device, the system, memory, storage, the battery, the address."""
+    """The device, the system, memory, storage, the battery, the address,
+    the author and the project's page (a tap opens it)."""
 
     title = "О системе"
 
     def __init__(self, app):
         self.app = app
         self.widget, box = page_box()
-        self.list = listbox(lambda *_a: None)
+        self.list = listbox(self.on_row)
         box.pack_start(self.list, False, False, 0)
         self.refresh()
 
     def refresh(self):
         background(self.fetch, self.fill)
+
+    def on_row(self, _lb, row):
+        if not getattr(row, "url", None):
+            return
+        # haltia-launch url: Firefox with the shell's profile and the
+        # start-up curtain, the same link again only raising it.
+        if os.access("/usr/bin/haltia-launch", os.X_OK):
+            subprocess.Popen(["/usr/bin/haltia-launch", "url", row.url])
+            return
+        try:
+            Gio.AppInfo.launch_default_for_uri(row.url, None)
+        except GLib.Error as exc:
+            say(self.app.win, "Не открылось: %s" % exc.message)
 
     @staticmethod
     def fetch():
@@ -2156,6 +2189,7 @@ class About:
         addr = run("nmcli", "-g", "IP4.ADDRESS", "device", "show", "wlan0").split("|")[0]
         items = [("Haltia", "Спокойная сенсорная среда, которая о вас заботится"),
                  ("Устройство", model or "—"),
+                 ("Система", os_release() or "—"),
                  ("Оболочка", shell[0].replace("haltia-shell-", "Haltia ") if shell else "—")]
         if len(mem) > 1:
             parts = mem[1].split()
@@ -2169,14 +2203,17 @@ class About:
                                                        "full": ", заряжена"}.get(state, ""))))
         if addr:
             items.append(("Адрес в сети", addr.split("/")[0]))
+        items += [("Автор", AUTHOR), ("GitHub", PROJECT_URL)]
         return items
 
     def fill(self, items):
         for child in self.list.get_children():
             self.list.remove(child)
         for name, value in items:
-            row = Gtk.ListBoxRow(activatable=False)
-            row.add(row_box(name, value))
+            link = value if value.startswith("https://") else None
+            row = Gtk.ListBoxRow(activatable=bool(link))
+            row.url = link
+            row.add(row_box(name, value, "›" if link else None))
             self.list.add(row)
         self.list.show_all()
 
