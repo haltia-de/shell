@@ -5,6 +5,9 @@ session user runs it through doas without a password (z-haltia-shell.conf).
 
     haltia-update check              what can be updated: NAME OLD NEW lines
     haltia-update changes NAME       what is new in it (AppStream releases)
+    haltia-update past SID NAME      what came with a past update of it
+                                     (the releases between its old and new
+                                     version in snapshot SID)
     haltia-update upgrade [--auto] [NAME...]
                                      update all, or these packages (with
                                      what they need), with a snapshot to go
@@ -545,6 +548,62 @@ def changes(name):
     return 0
 
 
+def installed_metainfo(name):
+    """The AppStream metainfo files the installed package name put on the
+    disk (apk's database lists them), as XML bytes."""
+    found, pkg, folder = [], None, ""
+    try:
+        with open(INSTALLED) as fh:
+            for line in fh:
+                if line.startswith("P:"):
+                    pkg, folder = line[2:].strip(), ""
+                elif line.startswith("F:"):
+                    folder = line[2:].strip()
+                elif line.startswith("R:") and pkg == name and \
+                        folder == "usr/share/metainfo" and line.rstrip().endswith(".xml"):
+                    path = "/" + folder + "/" + line[2:].strip()
+                    try:
+                        with open(path, "rb") as x:
+                            found.append(x.read(CATALOG_MAX))
+                    except OSError:
+                        pass
+    except OSError:
+        pass
+    return found
+
+
+def past(sid, name):
+    """What came with a past update of name: the releases after its old
+    version up to its new one in snapshot sid. The note kept when it was
+    offered, else the repository's catalog, else the metainfo the installed
+    package carries (it lists its older releases too): no network."""
+    snap = read_json(os.path.join(STATE, sid, "snapshot.json"), None)
+    if snap is None:
+        return 1
+    hit = [c for c in snap.get("changes", []) if c[0] == name]
+    if not hit:
+        return 1
+    _name, old, new = hit[0]
+    try:
+        with open(os.path.join(STATE, "notes", "%s-%s-%s.ru.txt" % (name, old, new))) as fh:
+            sys.stdout.write(fh.read())
+        return 0
+    except OSError:
+        pass
+    sources = []
+    comp = catalog_component(name)
+    if comp is not None:
+        sources.append(comp)
+    sources += installed_metainfo(name)
+    for xml in sources:
+        lines = releases(xml, old, upto=new)
+        if lines:
+            for line in lines:
+                log(line)
+            return 0
+    return 0  # nothing told: the window says the author did not describe it
+
+
 def fetch_changes(name, have):
     """The release lines from the newest package's metainfo, None when it
     cannot be fetched."""
@@ -588,18 +647,22 @@ def parse_xml(data):
     return ET.fromstring(data)
 
 
-def releases(xml, have):
+def releases(xml, have, upto=None):
     """VERSION DATE lines, each followed by its description's paragraphs
-    and items (an item starts with "• "), for releases newer than have."""
+    and items (an item starts with "• "), for releases newer than have
+    and, given upto, no newer than it."""
     try:
         root = parse_xml(xml)
     except ET.ParseError:
         return []
     lines = []
     base = (have or "").split("-r")[0]
+    top = (upto or "").split("-r")[0]
     for rel in root.iter("release"):
         ver = rel.get("version", "")
         if base and not newer(ver + "-r0", base + "-r0"):
+            continue
+        if top and newer(ver + "-r0", top + "-r0"):
             continue
         lines.append("%s %s" % (ver, rel.get("date", "")))
         desc = rel.find("description")
@@ -1111,6 +1174,8 @@ def state():
             g = groups.setdefault(key, {"name": key, "label": label(key) if key != "system"
                                         else "Системные компоненты", "packages": []})
             g["packages"].append(name)
+            # Whole versions: for a system package the revision is the change.
+            g.setdefault("versions", []).append([name, old, new])
             if name == key or "old" not in g:
                 g["old"], g["new"] = old.split("-r")[0], new.split("-r")[0]
         back = set(snap.get("rolled_back", []))
@@ -1163,6 +1228,8 @@ def main():
         return status()
     if cmd == "state":
         return state()
+    if cmd == "past" and len(args) == 3 and args[1].isdigit() and PACKAGE.fullmatch(args[2]):
+        return past(args[1], args[2])
     if cmd == "log":
         try:
             with open(os.path.join(STATE, "log")) as fh:
