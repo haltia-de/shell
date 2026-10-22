@@ -39,7 +39,7 @@ panel=
 # No program in front yet: taps buzz (haltia-focus marks quiet-taps). No
 # home screen raised and no program starting either: marks a session that
 # ended uncleanly left would hide «✕».
-rm -f "$run"/haltia/apps.conf "$run"/haltia/orientation "$run"/haltia/quiet-taps \
+rm -f "$run"/haltia/apps.conf "$run"/haltia/orientation "$run"/haltia/rotation "$run"/haltia/quiet-taps \
 	"$run"/haltia/home.raised "$run"/haltia/launch/starting
 if [ -x /usr/bin/haltia-apps ] && /usr/bin/haltia-apps >"$run"/haltia/apps.log 2>&1 &&
 	[ -s "$run"/haltia/waybar.json ] && [ -s "$run"/haltia/style.css ]; then

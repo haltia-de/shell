@@ -77,6 +77,10 @@ G = 9.80665
 # in landscape the screen's y reads -1 g, as iio-sensor-proxy expects.
 TRANSFORMS = {"normal": "normal", "left-up": "90", "bottom-up": "180", "right-up": "270"}
 ORIENTATION = os.path.join(RUN, "haltia", "orientation")
+# The output's transform as it is now (normal, 90, 180, 270), for programs
+# that turn a camera's picture with the screen (calls, «Камера»): GTK 3 does
+# not tell them. Written on start and after every turn.
+ROTATION = os.path.join(RUN, "haltia", "rotation")
 
 
 def log(msg):
@@ -180,6 +184,35 @@ def output_name():
     return None
 
 
+def current_transform(output):
+    """The output's transform from wlr-randr ("normal", "90"...), or None."""
+    try:
+        out = subprocess.run(["wlr-randr"], capture_output=True, text=True, timeout=5).stdout
+    except (OSError, subprocess.SubprocessError):
+        return None
+    mine = False
+    for line in out.splitlines():
+        if line and not line[0].isspace():
+            mine = line.split()[0] == output
+        elif mine and line.strip().startswith("Transform:"):
+            return line.split(":", 1)[1].strip()
+    return None
+
+
+def write_rotation(transform):
+    """ROTATION, one word, replaced at once (a program watching it reads it
+    whole)."""
+    if transform not in TRANSFORMS.values():
+        return
+    try:
+        os.makedirs(os.path.dirname(ROTATION), exist_ok=True)
+        with open(ROTATION + ".new", "w") as fh:
+            fh.write(transform + "\n")
+        os.replace(ROTATION + ".new", ROTATION)
+    except OSError as exc:
+        log("rotation: %s" % exc)
+
+
 def turn(output, way):
     try:
         res = subprocess.run(["wlr-randr", "--output", output, "--transform", TRANSFORMS[way]],
@@ -191,6 +224,7 @@ def turn(output, way):
         log("wlr-randr: %s" % (res.stderr.strip() or res.returncode))
         return False
     log("turned %s" % way)
+    write_rotation(TRANSFORMS[way])
     # The edge gestures follow the picture.
     subprocess.call(["/usr/libexec/haltia/haltia-gestures", TRANSFORMS[way]])
     return True
@@ -300,6 +334,7 @@ def watch():
     if not output:
         log("no output (wlr-randr)")
         return 0
+    write_rotation(current_transform(output) or "normal")
     proxy = SensorProxy()
     accel = matrix = None
     if proxy.bus:
