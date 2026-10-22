@@ -20,7 +20,7 @@ def functions():
     start = src.index('WAKE_SOCKET = "/run/haltia/wake.sock"')
     end = src.index("def open_home_forward():")
     ns = {}
-    exec("import os, pwd, socket, struct\n" + src[start:end], ns)
+    exec("import os, pwd, socket, struct, sys\n" + src[start:end], ns)
     return ns
 
 

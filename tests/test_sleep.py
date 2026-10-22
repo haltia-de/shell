@@ -127,6 +127,23 @@ class SelfRestart(unittest.TestCase):
         self.addCleanup(client.close)
         client.connect(self.sock_path)
 
+    def test_grabbed_touch_devices_come_over_open(self):
+        self.write("print('new')\n")
+        dev = os.path.join(self.dir, "event4")
+        open(dev, "w").close()
+        fd = os.open(dev, os.O_RDONLY)
+        self.addCleanup(os.close, fd)
+        with mock.patch.object(hs.os, "execve") as execve:
+            hs.restart_self(None, [fd])
+        env = execve.call_args[0][2]
+        self.assertEqual(env[hs.TOUCH_FDS_ENV], "%d:%s" % (fd, dev))
+        self.assertTrue(os.get_inheritable(fd))
+        # The new version takes it while it is still that device.
+        self.assertEqual(hs.adopt_fds(env[hs.TOUCH_FDS_ENV]), [fd])
+        self.assertFalse(os.get_inheritable(fd))
+        self.assertEqual(hs.adopt_fds("%d:/dev/input/event9" % fd), [])
+        self.assertEqual(hs.adopt_fds("x:y,,"), [])
+
     def test_a_changed_file_has_a_new_id(self):
         self.write("a\n")
         before = hs.file_id(self.self_path)

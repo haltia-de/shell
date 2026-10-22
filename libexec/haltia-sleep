@@ -502,8 +502,16 @@ class Lamp:
         self.suspend_started = 0.0
         self.stuck_told = False
         mark_dark(self.asleep)
+        passed = os.environ.pop(TOUCH_FDS_ENV, "")
         if self.asleep:
-            self._grab_touch()
+            # After restart_self the grabbed touch devices come over open,
+            # still grabbed: no moment in the dark without the grab.
+            self.touch = adopt_fds(passed)
+            if not self.touch:
+                self._grab_touch()
+        else:
+            for fd in adopt_fds(passed):
+                os.close(fd)
 
     def press(self):
         if self.asleep:
@@ -814,6 +822,25 @@ def wake_request(sock):
 
 
 WAKE_FD_ENV = "HALTIA_SLEEP_WAKE_FD"
+TOUCH_FDS_ENV = "HALTIA_SLEEP_TOUCH_FDS"
+
+
+def adopt_fds(passed):
+    """The touch devices restart_self handed over, "FD:PATH,...": each fd
+    taken only while it is still that device, made non-inheritable again."""
+    fds = []
+    for item in filter(None, passed.split(",")):
+        fd, _sep, path = item.partition(":")
+        if not fd.isdigit():
+            continue
+        try:
+            if os.readlink("/proc/self/fd/" + fd) != path:
+                continue
+            os.set_inheritable(int(fd), False)
+        except OSError:
+            continue
+        fds.append(int(fd))
+    return fds
 SELF = os.path.abspath(sys.argv[0])
 
 
@@ -825,7 +852,7 @@ def file_id(path):
     return (st.st_ino, st.st_mtime_ns)
 
 
-def restart_self(waker):
+def restart_self(waker, touch=()):
     """A new version of this file was installed (an update): run it in this
     same process (#24). The screen's state is read again from the backlight,
     the inhibitors are asked afresh anyway, and the wake socket is handed
@@ -842,13 +869,25 @@ def restart_self(waker):
     if waker is not None:
         os.set_inheritable(waker.fileno(), True)
         env[WAKE_FD_ENV] = str(waker.fileno())
+    handed = []
+    for fd in touch:
+        try:
+            handed.append("%d:%s" % (fd, os.readlink("/proc/self/fd/%d" % fd)))
+            os.set_inheritable(fd, True)
+        except OSError:
+            continue
+    if handed:
+        env[TOUCH_FDS_ENV] = ",".join(handed)
     try:
         # argv as haltia-sleep-loop starts it, so ps shows the same line.
         os.execve(sys.executable, ["python3", SELF], env)
     except OSError as exc:
         log("RESTART_FAIL %s" % exc.errno)
-        if waker is not None:
-            os.set_inheritable(waker.fileno(), False)
+        for fd in ([waker.fileno()] if waker is not None else []) + list(touch):
+            try:
+                os.set_inheritable(fd, False)
+            except OSError:
+                pass
 
 
 def open_home_forward():
@@ -927,7 +966,7 @@ def listen():
             now_id = file_id(SELF)
             if version and now_id and now_id != version and \
                     (lamp.suspender is None or lamp.suspender.poll() is not None):
-                restart_self(waker)
+                restart_self(waker, lamp.touch)
                 version = now_id  # it did not restart: not again for this one
             # A device came or went: watch the ones there are now.
             nodes = event_nodes()
