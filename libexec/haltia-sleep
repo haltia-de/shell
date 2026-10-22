@@ -502,8 +502,16 @@ class Lamp:
         self.suspend_started = 0.0
         self.stuck_told = False
         mark_dark(self.asleep)
+        passed = os.environ.pop(TOUCH_FDS_ENV, "")
         if self.asleep:
-            self._grab_touch()
+            # After restart_self the grabbed touch devices come over open,
+            # still grabbed: no moment in the dark without the grab.
+            self.touch = adopt_fds(passed)
+            if not self.touch:
+                self._grab_touch()
+        else:
+            for fd in adopt_fds(passed):
+                os.close(fd)
 
     def press(self):
         if self.asleep:
@@ -760,7 +768,21 @@ WAKE_EVERY = 15.0  # s: at most one wake of a dark screen this often
 
 def open_wake_socket():
     """The session's way to turn the screen on (haltia-wake: an incoming
-    call). Anyone may connect; only root and the session user are heard."""
+    call). Anyone may connect; only root and the session user are heard.
+    After a restart for a new version (restart_self) the old process's
+    listening socket comes over open, so a call that rings meanwhile only
+    waits in its queue."""
+    passed = os.environ.pop(WAKE_FD_ENV, "")
+    if passed.isdigit():
+        try:
+            sock = socket.socket(fileno=int(passed))
+            if sock.family == socket.AF_UNIX and sock.getsockname() == WAKE_SOCKET:
+                os.set_inheritable(sock.fileno(), False)
+                sock.setblocking(False)
+                return sock
+            sock.detach()
+        except OSError:
+            pass
     try:
         os.unlink(WAKE_SOCKET)
     except OSError:
@@ -797,6 +819,75 @@ def wake_request(sock):
         except (OSError, KeyError, struct.error):
             pass
     return False
+
+
+WAKE_FD_ENV = "HALTIA_SLEEP_WAKE_FD"
+TOUCH_FDS_ENV = "HALTIA_SLEEP_TOUCH_FDS"
+
+
+def adopt_fds(passed):
+    """The touch devices restart_self handed over, "FD:PATH,...": each fd
+    taken only while it is still that device, made non-inheritable again."""
+    fds = []
+    for item in filter(None, passed.split(",")):
+        fd, _sep, path = item.partition(":")
+        if not fd.isdigit():
+            continue
+        try:
+            if os.readlink("/proc/self/fd/" + fd) != path:
+                continue
+            os.set_inheritable(int(fd), False)
+        except OSError:
+            continue
+        fds.append(int(fd))
+    return fds
+SELF = os.path.abspath(sys.argv[0])
+
+
+def file_id(path):
+    try:
+        st = os.stat(path)
+    except OSError:
+        return None
+    return (st.st_ino, st.st_mtime_ns)
+
+
+def restart_self(waker, touch=()):
+    """A new version of this file was installed (an update): run it in this
+    same process (#24). The screen's state is read again from the backlight,
+    the inhibitors are asked afresh anyway, and the wake socket is handed
+    over open. A file that does not compile is left alone: this one runs on.
+    Returns only when it did not restart."""
+    try:
+        with open(SELF) as fh:
+            compile(fh.read(), SELF, "exec")
+    except (OSError, SyntaxError, ValueError) as exc:
+        log("RESTART_SKIP %s" % exc)
+        return
+    log("RESTART new version")
+    env = dict(os.environ)
+    if waker is not None:
+        os.set_inheritable(waker.fileno(), True)
+        env[WAKE_FD_ENV] = str(waker.fileno())
+    handed = []
+    for fd in touch:
+        try:
+            handed.append("%d:%s" % (fd, os.readlink("/proc/self/fd/%d" % fd)))
+            os.set_inheritable(fd, True)
+        except OSError:
+            continue
+    if handed:
+        env[TOUCH_FDS_ENV] = ",".join(handed)
+    try:
+        # argv as haltia-sleep-loop starts it, so ps shows the same line.
+        os.execve(sys.executable, ["python3", SELF], env)
+    except OSError as exc:
+        log("RESTART_FAIL %s" % exc.errno)
+        for fd in ([waker.fileno()] if waker is not None else []) + list(touch):
+            try:
+                os.set_inheritable(fd, False)
+            except OSError:
+                pass
 
 
 def open_home_forward():
@@ -861,6 +952,7 @@ def listen():
         log("WAKE_SOCKET_FAIL %s" % exc.errno)
         waker = None
     woke_at = -WAKE_EVERY
+    version = file_id(SELF)
     activity = activity_nodes(path)
     seen_nodes = event_nodes()
     last_input = time.monotonic()
@@ -869,6 +961,13 @@ def listen():
     log("LISTEN asleep=%s activity=%d" % (int(lamp.asleep), len(activity)))
     while True:
         if down is None:
+            # An update replaced this file: the new version takes over, but
+            # never with a key held or a suspend going on.
+            now_id = file_id(SELF)
+            if version and now_id and now_id != version and \
+                    (lamp.suspender is None or lamp.suspender.poll() is not None):
+                restart_self(waker, lamp.touch)
+                version = now_id  # it did not restart: not again for this one
             # A device came or went: watch the ones there are now.
             nodes = event_nodes()
             if nodes != seen_nodes:
