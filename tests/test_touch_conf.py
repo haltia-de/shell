@@ -41,6 +41,9 @@ class TouchConf(unittest.TestCase):
         src = re.sub(r"^EVENTS=.*$", "EVENTS=%s" % p("events"), src, count=1, flags=re.M)
         src = re.sub(r"^TRY=.*$", "TRY=%s" % self.try_, src, count=1, flags=re.M)
         src = re.sub(r"^TRY_S=.*$", "TRY_S=1", src, count=1, flags=re.M)
+        # The filter is whatever binary the stand-in runs (sh here).
+        filter_exe = os.path.realpath("/proc/%d/exe" % self.filter.pid)
+        src = re.sub(r"^FILTER=.*$", "FILTER=%s" % filter_exe, src, count=1, flags=re.M)
         self.helper = p("helper")
         with open(self.helper, "w") as fh:
             fh.write(src)
@@ -120,6 +123,19 @@ class TouchConf(unittest.TestCase):
         self.run_helper("set", "hold_ms=90")
         time.sleep(0.6)  # the first watch is over, the second is not
         self.assertIn("hold_ms = 90\n", self.read(self.try_) or "")
+
+    def test_a_stale_pid_gets_no_signal(self):
+        # SH2-29: the pid file names a process that is not the filter.
+        other = subprocess.Popen(["sleep", "30"])
+        self.addCleanup(other.wait)
+        self.addCleanup(other.kill)
+        with open(self.pidfile, "w") as fh:
+            fh.write("%d\n" % other.pid)
+        res = self.run_helper("drop")
+        self.assertEqual(res.returncode, 0)
+        self.assertIn("not running", res.stderr)
+        time.sleep(0.2)
+        self.assertIsNone(other.poll())  # a HUP would have ended it
 
     def test_out_of_range_is_refused(self):
         res = self.run_helper("set", "tap_radius=50")

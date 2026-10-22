@@ -33,6 +33,7 @@ PIDFILE=/run/haltia/touchguard.pid
 EVENTS=/run/haltia/touchguard.events
 TRY=/run/haltia/touchguard.try
 TRY_S=20 # the window's 15 s to tap «Оставить», and a margin
+FILTER=/usr/libexec/haltia/haltia-touchguard
 
 RANGES='hold_ms 0 300
 repeat_ms 0 1500
@@ -46,8 +47,18 @@ tap_radius 90 1800
 long_ms 300 2000
 multitouch 0 1'
 
+# filter_pid: the pid in PIDFILE, only while that process is the filter.
+# After supervise-daemon gave up the file is stale, and a reused pid would
+# get HUP or USR1 from root, fatal by default (waybar: the whole session).
+filter_pid() {
+	pid=$(cat "$PIDFILE" 2>/dev/null) || return 1
+	case $pid in '' | *[!0-9]*) return 1 ;; esac
+	[ "$(readlink "/proc/$pid/exe" 2>/dev/null)" = "$FILTER" ] || return 1
+	echo "$pid"
+}
+
 signal() {
-	pid=$(cat "$PIDFILE" 2>/dev/null) || {
+	pid=$(filter_pid) || {
 		echo "haltia-touchguard-conf: the filter is not running" >&2
 		exit 1
 	}
@@ -119,7 +130,7 @@ lines() {
 # reload: tell the filter; a filter that is down reads the files as it
 # starts, so that is no failure of what was asked.
 reload() {
-	pid=$(cat "$PIDFILE" 2>/dev/null) && kill -HUP "$pid" 2>/dev/null ||
+	pid=$(filter_pid) && kill -HUP "$pid" 2>/dev/null ||
 		echo "haltia-touchguard-conf: the filter is not running; it reads this as it starts" >&2
 }
 
@@ -139,8 +150,9 @@ set)
 		sleep "$1"
 		[ "$(sed -n "s/^# token //p" "$2" 2>/dev/null)" = "$3" ] || exit 0
 		rm -f "$2"
-		pid=$(cat "$4" 2>/dev/null) && kill -HUP "$pid"
-	' watch "$TRY_S" "$TRY" "$token" "$PIDFILE" </dev/null >/dev/null 2>&1 &
+		pid=$(cat "$4" 2>/dev/null) &&
+			[ "$(readlink "/proc/$pid/exe" 2>/dev/null)" = "$5" ] && kill -HUP "$pid"
+	' watch "$TRY_S" "$TRY" "$token" "$PIDFILE" "$FILTER" </dev/null >/dev/null 2>&1 &
 	signal HUP
 	;;
 keep)
