@@ -109,6 +109,40 @@ class Hostile(unittest.TestCase):
             self.assertNotIn(gone, out, gone)
         self.assertIn("[строки скрыты]", out)
 
+    def test_indented_text_outside_a_traceback_goes(self):
+        log = ("Traceback (most recent call last):\n"
+               '  File "/usr/bin/x", line 3, in f\n'
+               "    f()\n"
+               "    Петя: встретимся у метро\n"
+               "    secret plan for saturday\n"
+               "ValueError: x\n")
+        out = hr.clean(log, program=True)
+        self.assertIn("    f()", out)
+        for gone in ("метро", "secret plan"):
+            self.assertNotIn(gone, out)
+
+
+class RootText(unittest.TestCase):
+    def test_kernel_addresses_go(self):
+        out = hr.hide_addresses("[ 12.3] PC is at foo+0x14/0x80\n"
+                                "[ 12.3] pc : [<c0123456>] lr : [<c01234ab>]\n"
+                                "[ 12.3] Stack: c1a2b3c4 ffffff80dead0000 ok\n"
+                                "ptr 0xffffff8008123456\n")
+        for gone in ("c0123456", "c01234ab", "c1a2b3c4", "ffffff80dead0000", "ffffff8008123456"):
+            self.assertNotIn(gone, out)
+        self.assertIn("foo+0x14/0x80", out)
+
+    def test_the_system_log_keeps_known_services(self):
+        log = ("Oct 22 11:54:59 b8000h daemon.info NetworkManager[874]: <info> state up\n"
+               "Oct 22 11:55:00 b8000h user.notice someapp[12]: Петя написал про хлеб\n"
+               "Oct 22 11:55:01 b8000h user.info logger: my diary entry\n"
+               "Oct 22 11:55:02 b8000h kern.warn kernel: [ 1.2] usb 1-1: new device\n")
+        out = hr.keep_syslog(log)
+        self.assertIn("NetworkManager[874]", out)
+        self.assertIn("usb 1-1", out)
+        self.assertNotIn("хлеб", out)
+        self.assertNotIn("diary", out)
+
 
 class Report(unittest.TestCase):
     def setUp(self):
@@ -163,11 +197,36 @@ class Report(unittest.TestCase):
         self.assertEqual(list(pending.values())[0]["count"], 2)
         self.assertIn("и ещё 1", hr.subject([ev, {"kind": "oom", "program": None, "time": 1}]))
 
+    def test_only_the_shells_own_logs_skip_the_allowlist(self):
+        built = {}
+        sections = {"session/messenger.log": "Петя пишет: привет\nrandom chat words\n",
+                    "session/portal.log": "opened /home/user/Документы/diagnosis.pdf\n",
+                    "session/home.log": "home: raised\n"}
+        with mock.patch.object(hr, "session_logs", lambda: sections), \
+                mock.patch.object(hr, "root_sections", dict):
+            path = hr.build([{"kind": "manual", "program": None, "time": 1}])
+        with open(path) as fh:
+            archive = json.load(fh)["archive"]
+        with tarfile.open(archive) as tar:
+            for m in tar.getmembers():
+                built[m.name.split("/", 1)[1]] = tar.extractfile(m).read().decode()
+        self.assertNotIn("random chat", built["session/messenger.log"])
+        self.assertNotIn("diagnosis", built["session/portal.log"])
+        self.assertIn("home: raised", built["session/home.log"])
+
     def test_a_session_loop(self):
         state = {}
         for key in ("1-1", "2-2"):
             self.assertEqual(hr.session_started(state, key), [])
         self.assertEqual(hr.session_started(state, "3-3")[0]["kind"], "loop")
+
+    def test_a_crash_detail_keeps_only_safe_lines(self):
+        ev = {"kind": "crash", "program": "x", "time": 1,
+              "detail": "Traceback (most recent call last):\nlocals: chat with Petya about bread\n"
+                        "ValueError: x"}
+        out = hr.crash_section([ev])
+        self.assertIn("ValueError: x", out)
+        self.assertNotIn("Petya", out)
 
     def test_a_restarted_watcher_is_no_loop(self):
         # haltia-keep starting the watcher again in the same session.
