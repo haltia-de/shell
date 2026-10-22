@@ -1,0 +1,77 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0
+"""The programs that take a file from another, for the shell's own
+questions (haltia-ask's screenshot), by haltia_kit.share's rules:
+
+    haltia-share targets FILE     "DESKTOP-ID<TAB>NAME" per program
+    haltia-share send ID FILE     that program started with the file
+
+kit's share.targets() is used when kit is installed; without it the same
+rules, the same way: a .desktop file with X-Haltia-Share=true whose
+MimeType takes the file's type, told by its content as well as its name
+(Gio.content_type_guess), a whole kind as image/* too. The program is
+started as kit does, with the file's file:// URI (launch_uris), so
+«Сообщения» opens «Кому отправить?».
+"""
+import os
+import sys
+
+import gi
+
+gi.require_version("Gio", "2.0")
+from gi.repository import Gio  # noqa: E402
+
+KEY = "X-Haltia-Share"
+SNIFF = 4096
+
+
+def _mime(path):
+    data = None
+    try:
+        with open(path, "rb") as fh:
+            data = fh.read(SNIFF)
+    except OSError:
+        pass
+    kind = Gio.content_type_guess(path, data)[0]
+    return Gio.content_type_get_mime_type(kind) or kind
+
+
+def _takes(mime, wanted):
+    if wanted.endswith("/*"):
+        return mime.startswith(wanted[:-1])
+    return Gio.content_type_is_a(mime, wanted)
+
+
+def targets(path):
+    try:
+        from haltia_kit import share
+        return share.targets(path)
+    except ImportError:
+        pass
+    mime = _mime(path)
+    found = []
+    for info in Gio.AppInfo.get_all():
+        if not isinstance(info, Gio.DesktopAppInfo) or not info.get_boolean(KEY):
+            continue
+        if any(_takes(mime, wanted) for wanted in info.get_supported_types() or []):
+            found.append(info)
+    return sorted(found, key=lambda info: info.get_name().casefold())
+
+
+def main(argv):
+    if len(argv) == 3 and argv[1] == "targets":
+        for info in targets(argv[2]):
+            print("%s\t%s" % (info.get_id(), info.get_name()))
+        return 0
+    if len(argv) == 4 and argv[1] == "send":
+        info = Gio.DesktopAppInfo.new(argv[2])
+        if info is None or not info.get_boolean(KEY):
+            return 1
+        info.launch_uris([Gio.File.new_for_path(os.path.abspath(argv[3])).get_uri()], None)
+        return 0
+    sys.stderr.write("usage: haltia-share targets FILE | send DESKTOP-ID FILE\n")
+    return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))

@@ -3,6 +3,9 @@
 # "close this program?" (a tap on the program already in front).
 #
 #   haltia-ask power
+#   haltia-ask screenshot        (the power menu's «Снимок экрана»: the screen
+#                             into Изображения/Снимки экрана, then offered to
+#                             the programs that take pictures)
 #   haltia-ask close <id>
 #   haltia-ask close-front       (the "✕" of haltia-close: the window in front)
 #   haltia-ask pin <id>          (a long press on a home screen tile)
@@ -107,6 +110,57 @@ close_program() {
 	return 0
 }
 
+# pictures: the person's pictures folder (XDG_PICTURES_DIR of
+# ~/.config/user-dirs.dirs, else ~/Изображения or ~/Pictures, whichever is
+# there; Изображения for a new one).
+pictures() {
+	dir=$(sed -n 's/^XDG_PICTURES_DIR="\(.*\)"$/\1/p' "$HOME/.config/user-dirs.dirs" 2>/dev/null | tail -1)
+	dir=$(printf '%s' "$dir" | sed "s|^\\\$HOME|$HOME|")
+	if [ -z "$dir" ] || [ "$dir" = "$HOME" ]; then
+		dir=$HOME/Изображения
+		[ -d "$dir" ] || [ ! -d "$HOME/Pictures" ] || dir=$HOME/Pictures
+	fi
+	printf '%s\n' "$dir"
+}
+
+# screenshot: the screen now (the question that asked has gone: a moment for
+# the compositor to draw without it) into the pictures folder's «Снимки
+# экрана», then where to: a program that takes it, or done.
+screenshot() {
+	sleep 0.5
+	dir=$(pictures)/Снимки\ экрана
+	mkdir -p "$dir" || exit 1
+	base=$dir/Снимок\ $(date +%Y-%m-%d\ %H-%M-%S)
+	# Two in one second: «… (2).png», never over the first.
+	file=$base.png n=2
+	while [ -e "$file" ]; do
+		file="$base ($n).png" n=$((n + 1))
+	done
+	if ! grim "$file" 2>/dev/null; then
+		ask "Снимок экрана не получился" "Готово" >/dev/null
+		exit 1
+	fi
+	/usr/libexec/haltia/haltia-press ask >/dev/null 2>&1
+	# haltia-share: haltia_kit.share's rules (its own code when kit is there).
+	targets=$(/usr/libexec/haltia/haltia-share targets "$file" 2>/dev/null)
+	set --
+	while IFS="$(printf '\t')" read -r _f name; do
+		[ -n "$name" ] && set -- "$@" "Отправить: $name"
+	done <<EOT
+$targets
+EOT
+	pick=$(ask "Снимок сохранён в «${dir#"$HOME"/}»" "$@" "Готово")
+	case $pick in
+	'' | *[!0-9]*) exit 0 ;;
+	esac
+	[ "$pick" -lt $# ] || exit 0
+	chosen
+	id=$(printf '%s\n' "$targets" | sed -n "$((pick + 1))p" | cut -f1)
+	# Started with the file's URI, as kit's share does: «Сообщения» opens
+	# «Кому отправить?».
+	/usr/libexec/haltia/haltia-share send "$id" "$file" >/dev/null 2>&1 9>&- &
+}
+
 # player ID: sets state (Playing or Paused) and bus (its MPRIS name) from
 # haltia-badges' file, or fails when the program's player is not playing.
 player() {
@@ -142,24 +196,15 @@ play_items() {
 
 case ${1:-} in
 power)
-	# The USB port is a device until switched to host for a keyboard
-	# (the device's b8k-usb; no item without it): the item offers the
-	# other role.
-	usb= usb_item=
-	for f in /sys/class/usb_role/*/role; do [ -r "$f" ] && read -r usb <"$f"; done
-	usb_cmd=/usr/sbin/b8k-usb
-	[ -x "$usb_cmd" ] || usb_cmd=/usr/local/sbin/b8k-usb
-	if [ -x "$usb_cmd" ]; then
-		case $usb in
-		host) usb_item="USB: компьютер" usb_to=device ;;
-		*) usb_item="USB: клавиатура" usb_to=host ;;
-		esac
-	fi
-	case $(ask "Питание" "Выключить" "Перезагрузить" ${usb_item:+"$usb_item"} "Отмена") in
+	# «USB: клавиатура» moved to Настройки → USB.
+	case $(ask "Питание" "Выключить" "Перезагрузить" "Снимок экрана" "Отмена") in
 	0) chosen; power off ;;
 	1) chosen; power reboot ;;
-	2) [ -n "$usb_item" ] && chosen && doas -n "$usb_cmd" "$usb_to" ;;
+	2) screenshot ;;
 	esac
+	;;
+screenshot)
+	screenshot
 	;;
 close)
 	id=${2:-}
