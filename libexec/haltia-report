@@ -136,9 +136,10 @@ _QUOTED = re.compile(r"'[^'\n]*'|\"[^\"\n]*\"")
 
 # A program's own log (the messenger's carries who wrote what) keeps only
 # lines of known safe shapes; every other line goes, whatever it holds.
+_FILE_LINE = re.compile(r"^\s*File \"[^\"]+\", line \d+, in [\w<>.]+\s*$")
 _SAFE_LINE = [re.compile(p) for p in (
     r"^\s*Traceback \(most recent call last\):",
-    r"^\s*File \"[^\"]+\", line \d+, in [\w<>.]+\s*$",
+    _FILE_LINE.pattern,
     r"^\s*\^+\s*$",
     r"^[\w.]*(Error|Exception|Warning|Exit|Interrupt|Fault)(\b|:)",
     r"^(Fatal Python error|Current thread|Thread 0x|Segmentation fault)",
@@ -153,18 +154,42 @@ _SAFE_LINE = [re.compile(p) for p in (
 def keep_safe(text):
     """A program log reduced to its safe lines (and a traceback's code lines
     between its File line and its exception), the rest one mark a run."""
-    out, hidden, in_tb = [], False, False
+    out, hidden, after_file = [], False, False
     for line in text.splitlines():
-        if line.lstrip().startswith("Traceback"):
-            in_tb = True
-        safe = any(p.search(line) for p in _SAFE_LINE) or (in_tb and line.startswith("    "))
-        if re.match(r"^[\w.]*(Error|Exception)", line):
-            in_tb = False
+        # A traceback's code line: one indented line right after its File line.
+        safe = after_file and line.startswith("    ") or any(p.search(line) for p in _SAFE_LINE)
+        after_file = bool(_FILE_LINE.match(line))  # the same rule as the safe line
         if safe:
             out.append(line)
             hidden = False
         elif not hidden:
             out.append(_HIDDEN)
+            hidden = True
+    return "\n".join(out) + ("\n" if out else "")
+
+
+# The system log gathers what any program sends to syslog: only the lines of
+# known system services and the shell stay.
+_SYSLOG_LINE = re.compile(r"^\w{3} [ \d]\d \d\d:\d\d:\d\d \S+ (\w+)\.\w+ ([\w./-]+?)(?:\[\d+\])?: ")
+# Facilities of the kernel and services; user.* and local*.* are what any
+# program (logger) sends, whatever name it gives.
+_SYSLOG_FACILITY = {"kern", "daemon", "auth", "authpriv", "cron", "syslog"}
+_SYSLOG_KNOWN = re.compile(
+    r"^(kernel|NetworkManager|nm-dispatcher|wpa_supplicant|iwd|dhcpcd|udhcpc|elogind(-daemon)?|"
+    r"openrc|openrc-run|supervise-daemon|start-stop-daemon|init|crond|chronyd|ntpd|acpid|"
+    r"udevd|eudev|mdev|dbus-daemon|polkitd|pulseaudio|pipewire|bluetoothd|upowerd|"
+    r"iio-sensor-proxy|syslogd|klogd|apk|haltia-[\w-]+|b8k-[\w-]+)$")
+
+
+def keep_syslog(text):
+    out, hidden = [], False
+    for line in text.splitlines():
+        m = _SYSLOG_LINE.match(line)
+        if m and m.group(1) in _SYSLOG_FACILITY and _SYSLOG_KNOWN.match(m.group(2)):
+            out.append(line)
+            hidden = False
+        elif not hidden:
+            out.append("[строки скрыты]")
             hidden = True
     return "\n".join(out) + ("\n" if out else "")
 
@@ -312,7 +337,9 @@ def crash_section(events):
             ev.get("count", 1), time.strftime("%Y-%m-%d %H:%M:%S",
                                                time.localtime(ev.get("time", 0)))))
         if ev.get("detail"):
-            parts.append(clean(ev["detail"]))
+            # A crash's text is the program's (its traceback, its locals):
+            # safe lines only, like its log.
+            parts.append(clean(ev["detail"], program=ev["kind"] == "crash"))
         parts.append("")
     return "\n".join(parts)
 
@@ -377,7 +404,12 @@ def subject(events):
 
 
 OWN = ("summary.txt", "system.txt", "state.txt", "problem.txt")
-PROGRAM_OUTPUT = ("programs/", "session/app-", "session/launch-", "session/autostart-")
+# The shell's own daemons' logs: cleaned by rule. Every other log (programs'
+# own, their output in app-*/launch-*, autostart, the messenger, the
+# keyboard, the portal with its file names) keeps only its safe lines.
+SHELL_LOGS = {"session/%s.log" % n for n in (
+    "apps", "badges", "brightness", "close", "focus-watch", "gestures", "home", "report",
+    "rotate", "splash", "start", "stop", "update", "volume")}
 
 
 def member(name):
@@ -414,7 +446,8 @@ def build(events, note=None, screenshot=False):
             # Our own sections are written clean (the summary carries the
             # helper's name and note on purpose).
             if name not in OWN:
-                text = clean(text, program=name.startswith(PROGRAM_OUTPUT))
+                text = clean(text, program=not name.startswith("root/") and
+                             name not in SHELL_LOGS)
             data = text.encode()
             if len(data) > budget:  # the archive stays under LIMIT
                 data = data[-max(0, budget):]

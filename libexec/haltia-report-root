@@ -75,7 +75,10 @@ def sections(rep):
     except OSError:
         names = []
     for name in names:
-        out.append(("root/var-log/" + name, rep.tail(os.path.join(VAR_LOG, name))))
+        text = rep.tail(os.path.join(VAR_LOG, name))
+        if name == "messages":
+            text = rep.keep_syslog(text)
+        out.append(("root/var-log/" + name, text))
     for name in pstore_names():
         out.append(("root/pstore/" + name, rep.read(os.path.join(PSTORE, name), 64 * 1024)))
     return out
