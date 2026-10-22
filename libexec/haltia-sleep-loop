@@ -1,10 +1,23 @@
 #!/bin/sh
 # One listener for the power key. OpenRC local.d starts this in the
 # background; flock keeps a second copy from running after a reboot race.
+# A listener that ends soon again waits longer each time (1 s, doubling, at
+# most 5 min; back to 1 s after one that ran a minute), so a device where
+# it cannot work is not a Python start a second for good; exit status 3
+# (no power key: nothing to do) ends the loop.
 mkdir -p /run/haltia
 exec 9>/run/haltia/sleep.loop.lock
 flock -n 9 || exit 0
+pause=1
 while :; do
+	start=$(cut -d. -f1 /proc/uptime)
 	python3 /usr/libexec/haltia/haltia-sleep
-	sleep 1
+	status=$?
+	[ "$status" -eq 3 ] && exit 0
+	if [ $(($(cut -d. -f1 /proc/uptime) - start)) -ge 60 ]; then
+		pause=1
+	fi
+	sleep "$pause"
+	pause=$((pause * 2))
+	[ "$pause" -le 300 ] || pause=300
 done

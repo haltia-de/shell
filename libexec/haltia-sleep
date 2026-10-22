@@ -66,6 +66,7 @@ RESCAN_SEC = 30.0  # how often the input devices are looked at again
 # stops while the system sleeps) is stuck: logged and killed.
 SUSPEND_DEADLINE = 120.0
 FILTER_NAME = "haltia-touchguard touchscreen"
+NOTHING_TO_DO = 3  # exit status: no power key; haltia-sleep-loop stops
 POWER_SUPPLY = "/sys/class/power_supply"
 SUSPEND_HOOK = "/usr/lib/haltia/hooks/suspend"
 POWER_STATE = "/sys/power/state"
@@ -246,12 +247,23 @@ def external_power():
 
 
 def charging():
+    """On the charger, or with no battery at all (a desktop): from sysfs,
+    cached. Asking upower (haltia-meter, up to 10 s) here held up the power
+    key and made haltia-wake give up on a ringing call (SH2-26)."""
+    if external_power():
+        return True
     try:
-        out = subprocess.run(["/usr/libexec/haltia/haltia-meter", "battery-info"],
-                             capture_output=True, text=True, timeout=10).stdout.split()
-    except (OSError, subprocess.SubprocessError):
-        return False
-    return len(out) != 2 or out[1] in ("charging", "full")
+        names = os.listdir(POWER_SUPPLY)
+    except OSError:
+        return True
+    for name in names:
+        try:
+            with open(os.path.join(POWER_SUPPLY, name, "type")) as fh:
+                if fh.read().strip() == "Battery":
+                    return False
+        except OSError:
+            continue
+    return True
 
 
 def updates_when_dark():
@@ -267,8 +279,14 @@ def updates_when_dark():
             return
     except OSError:
         pass
-    os.makedirs(UPDATE_STATE, exist_ok=True)
-    open(stamp, "w").close()
+    # A full or read-only /var must not end the daemon on every screen-off
+    # (SH2-28): no stamp, no look this time.
+    try:
+        os.makedirs(UPDATE_STATE, exist_ok=True)
+        open(stamp, "w").close()
+    except OSError as exc:
+        log("UPDATES_STAMP_FAIL %s" % exc.errno)
+        return
     auto = False
     try:
         auto = any(line.strip() == "auto=yes" for line in open("/etc/haltia/update.conf"))
@@ -310,7 +328,11 @@ def updates_when_light():
     if not status.get("available") or os.path.exists(told) and \
             os.path.getmtime(told) >= status.get("checked", 0):
         return
-    open(told, "w").close()
+    try:
+        open(told, "w").close()
+    except OSError as exc:
+        log("UPDATES_TOLD_FAIL %s" % exc.errno)
+        return
     as_session_user([UPDATE_NOTIFY, "Есть обновления",
                      "Нажмите, чтобы узнать, что нового, и обновить"])
 
@@ -397,16 +419,30 @@ def event_nodes():
     return sorted(n for n in os.listdir("/sys/class/input") if n.startswith("event"))
 
 
+def has_keys(node):
+    """The device sends key or button events (EV_KEY): touch, buttons, a
+    mouse. An accelerometer or a switch that only reports positions
+    (EV_ABS, EV_MSC) is no sign of a person and would keep the screen on
+    for good (SH2-32)."""
+    try:
+        with open("/sys/class/input/%s/device/capabilities/ev" % node) as fh:
+            return bool(int(fh.read().strip() or "0", 16) & (1 << EV_KEY))
+    except (OSError, ValueError):
+        return True  # unknown: counted, as before
+
+
 def activity_nodes(power_path):
-    """Every input device but the power key (read on its own), the
-    vibration motor and our own Home forwarder: touch and buttons alike.
-    They are opened without a grab, so the session still gets each event."""
+    """Every input device that sends keys or buttons but the power key
+    (read on its own), the vibration motor and our own Home forwarder:
+    touch and buttons alike. They are opened without a grab, so the
+    session still gets each event."""
     found = []
     for node in sorted(os.listdir("/sys/class/input")):
         if not node.startswith("event"):
             continue
         path = "/dev/input/" + node
-        if path == power_path or input_name(node) in ("regulator-haptic", "haltia-home"):
+        if path == power_path or input_name(node) in ("regulator-haptic", "haltia-home") or \
+                not has_keys(node):
             continue
         try:
             found.append(os.open(path, os.O_RDONLY | os.O_NONBLOCK))
@@ -585,24 +621,33 @@ def session_user():
         return "root"
 
 
+_inhibit = {"bus": None, "last": {}}
+
+
 def inhibited(what):
     """True while some process holds a logind "block" inhibitor for what
-    ("idle" or "sleep"). Delay inhibitors (NetworkManager's) do not count."""
+    ("idle" or "sleep"). Delay inhibitors (NetworkManager's) do not count.
+    One system bus connection, kept, and a short call: a fresh connection
+    each time could take its Hello 25 s in this loop. A failed look keeps
+    the last answer rather than letting a playing video's inhibitor lapse
+    (SH2-27)."""
     try:
         from gi.repository import Gio, GLib
 
-        bus = Gio.bus_get_sync(Gio.BusType.SYSTEM, None)
+        bus = _inhibit["bus"]
+        if bus is None or bus.is_closed():
+            bus = _inhibit["bus"] = Gio.bus_get_sync(Gio.BusType.SYSTEM, None)
         res = bus.call_sync("org.freedesktop.login1", "/org/freedesktop/login1",
                             "org.freedesktop.login1.Manager", "ListInhibitors", None,
                             GLib.VariantType("(a(ssssuu))"), Gio.DBusCallFlags.NONE,
-                            3000, None)
-    except Exception as exc:  # no logind or no gi: the files alone decide
+                            1000, None)
+    except Exception as exc:  # no logind, no gi, or slow: the last answer
         log("INHIBIT_LIST_FAIL %s" % type(exc).__name__)
-        return False
-    for whats, _who, _why, mode, _uid, _pid in res.unpack()[0]:
-        if mode == "block" and what in whats.split(":"):
-            return True
-    return False
+        return _inhibit["last"].get(what, False)
+    held = any(mode == "block" and what in whats.split(":")
+               for whats, _who, _why, mode, _uid, _pid in res.unpack()[0])
+    _inhibit["last"][what] = held
+    return held
 
 
 def awake_held(kind):
@@ -656,21 +701,18 @@ def as_session_user(argv):
         return False
     env, uid, gid = found
     groups = os.getgrouplist(env["USER"], gid)
-
-    def demote():
-        # Drop the handler's raised priority before the user's program runs.
-        try:
-            os.sched_setscheduler(0, os.SCHED_OTHER, os.sched_param(0))
-        except (OSError, AttributeError):
-            pass
-        os.setpriority(os.PRIO_PROCESS, 0, 0)
-        os.setgroups(groups)
-        os.setgid(gid)
-        os.setuid(uid)
-
-    subprocess.Popen(argv, env=env, cwd=env["HOME"], preexec_fn=demote,
-                     start_new_session=True, stdin=subprocess.DEVNULL,
-                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    # The ids are dropped by subprocess itself, in C between fork and exec:
+    # no Python in the child, so no lock left held by another thread of this
+    # one can hang it before exec (SH2-25). SCHED_RESET_ON_FORK already
+    # starts the child at nice 0 with no real-time priority.
+    try:
+        subprocess.Popen(argv, env=env, cwd=env["HOME"], user=uid, group=gid,
+                         extra_groups=groups, start_new_session=True,
+                         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                         stderr=subprocess.DEVNULL)
+    except OSError as exc:
+        log("SESSION_START_FAIL %s %s" % (argv[0], exc.errno))
+        return False
     return True
 
 
@@ -793,7 +835,7 @@ def listen():
     path = find_power_key()
     if not path:
         log("NO_POWER_KEY")
-        return 1
+        return NOTHING_TO_DO
     power = os.open(path, os.O_RDONLY)
     home = None
     grabbed = False
