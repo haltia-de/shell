@@ -1360,6 +1360,29 @@ REPORT_SAID = {"sent": "Отчёт отправлен.", "queued": "Отчёт �
 
 
 EMAIL = re.compile(r"[^@\s]+@[^@\s]+\.[^@\s]+")
+MAIL_ID = "io.github.haltia_de.Mail.desktop"
+MAIL_CONF = os.path.join(GLib.get_user_config_dir(), "haltia", "mail.conf")
+
+
+def mail_app():
+    """«Почта»'s DesktopAppInfo (hidden or not), or None when not installed."""
+    try:
+        return Gio.DesktopAppInfo.new(MAIL_ID)
+    except TypeError:
+        return None
+
+
+def mail_address():
+    """The mailbox «Почта» is signed in to, from its config (never its
+    keyring): "" when none."""
+    parser = configparser.ConfigParser(interpolation=None)
+    try:
+        parser.read(MAIL_CONF, encoding="utf-8")
+    except configparser.Error:
+        return ""
+    return parser.get("mail", "address", fallback="").strip()
+
+
 REPORT_PARTS = {"summary.txt": "Сводка (текст письма)", "problem.txt": "Что случилось",
                 "system.txt": "Система", "state.txt": "Состояние"}
 
@@ -1430,6 +1453,15 @@ class Helper:
         # Diagnostic reports (haltia-report, ~/.config/haltia/report.conf).
         box.pack_start(section("Отчёты о сбоях"), False, False, 0)
         rc = report_conf()
+        # «Почта» is hidden (NoDisplay): the mailbox reports leave from is
+        # signed in to here.
+        self.mail_row = None
+        if mail_app():
+            lb = listbox(lambda *_a: self.open_mail())
+            self.mail_row = Gtk.ListBoxRow()
+            self.mail_row.add(row_box("Почта для отчётов", "…", "›"))
+            lb.add(self.mail_row)
+            box.pack_start(lb, False, False, 0)
         self.report_to = entry_line(box, "Куда отправлять отчёты", "адрес почты помощника",
                                     rc.get("to"), self.on_report_to)
         self.report_to_note = Gtk.Label(xalign=0, wrap=True)
@@ -1497,6 +1529,34 @@ class Helper:
     def refresh(self):
         self.app.programs.load(self.fill)
         self.show_last_report()
+        self.show_mail()
+
+    def show_mail(self):
+        if self.mail_row is None:
+            return
+
+        def apply(address):
+            self.mail_row.remove(self.mail_row.get_child())
+            self.mail_row.add(row_box("Почта для отчётов", address or "не настроена", "›"))
+            self.mail_row.show_all()
+        background(mail_address, apply, fallback="", latest=(id(self), "mail"))
+
+    def open_mail(self):
+        app = mail_app()
+        if app is None:
+            return
+        try:
+            app.launch([], None)
+        except GLib.Error as exc:
+            say(self.app.win, "«Почта» не открылась: %s" % exc.message)
+            return
+        # The address shows once the window is back here.
+        self.app.win.connect_after("focus-in-event", self.mail_back)
+
+    def mail_back(self, win, _event):
+        win.disconnect_by_func(self.mail_back)
+        self.show_mail()
+        return False
 
     # --- reports ---------------------------------------------------------------
     def on_report_to(self, text):
