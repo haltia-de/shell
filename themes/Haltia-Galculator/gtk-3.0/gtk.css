@@ -9,29 +9,27 @@ button.toggle label {
   font: bold 34pt Sans;
 }
 
-/* No "galculator" title strip over the keys: GTK 3 CSS cannot hide a
-   widget, so the title bar is squeezed to nothing (as for Aisleriot). */
+/* GTK's own title bar is the header of every Haltia program: 104 px
+   (88 px and 8 px above and below), #dcdcda, the shell's «домой» and «✕»
+   inside it at the corners. Its "galculator" title and window buttons are
+   hidden: GTK 3 CSS cannot hide a widget, so they are made transparent and
+   shrunk to nothing. */
 window.csd > headerbar.titlebar.default-decoration,
 headerbar.titlebar.default-decoration,
 .titlebar:not(headerbar), .default-decoration {
-  min-height: 0;
-  padding: 0;
+  min-height: 88px;
+  padding: 8px 0;
   margin: 0;
   border: none;
   box-shadow: none;
   font-size: 1px;
   color: transparent;
-  background: #e6e6e4;
+  background: #dcdcda;
 }
 headerbar.default-decoration button, headerbar.default-decoration image,
 .default-decoration button, .default-decoration image {
   min-height: 0; min-width: 0; padding: 0; margin: 0; -gtk-icon-transform: scale(0);
 }
 
-/* The display (a GtkTextView, its number right-aligned) clear of the
-   shell's «✕», which stands over the window's top right corner (110 px),
-   and of its home button over the top left corner (110 px). */
-textview {
-  padding-right: 112px;
-  padding-left: 112px;
-}
+/* The display (a GtkTextView, its number right-aligned) starts under the
+   header, clear of the shell's buttons. */

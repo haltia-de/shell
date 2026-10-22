@@ -309,6 +309,47 @@ class Update(unittest.TestCase):
             hu.update_catalogs()
             self.assertFalse(os.path.exists(hu.catalog_path(repo)))
 
+    def test_a_past_update_tells_what_came_with_it(self):
+        self.assertEqual(hu.upgrade(), 0)
+        sid = hu.snapshots()[0]
+        xml = ("<component><pkgname>haltia-shell</pkgname><releases>"
+               '<release version="3.0.0" date="2026-11-01"><description><p>later</p></description></release>'
+               '<release version="2.9.0" date="2026-10-22"><description>'
+               '<p xml:lang="ru">Новое</p><ul><li xml:lang="ru">кнопка</li></ul></description></release>'
+               '<release version="2.8.0" date="2026-10-01"><description><p>older</p></description></release>'
+               "</releases></component>").encode()
+        said = []
+        with mock.patch.object(hu, "catalog_component", lambda _n: xml), \
+                mock.patch.object(hu, "log", said.append):
+            self.assertEqual(hu.past(sid, "haltia-shell"), 0)
+        self.assertEqual(said, ["2.9.0 2026-10-22", "Новое", "• кнопка"])
+
+    def test_a_past_update_prefers_the_note_kept_then(self):
+        self.assertEqual(hu.upgrade(), 0)
+        sid = hu.snapshots()[0]
+        os.makedirs(os.path.join(hu.STATE, "notes"), exist_ok=True)
+        with open(os.path.join(hu.STATE, "notes", "haltia-shell-2.8.0-r0-2.9.0-r0.ru.txt"), "w") as fh:
+            fh.write("2.9.0 2026-10-22\n• из заметки\n")
+        import io
+        out = io.StringIO()
+        with mock.patch.object(hu.sys, "stdout", out), \
+                mock.patch.object(hu, "catalog_component", lambda _n: None):
+            self.assertEqual(hu.past(sid, "haltia-shell"), 0)
+        self.assertIn("• из заметки", out.getvalue())
+        self.assertEqual(hu.past(sid, "no-such-package"), 1)
+        self.assertEqual(hu.past("1", "haltia-shell"), 1)
+
+    def test_history_carries_each_packages_versions(self):
+        self.assertEqual(hu.upgrade(), 0)
+        import io
+        out = io.StringIO()
+        with mock.patch.object(hu, "print", create=True, new=lambda s: out.write(s)), \
+                mock.patch.object(hu, "busy", lambda: False):
+            hu.state()
+        system = [g for e in json.loads(out.getvalue())["history"] for g in e["programs"]
+                  if g["name"] == "system"][0]
+        self.assertIn(["musl", "1.2-r0", "1.3-r0"], system["versions"])
+
     def test_hanging_check_counts_as_failed(self):
         os.makedirs(os.path.join(hu.HEALTH, "required.d"))
         check = os.path.join(hu.HEALTH, "required.d", "hangs")

@@ -199,8 +199,16 @@ close-front)
 		}' "$APPS")
 	label=
 	[ -n "$id" ] && label=$(conf "$id" label)
-	[ "$(ask "Закрыть «${label:-$app}»?" "Закрыть" "Отмена")" = 0 ] || exit 0
-	chosen
+	# Настройки → «Для помощника» may switch the question off
+	# (~/.config/haltia/close.conf, ask = no): «✕» then closes at once, its
+	# own tap having buzzed already.
+	case $(sed -n 's/^[ \t]*ask[ \t]*=[ \t]*//p' "$HOME/.config/haltia/close.conf" 2>/dev/null | tail -1) in
+	no | false | off | 0) ;;
+	*)
+		[ "$(ask "Закрыть «${label:-$app}»?" "Закрыть" "Отмена")" = 0 ] || exit 0
+		chosen
+		;;
+	esac
 	# Only the window in front is asked to close (a program's other
 	# windows stay), but a hang stops the whole program.
 	close_program "${id:-$app}" "${label:-$app}" "$app"

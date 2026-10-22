@@ -1248,6 +1248,24 @@ class Notify:
 # --- for whoever looks after the tablet -------------------------------------------
 CHOOSER_CONF = os.path.join(CONFIG, "chooser.conf")
 CHOOSER_SERVICE = "org.freedesktop.impl.portal.desktop.haltia.service"
+CLOSE_CONF = os.path.join(CONFIG, "close.conf")
+
+
+def close_asks():
+    """«✕» asks «Закрыть «…»?» first (haltia-ask close-front reads ask=)."""
+    conf = configparser.ConfigParser(interpolation=None)
+    try:
+        conf.read(CLOSE_CONF, encoding="utf-8")
+        return conf.getboolean("close", "ask", fallback=True)
+    except (configparser.Error, UnicodeDecodeError, ValueError):
+        return True
+
+
+def set_close_asks(on):
+    os.makedirs(CONFIG, exist_ok=True)
+    with open(CLOSE_CONF + ".new", "w", encoding="utf-8") as fh:
+        fh.write("[close]\nask = %s\n" % ("yes" if on else "no"))
+    os.replace(CLOSE_CONF + ".new", CLOSE_CONF)
 
 
 def chooser_get(key, default):
@@ -1316,6 +1334,12 @@ class Helper:
                 self.on_chooser)
             set_quietly(self.simple, self.on_chooser, chooser_get("simple", True))
             set_quietly(self.everything, self.on_chooser, chooser_get("all", False))
+        box.pack_start(section("Закрытие программ"), False, False, 0)
+        self.close_ask = switch_line(
+            box, "Спрашивать перед закрытием",
+            "«✕» сначала спрашивает «Закрыть «…»?»; выключено — закрывает сразу",
+            self.on_close_ask)
+        set_quietly(self.close_ask, self.on_close_ask, close_asks())
         box.pack_start(section("Программы"), False, False, 0)
         hint = Gtk.Label(label="Выключенная программа не видна ни на панели, ни на домашнем "
                          "экране", xalign=0, wrap=True)
@@ -1351,6 +1375,9 @@ class Helper:
             row.add(line)
             self.list.add(row)
         self.list.show_all()
+
+    def on_close_ask(self, *_a):
+        set_close_asks(self.close_ask.get_active())
 
     def on_chooser(self, *_a):
         chooser_set(simple=self.simple.get_active(), all=self.everything.get_active())
@@ -1515,6 +1542,12 @@ RESULTS = {
 }
 
 
+def system_versions(packages):
+    """System packages as the notes page lists them: "name old → new"."""
+    return [("%s %s → %s" % tuple(p[:3]), "item") for p in packages] or \
+        [("Список пакетов не сохранился.", "note")]
+
+
 def run_async(args, done):
     """Runs a command in a thread; done(returncode, output) in the main loop."""
     import threading
@@ -1661,7 +1694,7 @@ class Updates:
 
         # The past ones; going back from one is the helper's.
         box.pack_start(section("Прошлые обновления"), False, False, 0)
-        self.history = listbox(lambda *_a: None)
+        self.history = listbox(self.on_history_row)
         box.pack_start(self.history, False, False, 0)
         self.back_btn = button("Откатить последнее обновление", "plain", self.rollback_last)
         self.back_btn.get_style_context().add_class("danger")
@@ -1815,8 +1848,7 @@ class Updates:
             row = Gtk.ListBoxRow()
             line = Gtk.Box(spacing=16)
             if prog["name"] == "system":
-                sub = "обновится пакетов: %d" % len(prog["packages"])
-                row.set_activatable(False)
+                sub = "обновится пакетов: %d · что нового ›" % len(prog["packages"])
             else:
                 sub = "%s → %s · что нового ›" % (prog.get("old", "?"), prog.get("new", "?"))
             line.pack_start(row_box(prog["label"], sub), True, True, 0)
@@ -1837,7 +1869,9 @@ class Updates:
         entries = self.st.get("history", [])
         for entry in entries:
             for prog in entry["programs"]:
-                row = Gtk.ListBoxRow(activatable=False)
+                # A tap: what came with it («что вошло», a subpage).
+                row = Gtk.ListBoxRow()
+                row.entry, row.prog = entry, prog
                 line = Gtk.Box(spacing=16)
                 if prog["name"] == "system":
                     sub = "пакетов: %d, %s" % (len(prog["packages"]), when(entry["time"]))
@@ -1846,7 +1880,7 @@ class Updates:
                                            when(entry["time"]))
                 if prog.get("rolled_back"):
                     sub += " · возвращена прежняя"
-                line.pack_start(row_box(prog["label"], sub), True, True, 0)
+                line.pack_start(row_box(prog["label"], sub, "›"), True, True, 0)
                 # Going back is the helper's (shown after the long press on
                 # «О системе»): an older version is not for the person to pick.
                 if not prog.get("rolled_back") and self.app.helper_open():
@@ -1966,15 +2000,39 @@ class Updates:
     # --- «Что нового» ----------------------------------------------------------
     def on_row(self, _lb, row):
         prog = row.prog
-        if prog["name"] == "system" or self.busy:
+        if self.busy:
             return
         self.notes_for = prog
         set_reading(self.notes_view, [("Узнаю, что нового…", "note")])
         self.notes_btn.set_label("Обновить «%s»" % prog["label"])
         self.notes_btn.set_sensitive(True)
+        self.notes_btn.set_visible(True)
         self.subpages["notes"].show_all()
         self.app.open_subpage("updates/notes", "%s: что нового" % prog["label"])
+        if prog["name"] == "system":
+            # No release notes for system packages: their names and versions,
+            # as a past update of them shows.
+            set_reading(self.notes_view, system_versions(prog.get("packages", [])))
+            return
         run_async(UPDATE + ["changes", prog["name"]], self.show_notes)
+
+    def on_history_row(self, _lb, row):
+        """A past update: what came with it, on the same subpage as «Что
+        нового», without «Обновить». System packages bring no notes: their
+        names and versions."""
+        if not hasattr(row, "prog") or self.busy:
+            return
+        prog, entry = row.prog, row.entry
+        self.notes_for = None
+        self.notes_btn.set_visible(False)
+        self.subpages["notes"].show_all()
+        self.notes_btn.hide()
+        self.app.open_subpage("updates/notes", "%s: что вошло" % prog["label"])
+        if prog["name"] == "system":
+            set_reading(self.notes_view, system_versions(prog.get("versions", [])))
+            return
+        set_reading(self.notes_view, [("Узнаю, что вошло…", "note")])
+        run_async(UPDATE + ["past", entry["id"], prog["name"]], self.show_notes)
 
     def show_notes(self, code, out):
         if self.app.stack.get_visible_child_name() != "updates/notes":
