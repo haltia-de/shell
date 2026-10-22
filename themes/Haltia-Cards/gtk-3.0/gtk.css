@@ -39,9 +39,16 @@ headerbar.default-decoration button, headerbar.default-decoration image,
 menu menuitem { min-height: 60px; padding: 4px 22px; }
 menu menuitem label { font-size: 23px; }
 
-/* The toolbar starts clear of the shell's home button, which stands over
-   the window's top left corner (110 px). */
-toolbar { padding: 6px 8px 6px 112px; margin-top: -22px; background-color: #dcdcda; }
+/* The toolbar is the header of every Haltia program: 104 px high, #dcdcda,
+   its tools between the shell's «домой» and «✕», which stand in its
+   corners (110 px each). 98 px and the 6 px its border and the squeezed
+   menu bar leave make the 104 measured on the tablet. */
+toolbar {
+  min-height: 98px;
+  padding: 0 112px;
+  margin-top: -22px;
+  background-color: #dcdcda;
+}
 toolbar toolbutton > button,
 .primary-toolbar toolbutton > button {
   min-height: 64px;
