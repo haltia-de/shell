@@ -1248,6 +1248,24 @@ class Notify:
 # --- for whoever looks after the tablet -------------------------------------------
 CHOOSER_CONF = os.path.join(CONFIG, "chooser.conf")
 CHOOSER_SERVICE = "org.freedesktop.impl.portal.desktop.haltia.service"
+CLOSE_CONF = os.path.join(CONFIG, "close.conf")
+
+
+def close_asks():
+    """«✕» asks «Закрыть «…»?» first (haltia-ask close-front reads ask=)."""
+    conf = configparser.ConfigParser(interpolation=None)
+    try:
+        conf.read(CLOSE_CONF, encoding="utf-8")
+        return conf.getboolean("close", "ask", fallback=True)
+    except (configparser.Error, UnicodeDecodeError, ValueError):
+        return True
+
+
+def set_close_asks(on):
+    os.makedirs(CONFIG, exist_ok=True)
+    with open(CLOSE_CONF + ".new", "w", encoding="utf-8") as fh:
+        fh.write("[close]\nask = %s\n" % ("yes" if on else "no"))
+    os.replace(CLOSE_CONF + ".new", CLOSE_CONF)
 
 
 def chooser_get(key, default):
@@ -1316,6 +1334,12 @@ class Helper:
                 self.on_chooser)
             set_quietly(self.simple, self.on_chooser, chooser_get("simple", True))
             set_quietly(self.everything, self.on_chooser, chooser_get("all", False))
+        box.pack_start(section("Закрытие программ"), False, False, 0)
+        self.close_ask = switch_line(
+            box, "Спрашивать перед закрытием",
+            "«✕» сначала спрашивает «Закрыть «…»?»; выключено — закрывает сразу",
+            self.on_close_ask)
+        set_quietly(self.close_ask, self.on_close_ask, close_asks())
         box.pack_start(section("Программы"), False, False, 0)
         hint = Gtk.Label(label="Выключенная программа не видна ни на панели, ни на домашнем "
                          "экране", xalign=0, wrap=True)
@@ -1351,6 +1375,9 @@ class Helper:
             row.add(line)
             self.list.add(row)
         self.list.show_all()
+
+    def on_close_ask(self, *_a):
+        set_close_asks(self.close_ask.get_active())
 
     def on_chooser(self, *_a):
         chooser_set(simple=self.simple.get_active(), all=self.everything.get_active())
