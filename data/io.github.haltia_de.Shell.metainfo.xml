@@ -17,6 +17,16 @@
   <content_rating type="oars-1.1"/>
   <developer id="io.github.haltia_de"><name>Mikhail Nevskiy</name></developer>
   <releases>
+    <release version="2.12.2" date="2026-10-22">
+      <description>
+        <ul>
+          <li>Settings → «Для помощника» shows «Почта для отчётов»: the mailbox reports leave from; a tap opens Mail to sign in.</li>
+        </ul>
+        <ul>
+          <li xml:lang="ru">В Настройках → «Для помощника» строка «Почта для отчётов»: с какого ящика уходят отчёты; касание открывает «Почту», чтобы войти.</li>
+        </ul>
+      </description>
+    </release>
     <release version="2.12.1" date="2026-10-22">
       <description>
         <ul>
