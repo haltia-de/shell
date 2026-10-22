@@ -123,26 +123,6 @@ pictures() {
 	printf '%s\n' "$dir"
 }
 
-# share_targets: "desktop-file<TAB>name" of each program that takes a PNG
-# from another (X-Haltia-Share=true and image/png in MimeType; haltia_kit's
-# share uses the same marks), the person's own entries first.
-share_targets() {
-	for d in "${XDG_DATA_HOME:-$HOME/.local/share}" $(printf '%s' "${XDG_DATA_DIRS:-/usr/local/share:/usr/share}" | tr ':' ' '); do
-		for f in "$d"/applications/*.desktop; do
-			[ -f "$f" ] || continue
-			awk -v file="$f" '
-				/^\[/ { main = ($0 == "[Desktop Entry]"); next }
-				!main { next }
-				/^X-Haltia-Share=true$/ { share = 1 }
-				/^MimeType=/ { if (index(";" substr($0, 10) ";", ";image/png;") || index($0, "image/*")) png = 1 }
-				/^Name\[ru\]=/ { ru = substr($0, 10) }
-				/^Name=/ { name = substr($0, 6) }
-				/^(Hidden|NoDisplay)=true$/ { hidden = 1 }
-				END { if (share && png && !hidden) printf "%s\t%s\n", file, (ru != "" ? ru : name) }' "$f"
-		done
-	done | awk -F '\t' '{ n = $1; sub(/.*\//, "", n); if (!seen[n]++) print }'
-}
-
 # screenshot: the screen now (the question that asked has gone: a moment for
 # the compositor to draw without it) into the pictures folder's «Снимки
 # экрана», then where to: a program that takes it, or done.
@@ -150,13 +130,19 @@ screenshot() {
 	sleep 0.5
 	dir=$(pictures)/Снимки\ экрана
 	mkdir -p "$dir" || exit 1
-	file=$dir/Снимок\ $(date +%Y-%m-%d\ %H-%M-%S).png
+	base=$dir/Снимок\ $(date +%Y-%m-%d\ %H-%M-%S)
+	# Two in one second: «… (2).png», never over the first.
+	file=$base.png n=2
+	while [ -e "$file" ]; do
+		file="$base ($n).png" n=$((n + 1))
+	done
 	if ! grim "$file" 2>/dev/null; then
 		ask "Снимок экрана не получился" "Готово" >/dev/null
 		exit 1
 	fi
 	/usr/libexec/haltia/haltia-press ask >/dev/null 2>&1
-	targets=$(share_targets)
+	# haltia-share: haltia_kit.share's rules (its own code when kit is there).
+	targets=$(/usr/libexec/haltia/haltia-share targets "$file" 2>/dev/null)
 	set --
 	while IFS="$(printf '\t')" read -r _f name; do
 		[ -n "$name" ] && set -- "$@" "Отправить: $name"
@@ -169,10 +155,10 @@ EOT
 	esac
 	[ "$pick" -lt $# ] || exit 0
 	chosen
-	f=$(printf '%s\n' "$targets" | sed -n "$((pick + 1))p" | cut -f1)
-	# The receiver as its Exec line with the file (gio launches a .desktop
-	# file with arguments): «Сообщения» opens «Кому отправить?».
-	gio launch "$f" "$file" >/dev/null 2>&1 9>&- &
+	id=$(printf '%s\n' "$targets" | sed -n "$((pick + 1))p" | cut -f1)
+	# Started with the file's URI, as kit's share does: «Сообщения» opens
+	# «Кому отправить?».
+	/usr/libexec/haltia/haltia-share send "$id" "$file" >/dev/null 2>&1 9>&- &
 }
 
 # player ID: sets state (Playing or Paused) and bus (its MPRIS name) from

@@ -857,8 +857,9 @@ class Usb:
         self.widget, box = page_box()
         self.keyboard = switch_line(
             box, "Клавиатура по USB",
-            "Включено: в порт можно вставить клавиатуру, планшет даёт ей питание. "
-            "Выключено: планшет подключается кабелем к компьютеру", self.on_keyboard)
+            "Включено: в порт можно вставить клавиатуру, планшет даёт ей питание и сам "
+            "в это время не заряжается. Выключено: планшет заряжается и подключается "
+            "кабелем к компьютеру", self.on_keyboard)
         self.refresh()
 
     @staticmethod
@@ -871,7 +872,12 @@ class Usb:
                    latest=(id(self), "usb"))
 
     def on_keyboard(self, switch, _param):
-        spawn("doas", "-n", USB_CMD, "host" if switch.get_active() else "device")
+        # The switch then shows what the port really is: b8k-usb may refuse,
+        # or end host mode by itself once nothing is plugged in.
+        want = "host" if switch.get_active() else "device"
+        background(lambda: (run("doas", "-n", USB_CMD, want, timeout=20), usb_role())[1],
+                   lambda role: set_quietly(self.keyboard, self.on_keyboard, role == "host"),
+                   latest=(id(self), "usb"))
 
 
 # --- date and time --------------------------------------------------------
