@@ -9,8 +9,11 @@ docs/plans/diagnostics-and-mail.md, decisions 1-8, 10, 11).
                                       an hour, the same things merged
     haltia-report now [--note TEXT] [--screenshot]
                                       a report now, sent (or queued)
-    haltia-report view [--note TEXT]  a report built but not sent: its path
-    haltia-report send                send what is queued
+    haltia-report view [--note TEXT]  a draft: built, not sent with the rest;
+                                      JSON {"id", "archive"}
+    haltia-report send [ID]           send what is queued (and draft ID)
+    haltia-report logs                JSON {name: text}: the session's, the
+                                      programs' and root's logs, cleaned
     haltia-report status              JSON: the tablet's name and id, whether
                                       it sends by itself, the last report's
                                       fate, how many wait
@@ -45,6 +48,7 @@ import time
 QUEUE = "/var/lib/haltia/reports"
 MAX_REPORTS = 20
 MAX_AGE = 30 * 24 * 3600
+DRAFT_AGE = 24 * 3600  # a draft looked at and not sent
 LIMIT = 5 * 1024 * 1024  # bytes, a report's archive
 TAIL = 300  # lines of each log
 EVERY = 3600  # s: at most one letter an hour
@@ -412,15 +416,25 @@ SHELL_LOGS = {"session/%s.log" % n for n in (
     "rotate", "splash", "start", "stop", "update", "volume")}
 
 
+def clean_section(name, text):
+    """A section as it goes out: our own as written, root's already cleaned
+    by the root helper (once more does no harm), the shell's daemons' logs
+    by rule, every other log down to its safe lines."""
+    if name in OWN:
+        return text
+    return clean(text, program=not name.startswith("root/") and name not in SHELL_LOGS)
+
+
 def member(name):
     """A program's name as a safe file name inside the archive."""
     name = re.sub(r"[^A-Za-z0-9._-]", "_", str(name or "unknown"))[:64].lstrip(".")
     return name or "unknown"
 
 
-def build(events, note=None, screenshot=False):
+def build(events, note=None, screenshot=False, draft=False):
     """A report into QUEUE: NAME.tar.gz and NAME.json (its letter and fate).
-    Returns the .json's path."""
+    A draft (Настройки' «Диагностический отчёт») is sent only when asked
+    for by its id. Returns the .json's path."""
     os.makedirs(QUEUE, exist_ok=True)
     rid = time.strftime("%Y%m%d-%H%M%S") + "-" + secrets.token_hex(2)
     sections = {"summary.txt": summary(events, note),
@@ -445,10 +459,7 @@ def build(events, note=None, screenshot=False):
             # session's app-*/launch-* logs) keeps only lines of safe shapes.
             # Our own sections are written clean (the summary carries the
             # helper's name and note on purpose).
-            if name not in OWN:
-                text = clean(text, program=not name.startswith("root/") and
-                             name not in SHELL_LOGS)
-            data = text.encode()
+            data = clean_section(name, text).encode()
             if len(data) > budget:  # the archive stays under LIMIT
                 data = data[-max(0, budget):]
             budget -= len(data)
@@ -460,7 +471,7 @@ def build(events, note=None, screenshot=False):
             "body": summary(events, note), "archive": archive,
             "attachments": [archive] + ([shot] if shot else []),
             "events": [{k: v for k, v in ev.items() if k != "records"} for ev in events],
-            "sent": None, "status": "queued"}
+            "sent": None, "status": "draft" if draft else "queued"}
     path = os.path.join(QUEUE, rid + ".json")
     write_json(path, meta)
     prune()
@@ -493,8 +504,12 @@ def prune():
     """At most MAX_REPORTS, none older than MAX_AGE (decision 8)."""
     reports = queued()
     now = time.time()
-    drop = [r for r in reports if now - r[1].get("time", 0) > MAX_AGE]
-    keep = [r for r in reports if r not in drop]
+    # Drafts: the newest one only, for a day, outside the count.
+    drafts = [r for r in reports if r[1].get("status") == "draft"]
+    drop = drafts[:-1] + [r for r in drafts[-1:] if now - r[1].get("time", 0) > DRAFT_AGE]
+    real = [r for r in reports if r[1].get("status") != "draft"]
+    drop += [r for r in real if now - r[1].get("time", 0) > MAX_AGE]
+    keep = [r for r in real if r not in drop]
     drop += keep[:max(0, len(keep) - MAX_REPORTS)]
     for path, meta in drop:
         for f in [path] + meta.get("attachments", []):
@@ -522,12 +537,16 @@ def mail_send(to, subj, body, attachments):
         return "no-mail"
 
 
-def send_queued():
-    """Each report not sent yet goes to «Почта»; the status of the last."""
+def send_queued(draft=None):
+    """Each report not sent yet goes to «Почта» (drafts only when named);
+    the status of the last."""
     to = conf().get("to", "")
     last = None
     for path, meta in queued():
-        if meta.get("status") in ("sent", "handed"):
+        if meta.get("status") == "draft" and meta.get("id") == draft:
+            meta["status"] = "queued"
+            write_json(path, meta)
+        if meta.get("status") in ("sent", "handed", "draft"):
             continue
         if not to:
             last = "not-configured"
@@ -543,11 +562,11 @@ def send_queued():
 
 
 def status():
-    reports = queued()
+    reports = [r for r in queued() if r[1].get("status") != "draft"]
     last = reports[-1][1] if reports else None
     return {"name": conf().get("name", ""), "id": device_id(), "to": conf().get("to", ""),
             "auto": conf().get("auto", "no") == "yes" and bool(conf().get("to")),
-            "waiting": sum(1 for _p, m in reports if m.get("status") != "handed"),
+            "waiting": sum(1 for _p, m in reports if m.get("status") not in ("handed", "draft")),
             "last": None if last is None else {
                 "time": last.get("time"), "subject": last.get("subject"),
                 "status": last.get("status"), "sent": last.get("sent")}}
@@ -761,15 +780,21 @@ def main(argv):
         return watch() or 0
     if cmd in ("now", "view"):
         path = build([{"kind": "manual", "program": None, "time": int(time.time())}],
-                     note=note, screenshot="--screenshot" in argv)
+                     note=note, screenshot="--screenshot" in argv, draft=cmd == "view")
         if cmd == "view":
             with open(path) as fh:
-                print(json.load(fh)["archive"])
+                meta = json.load(fh)
+            print(json.dumps({"id": meta["id"], "archive": meta["archive"]}))
             return 0
         print(send_queued() or "queued")
         return 0
     if cmd == "send":
-        print(send_queued() or "nothing")
+        print(send_queued(argv[2] if len(argv) > 2 else None) or "nothing")
+        return 0
+    if cmd == "logs":
+        found = {name: clean_section(name, text) for name, text in session_logs().items()}
+        found.update(root_sections())
+        print(json.dumps(found, ensure_ascii=False))
         return 0
     if cmd == "status":
         print(json.dumps(status(), ensure_ascii=False))
