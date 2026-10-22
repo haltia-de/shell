@@ -306,6 +306,27 @@ class Report(unittest.TestCase):
         st = hr.status()
         self.assertEqual((st["waiting"], st["auto"], st["last"]["status"]), (0, True, "handed"))
 
+    def test_a_draft_goes_only_when_named(self):
+        self.settings("to=helper@example.org\n")
+        draft = hr.build([{"kind": "manual", "program": None, "time": 1}], draft=True)
+        with open(draft) as fh:
+            rid = json.load(fh)["id"]
+        sent = []
+        with mock.patch.object(hr, "mail_send", lambda *a: sent.append(a) or "queued"):
+            self.assertIsNone(hr.send_queued())  # the draft stays
+            self.assertEqual(hr.status()["waiting"], 0)
+            self.assertEqual(hr.send_queued(rid), "queued")
+        self.assertEqual(len(sent), 1)
+
+    def test_only_the_newest_draft_stays_and_pushes_out_nothing(self):
+        for i in range(hr.MAX_REPORTS):
+            hr.build([{"kind": "crash", "program": "p%d" % i, "time": i}])
+        for _ in range(3):
+            hr.build([{"kind": "manual", "program": None, "time": 1}], draft=True)
+        kinds = [m.get("status") for _p, m in hr.queued()]
+        self.assertEqual(kinds.count("draft"), 1)
+        self.assertEqual(kinds.count("queued"), hr.MAX_REPORTS)
+
     def test_the_tablet_id_is_made_once(self):
         first = hr.device_id()
         self.assertRegex(first, r"^[\w-]+-[0-9a-f]{4}$")
