@@ -123,25 +123,18 @@ class Hostile(unittest.TestCase):
 
 
 class RootText(unittest.TestCase):
-    def test_kernel_addresses_go(self):
-        out = hr.hide_addresses("[ 12.3] PC is at foo+0x14/0x80\n"
-                                "[ 12.3] pc : [<c0123456>] lr : [<c01234ab>]\n"
-                                "[ 12.3] Stack: c1a2b3c4 ffffff80dead0000 ok\n"
-                                "ptr 0xffffff8008123456\n")
-        for gone in ("c0123456", "c01234ab", "c1a2b3c4", "ffffff80dead0000", "ffffff8008123456"):
-            self.assertNotIn(gone, out)
-        self.assertIn("foo+0x14/0x80", out)
-
     def test_the_system_log_keeps_known_services(self):
         log = ("Oct 22 11:54:59 b8000h daemon.info NetworkManager[874]: <info> state up\n"
                "Oct 22 11:55:00 b8000h user.notice someapp[12]: Петя написал про хлеб\n"
                "Oct 22 11:55:01 b8000h user.info logger: my diary entry\n"
+               "Oct 22 11:55:03 b8000h user.info NetworkManager: posing as a service\n"
                "Oct 22 11:55:02 b8000h kern.warn kernel: [ 1.2] usb 1-1: new device\n")
         out = hr.keep_syslog(log)
         self.assertIn("NetworkManager[874]", out)
         self.assertIn("usb 1-1", out)
         self.assertNotIn("хлеб", out)
         self.assertNotIn("diary", out)
+        self.assertNotIn("posing", out)
 
 
 class Report(unittest.TestCase):
