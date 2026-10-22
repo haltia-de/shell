@@ -11,6 +11,9 @@
 - Часы на домашнем экране показывают верное время и после перевода назад, а экранная клавиатура сама возвращается после сбоя
 - Забытое уведомление о звонке исчезает через 100 секунд
 - Кнопка «Домой» появляется и в Настройках при первом открытии после начала сеанса
+- В Настройках у помощника можно выключить вопрос «Закрыть …?» перед закрытием программы
+- Заголовки Калькулятора и Пасьянсов той же высоты, что у других программ, кнопки оболочки — внутри них
+- В «Обновлениях» видно, что вошло в прошлые обновления, и версии системных компонентов
 
 ### English
 
@@ -21,6 +24,9 @@
 - The home screen clock follows the time when it is set back, and the on-screen keyboard comes back by itself after a failure
 - A forgotten call notification disappears after 100 seconds
 - The Home button also appears in Settings on its first start after a session start
+- The helper's settings can turn off the «Закрыть …?» question before a program closes
+- The calculator's and Cards' headers are as high as the other programs', with the shell's buttons inside them
+- Updates show what came in past updates and the versions of the system components
 
 ## 2.11.0 (2026-10-22)
 

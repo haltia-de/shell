@@ -27,6 +27,9 @@
           <li>The home screen clock follows the time when it is set back, and the on-screen keyboard comes back by itself after a failure</li>
           <li>A forgotten call notification disappears after 100 seconds</li>
           <li>The Home button also appears in Settings on its first start after a session start</li>
+          <li>The helper's settings can turn off the «Закрыть …?» question before a program closes</li>
+          <li>The calculator's and Cards' headers are as high as the other programs', with the shell's buttons inside them</li>
+          <li>Updates show what came in past updates and the versions of the system components</li>
         </ul>
         <ul>
           <li xml:lang="ru">Неудачное обновление снова откатывается: проверка ждёт нового сеанса, а закрытие Настроек больше не прерывает обновление</li>
@@ -36,6 +39,9 @@
           <li xml:lang="ru">Часы на домашнем экране показывают верное время и после перевода назад, а экранная клавиатура сама возвращается после сбоя</li>
           <li xml:lang="ru">Забытое уведомление о звонке исчезает через 100 секунд</li>
           <li xml:lang="ru">Кнопка «Домой» появляется и в Настройках при первом открытии после начала сеанса</li>
+          <li xml:lang="ru">В Настройках у помощника можно выключить вопрос «Закрыть …?» перед закрытием программы</li>
+          <li xml:lang="ru">Заголовки Калькулятора и Пасьянсов той же высоты, что у других программ, кнопки оболочки — внутри них</li>
+          <li xml:lang="ru">В «Обновлениях» видно, что вошло в прошлые обновления, и версии системных компонентов</li>
         </ul>
       </description>
     </release>
