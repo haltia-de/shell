@@ -1,0 +1,792 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0
+"""Diagnostic reports for whoever looks after the tablet (haltia-de/haltia
+docs/plans/diagnostics-and-mail.md, decisions 1-8, 10, 11).
+
+    haltia-report watch               the session's watcher (haltia-keep):
+                                      notices what went wrong, builds a
+                                      report and sends it, at most one letter
+                                      an hour, the same things merged
+    haltia-report now [--note TEXT] [--screenshot]
+                                      a report now, sent (or queued)
+    haltia-report view [--note TEXT]  a report built but not sent: its path
+    haltia-report send                send what is queued
+    haltia-report status              JSON: the tablet's name and id, whether
+                                      it sends by itself, the last report's
+                                      fate, how many wait
+
+It runs as the session user. What only root may read (dmesg, /var/log,
+pstore, the update log) comes from haltia-report-root through doas, already
+cleaned. A report is one .tar.gz of at most LIMIT bytes, its summary in the
+letter's text; it goes to «Почта»'s D-Bus service (io.github.haltia_de.Mail,
+Send(to, subject, body, attachments) -> "queued", "sent" or
+"not-configured"). Until «Почта» is there and set up, reports wait in QUEUE
+(at most MAX_REPORTS, none older than MAX_AGE).
+
+Before anything leaves, clean() takes out what is personal: message texts,
+phone numbers, tokens, passwords and keys, network names and addresses,
+e-mail addresses, coordinates. System facts and errors stay.
+
+Settings live in ~/.config/haltia/report.conf (Настройки → «Для
+помощника»): to= the helper's address, name= the tablet's name, auto=yes|no
+(sending by itself; on only with an address).
+"""
+import io
+import json
+import os
+import re
+import secrets
+import shutil
+import subprocess
+import sys
+import tarfile
+import time
+
+QUEUE = "/var/lib/haltia/reports"
+MAX_REPORTS = 20
+MAX_AGE = 30 * 24 * 3600
+LIMIT = 5 * 1024 * 1024  # bytes, a report's archive
+TAIL = 300  # lines of each log
+EVERY = 3600  # s: at most one letter an hour
+LOOK = 60  # s between looks for what went wrong
+ROOT_EVERY = 600  # s: root's look at the latest, without a sign of news
+VMSTAT = "/proc/vmstat"
+UPDATE_LOG = "/var/lib/haltia/update/log"
+HEALTH = "/etc/haltia/health"
+LOOP_STARTS, LOOP_WINDOW = 3, 300  # sessions within that many s: a loop
+ROOT_HELPER = "/usr/libexec/haltia/haltia-report-root"
+ROOT_NAME = re.compile(r"root/[A-Za-z0-9._/-]+")
+MAIL = ("io.github.haltia_de.Mail", "/io/github/haltia_de/Mail", "io.github.haltia_de.Mail")
+HOME = os.path.expanduser("~")
+CONF = os.path.join(os.environ.get("XDG_CONFIG_HOME") or os.path.join(HOME, ".config"),
+                    "haltia", "report.conf")
+CRASHES = os.path.join(os.environ.get("XDG_STATE_HOME") or os.path.join(HOME, ".local/state"),
+                       "haltia", "crashes")
+RUN = os.path.join(os.environ.get("XDG_RUNTIME_DIR") or os.path.join(HOME, ".cache"), "haltia")
+PROGRAM_LOGS = ("~/.cache/haltia-messenger/haltia-messenger.log",)
+KIND_TITLE = {"crash": "сбой", "hang": "зависание", "exit": "аварийное завершение",
+              "loop": "сеанс перезапускается", "rollback": "откат обновления",
+              "pstore": "перезагрузка из-за сбоя", "oom": "нехватка памяти",
+              "manual": "отчёт"}
+
+
+def log(msg):
+    sys.stderr.write("haltia-report: %s\n" % msg)
+    sys.stderr.flush()
+
+
+# --- what is personal goes ----------------------------------------------------
+# Names that hold secrets or say who someone is: their values go, whatever
+# the key is joined to (access_token, refresh_token, chat_id...). The
+# lookarounds instead of \b: an underscore is a word character.
+_SECRET_KEY = (r"[A-Za-z_]*(?:token|secret|password|passwd|pwd|api_?key|access_?key|auth|"
+               r"session|cookie|psk|signature|chat_id|from_id|user_id|peer_id|sender_id|"
+               r"contact_id|phone)")
+_RULES = [
+    (re.compile(r"(?i)\bauthorization\b\s*[:=]?\s*(?:(?:bearer|basic|token|oauth|digest|"
+                r"negotiate)\s+)?\S+"), "Authorization [скрыто]"),
+    (re.compile(r"(?i)\b(bearer|oauth)\s+[A-Za-z0-9._~+/=-]{8,}"), r"\1 [скрыто]"),
+    (re.compile(r"(?i)(?<![A-Za-z0-9])(" + _SECRET_KEY + r")([\"']?\s*[:=]\s*[\"']?)"
+                r"[^\s\"',;&}\]]+"), r"\1\2[скрыто]"),
+    (re.compile(r"\b[A-Za-z0-9_\-]{32,}\b"), "[скрыто]"),  # long tokens, hashes
+    (re.compile(r"\beyJ[A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]+"), "[скрыто]"),
+    # Networks: names and addresses.
+    (re.compile(r"(?i)(?<![A-Za-z0-9])(ssid|essid|bssid|network|сеть)([\"']?\s*[\"':=]\s*[\"']?)"
+                r"[^\"'\n,;]+"), r"\1\2[сеть]"),
+    (re.compile(r"(?i)\b(connect(?:ed|ing)? to|associat(?:ed|ing) with|authenticat(?:ed|ing) "
+                r"with|joined)\s+(?!\[)\S+"), r"\1 [сеть]"),
+    (re.compile(r"«[^»\n]{1,64}»(?=[^\n]*(?i:wi-?fi|сет))"), "«[сеть]»"),
+    (re.compile(r"\b[0-9A-Fa-f]{2}(:[0-9A-Fa-f]{2}){5}\b"), "[mac]"),
+    (re.compile(r"\b(\d{1,3}\.){3}\d{1,3}\b"), "[ip]"),
+    (re.compile(r"\b[0-9A-Fa-f]{1,4}(:[0-9A-Fa-f]{0,4}){3,7}\b"), "[ip]"),
+    (re.compile(r"(?i)(?:mailto:)?[\w.+-]+@[\w-]+(\.[\w-]+)+"), "[почта]"),
+    # Coordinates: two signed decimals with four or more places, or a
+    # lat/lon key with its number (JSON or key=value).
+    (re.compile(r"-?\d{1,3}\.\d{4,}\s*[,;]\s*-?\d{1,3}\.\d{4,}"), "[координаты]"),
+    (re.compile(r"(?i)([\"']?(?:lat|lon|lng|latitude|longitude|geo)[\"']?\s*[:=]\s*)-?\d+(\.\d+)?"),
+     r"\1[координаты]"),
+    # Phone numbers: tel: anything; Russian ones of any area with +7, 7 or 8
+    # and separators (8 (495) 123-45-67, 84951234567, +7 916 …); a bare ten
+    # digits starting with 9 (a mobile); any + and ten to fourteen digits.
+    (re.compile(r"(?i)tel:\S+"), "[телефон]"),
+    (re.compile(r"(?<![\w.:])(?:\+7|8|7)[\s\-(]*\d{3}[\s\-)]*\d{3}[\s\-]*\d{2}[\s\-]*\d{2}"
+                r"(?![\w.:])"), "[телефон]"),
+    (re.compile(r"(?<![\w.:])9\d{2}[\s\-)]*\d{3}[\s\-]*\d{2}[\s\-]*\d{2}(?![\w.:])"), "[телефон]"),
+    (re.compile(r"(?<![\w])\+\d[\d\s\-()]{9,17}\d(?![\w])"), "[телефон]"),
+    # Message texts: a message's own fields, quoted Russian prose, and long
+    # quoted text of any kind (quoted: the quotes' content; unquoted: the
+    # rest of the line).
+    (re.compile(r"(?i)([\"']?(text|message|msg|body|caption|draft|content|title|name|from)"
+                r"[\"']?\s*[:=]\s*)(\"[^\"]*\"|'[^']*'|[^\n}]+)"), r"\1[текст]"),
+    (re.compile(r"«[^»\n]*[А-Яа-яЁё][^»\n]*\s[^»\n]*»"), "«[текст]»"),
+    (re.compile(r"\"[^\"\n]*[А-Яа-яЁё][^\"\n]*\""), "\"[текст]\""),
+    (re.compile(r"'[^'\n]*[А-Яа-яЁё][^'\n]*'"), "'[текст]'"),
+    (re.compile(r"\"[^\"\n]{48,}\""), "\"[текст]\""),
+    # Russian prose anywhere (two words or more): what someone wrote, a name
+    # and surname. A single word (a label, a state) stays.
+]
+_PROSE = re.compile(r"[А-Яа-яЁё][А-Яа-яЁё-]*(?:[\s,.:;!?—-]+[А-Яа-яЁё][А-Яа-яЁё-]*)+")
+_HIDDEN = "\0hidden\0"
+
+# The network services name networks (and say little else) in quotes:
+# 'NAME', "NAME". In their lines every quoted string goes.
+_NET_LINE = re.compile(r"NetworkManager|nm-dispatcher|wpa_supplicant|iwd\b|nmcli|dhcpcd|udhcpc|"
+                       r"iwlwifi|cfg80211|mac80211|wlan\d|wlp\w+|brcmf|mt76|rtw\d")
+_QUOTED = re.compile(r"'[^'\n]*'|\"[^\"\n]*\"")
+
+# A program's own log (the messenger's carries who wrote what) keeps only
+# lines of known safe shapes; every other line goes, whatever it holds.
+_SAFE_LINE = [re.compile(p) for p in (
+    r"^\s*Traceback \(most recent call last\):",
+    r"^\s*File \"[^\"]+\", line \d+, in [\w<>.]+\s*$",
+    r"^\s*\^+\s*$",
+    r"^[\w.]*(Error|Exception|Warning|Exit|Interrupt|Fault)(\b|:)",
+    r"^(Fatal Python error|Current thread|Thread 0x|Segmentation fault)",
+    r"^\(\S+:\d+\): (Gtk|Gdk|GLib|GLib-GObject|Gio|Pango|GStreamer|GdkPixbuf|Atk)-\w+ \*\*",
+    r"(?:^|\s)(voice|video) (call|quality): ",
+    r"(?:^|\s)(call|camera|audio|share|update|sync|login state|connection|websocket): ",
+    r"^\S+ \S+ (DEBUG|INFO|WARNING|ERROR|CRITICAL)\b \S+: [\w .:/()=-]{0,120}$",
+    r"^\S*DeprecationWarning",
+)]
+
+
+def keep_safe(text):
+    """A program log reduced to its safe lines (and a traceback's code lines
+    between its File line and its exception), the rest one mark a run."""
+    out, hidden, after_file = [], False, False
+    for line in text.splitlines():
+        # A traceback's code line: one indented line right after its File line.
+        safe = after_file and line.startswith("    ") or any(p.search(line) for p in _SAFE_LINE)
+        after_file = bool(re.match(r'^\s*File "[^"]+", line \d+, in ', line))
+        if safe:
+            out.append(line)
+            hidden = False
+        elif not hidden:
+            out.append(_HIDDEN)
+            hidden = True
+    return "\n".join(out) + ("\n" if out else "")
+
+
+# Kernel addresses (KASLR) in dmesg, oopses and pstore: root's, not the
+# session's.
+_ADDRESS = [
+    (re.compile(r"\b0x[0-9a-fA-F]{6,16}\b"), "0x[адрес]"),
+    (re.compile(r"(?<=[<\s(\[])[0-9a-fA-F]{8}(?:[0-9a-fA-F]{8})?(?=[>\s)\]]|$)", re.M), "[адрес]"),
+]
+
+
+def hide_addresses(text):
+    for rule, repl in _ADDRESS:
+        text = rule.sub(repl, text)
+    return text
+
+
+# The system log gathers what any program sends to syslog: only the lines of
+# known system services and the shell stay.
+_SYSLOG_LINE = re.compile(r"^\w{3} [ \d]\d \d\d:\d\d:\d\d \S+ \S+ ([\w./-]+?)(?:\[\d+\])?: ")
+_SYSLOG_KNOWN = re.compile(
+    r"^(kernel|NetworkManager|nm-dispatcher|wpa_supplicant|iwd|dhcpcd|udhcpc|elogind(-daemon)?|"
+    r"openrc|openrc-run|supervise-daemon|start-stop-daemon|init|crond|chronyd|ntpd|acpid|"
+    r"udevd|eudev|mdev|dbus-daemon|polkitd|pulseaudio|pipewire|bluetoothd|upowerd|"
+    r"iio-sensor-proxy|syslogd|klogd|apk|haltia-[\w-]+|b8k-[\w-]+)$")
+
+
+def keep_syslog(text):
+    out, hidden = [], False
+    for line in text.splitlines():
+        m = _SYSLOG_LINE.match(line)
+        if m and _SYSLOG_KNOWN.match(m.group(1)):
+            out.append(line)
+            hidden = False
+        elif not hidden:
+            out.append("[строки скрыты]")
+            hidden = True
+    return "\n".join(out) + ("\n" if out else "")
+
+
+def clean(text, program=False, prose=True):
+    """text without what is personal (decision 2). A program's log
+    (program=True) keeps only its safe lines first; prose=False keeps
+    Russian text (the helper's own note)."""
+    if program:
+        text = keep_safe(text)
+    text = "".join(_QUOTED.sub("'[сеть]'", line) if _NET_LINE.search(line) else line
+                   for line in text.splitlines(True))
+    for rule, repl in _RULES:
+        text = rule.sub(repl, text)
+    if prose:
+        text = _PROSE.sub("[текст]", text)
+    return text.replace(_HIDDEN, "[строки скрыты]")
+
+
+# --- what goes into a report ------------------------------------------------------
+def read(path, limit=64 * 1024):
+    try:
+        with open(path, errors="replace") as fh:
+            return fh.read(limit)
+    except OSError:
+        return ""
+
+
+def tail(path, lines=TAIL):
+    try:
+        with open(path, "rb") as fh:
+            fh.seek(0, 2)
+            size = fh.tell()
+            fh.seek(max(0, size - 256 * 1024))
+            data = fh.read().decode(errors="replace")
+    except OSError:
+        return ""
+    return "\n".join(data.splitlines()[-lines:]) + "\n"
+
+
+def run(*args, timeout=10):
+    try:
+        res = subprocess.run(list(args), capture_output=True, text=True, timeout=timeout)
+        return res.stdout + (res.stderr if res.returncode else "")
+    except (OSError, subprocess.SubprocessError) as exc:
+        return "(%s: %s)\n" % (args[0], exc)
+
+
+def system_section():
+    model = read("/proc/device-tree/model").strip("\0\n") or read(
+        "/sys/class/dmi/id/product_name").strip()
+    parts = ["Устройство: %s" % (model or "?"),
+             "Ядро: %s" % run("uname", "-srm").strip(),
+             "Работает: %s" % uptime_text(),
+             "", "Память:", "".join(read("/proc/meminfo").splitlines(True)[:6]),
+             "Диск:", run("df", "-h", "/", HOME),
+             "Батарея:", battery_text(),
+             "Wi-Fi (качество):", read("/proc/net/wireless"),
+             "Пакеты Haltia:", run("sh", "-c", "apk info -v 2>/dev/null | grep -E "
+                                   "'^(haltia|py3-haltia|firefox|phoc|waybar)'")]
+    return "\n".join(parts) + "\n"
+
+
+def uptime_text():
+    try:
+        secs = int(float(read("/proc/uptime").split()[0]))
+    except (IndexError, ValueError):
+        return "?"
+    return "%d ч %02d мин" % (secs // 3600, secs % 3600 // 60)
+
+
+def battery_text():
+    out = []
+    base = "/sys/class/power_supply"
+    try:
+        names = sorted(os.listdir(base))
+    except OSError:
+        return "?\n"
+    for name in names:
+        kind = read(os.path.join(base, name, "type")).strip()
+        if kind == "Battery":
+            out.append("%s: %s %%, %s" % (name, read(os.path.join(base, name, "capacity")).strip(),
+                                         read(os.path.join(base, name, "status")).strip()))
+        elif read(os.path.join(base, name, "online")).strip() == "1":
+            out.append("%s (%s): подключено" % (name, kind))
+    return "\n".join(out) + "\n"
+
+
+def state_section():
+    # The headers are ours; what the commands say is cleaned piece by piece.
+    parts = ["Процессы:", clean(run("ps", "-o", "pid,user,vsz,stat,args")),
+             "Демоны оболочки:", run("sh", "-c", "ps -o args | grep '[h]altia-keep --session'"),
+             "Обновления:", clean(run("doas", "-n", "/usr/libexec/haltia/haltia-update", "state",
+                                      timeout=20)),
+             # What holds the screen on or the system up (haltia-sleep reads
+             # the same), and the checks that decide whether an update is good.
+             "Блокировки сна:", clean(run("sh", "-c", "elogind-inhibit --list 2>/dev/null || "
+                                          "systemd-inhibit --list 2>/dev/null")),
+             "Проверки после обновления (%s):" % HEALTH,
+             "\n".join(sorted(os.listdir(HEALTH))) if os.path.isdir(HEALTH) else "нет"]
+    lock = "/etc/haltia/packages.lock"
+    if os.path.exists(lock):
+        parts += ["packages.lock:", clean(read(lock))]
+    return "\n".join(parts) + "\n"
+
+
+def session_logs():
+    """The session's and its daemons' logs, and the programs' own."""
+    found = {}
+    try:
+        names = sorted(n for n in os.listdir(RUN) if n.endswith(".log"))
+    except OSError:
+        names = []
+    for name in names:
+        found["session/" + name] = tail(os.path.join(RUN, name))
+    for path in PROGRAM_LOGS:
+        path = os.path.expanduser(path)
+        if os.path.exists(path):
+            found["programs/" + os.path.basename(path)] = tail(path)
+    return found
+
+
+def root_sections():
+    """dmesg, /var/log, pstore and the update log, cleaned by the root
+    helper: {name: text}."""
+    out = run("doas", "-n", ROOT_HELPER, "sections", timeout=30)
+    try:
+        given = json.loads(out)
+    except ValueError:
+        given = None
+    if not isinstance(given, dict):
+        return {"root/недоступно": out[-4000:]}
+    # Only root/… names, no way up: never over the session's own sections.
+    return {k: v for k, v in given.items()
+            if isinstance(k, str) and isinstance(v, str) and ROOT_NAME.fullmatch(k)
+            and ".." not in k.split("/")}
+
+
+def crash_section(events):
+    """What went wrong: each event, how many times, and the crash records."""
+    parts = []
+    for ev in events:
+        parts.append("%s — %s, %d раз, последний %s" % (
+            KIND_TITLE.get(ev["kind"], ev["kind"]), ev.get("program") or "?",
+            ev.get("count", 1), time.strftime("%Y-%m-%d %H:%M:%S",
+                                               time.localtime(ev.get("time", 0)))))
+        if ev.get("detail"):
+            # A crash's text is the program's (its traceback, its locals):
+            # safe lines only, like its log.
+            parts.append(clean(ev["detail"], program=ev["kind"] == "crash"))
+        parts.append("")
+    return "\n".join(parts)
+
+
+# --- settings and the tablet's name ---------------------------------------------
+def conf():
+    values = {}
+    for line in read(CONF).splitlines():
+        if "=" in line and not line.lstrip().startswith("#"):
+            k, v = line.split("=", 1)
+            values[k.strip()] = v.strip()
+    return values
+
+
+def device_id():
+    """A short id made once (decision 6): b8000h-7f3a."""
+    path = os.path.join(QUEUE, "id")
+    known = read(path).strip()
+    if known:
+        return known
+    host = (read("/etc/hostname").strip() or "haltia").split(".")[0][:16]
+    made = "%s-%s" % (host, secrets.token_hex(2))
+    try:
+        os.makedirs(QUEUE, exist_ok=True)
+        with open(path + ".new", "w") as fh:
+            fh.write(made + "\n")
+        os.replace(path + ".new", path)
+    except OSError as exc:
+        log("id: %s" % exc)
+    return made
+
+
+def tablet():
+    """«Мама (b8000h-7f3a)», or the id alone."""
+    name, ident = conf().get("name", ""), device_id()
+    return "%s (%s)" % (name, ident) if name else ident
+
+
+# --- building ----------------------------------------------------------------------
+def summary(events, note):
+    lines = ["Планшет: %s" % tablet(),
+             "Время: %s" % time.strftime("%Y-%m-%d %H:%M:%S"),
+             "Работает: %s" % uptime_text(), ""]
+    if note:
+        lines += ["Что случилось (со слов помощника): %s" % clean(note, prose=False), ""]
+    for ev in events:
+        lines.append("• %s — %s (%d)" % (KIND_TITLE.get(ev["kind"], ev["kind"]),
+                                          ev.get("program") or "система", ev.get("count", 1)))
+    lines += ["", "Подробности — в приложенном архиве."]
+    return "\n".join(lines) + "\n"
+
+
+def subject(events):
+    who = tablet()
+    if not events or events[0]["kind"] == "manual":
+        return "Haltia: отчёт — %s" % who
+    ev = events[0]
+    what = KIND_TITLE.get(ev["kind"], ev["kind"])
+    prog = " «%s»" % ev["program"] if ev.get("program") else ""
+    more = " и ещё %d" % (len(events) - 1) if len(events) > 1 else ""
+    return "Haltia: %s%s%s — %s" % (what, prog, more, who)
+
+
+OWN = ("summary.txt", "system.txt", "state.txt", "problem.txt")
+# The shell's own daemons' logs: cleaned by rule. Every other log (programs'
+# own, their output in app-*/launch-*, autostart, the messenger, the
+# keyboard, the portal with its file names) keeps only its safe lines.
+SHELL_LOGS = {"session/%s.log" % n for n in (
+    "apps", "badges", "brightness", "close", "focus-watch", "gestures", "home", "report",
+    "rotate", "splash", "start", "stop", "update", "volume")}
+
+
+def member(name):
+    """A program's name as a safe file name inside the archive."""
+    name = re.sub(r"[^A-Za-z0-9._-]", "_", str(name or "unknown"))[:64].lstrip(".")
+    return name or "unknown"
+
+
+def build(events, note=None, screenshot=False):
+    """A report into QUEUE: NAME.tar.gz and NAME.json (its letter and fate).
+    Returns the .json's path."""
+    os.makedirs(QUEUE, exist_ok=True)
+    rid = time.strftime("%Y%m%d-%H%M%S") + "-" + secrets.token_hex(2)
+    sections = {"summary.txt": summary(events, note),
+                "system.txt": system_section(),
+                "state.txt": state_section(),
+                "problem.txt": crash_section(events)}
+    sections.update(session_logs())
+    sections.update(root_sections())
+    for ev in events:
+        for i, rec in enumerate(ev.get("records", [])):
+            sections["crashes/%s-%d.txt" % (member(ev.get("program")), i)] = rec
+    archive = os.path.join(QUEUE, rid + ".tar.gz")
+    shot = None
+    if screenshot:
+        shot = os.path.join(QUEUE, rid + ".png")
+        if run("grim", shot).strip() or not os.path.exists(shot):
+            shot = None
+    budget = LIMIT
+    with tarfile.open(archive + ".new", "w:gz") as tar:
+        for name, text in sections.items():
+            # What programs write (their own logs, their output in the
+            # session's app-*/launch-* logs) keeps only lines of safe shapes.
+            # Our own sections are written clean (the summary carries the
+            # helper's name and note on purpose).
+            if name not in OWN:
+                text = clean(text, program=not name.startswith("root/") and
+                             name not in SHELL_LOGS)
+            data = text.encode()
+            if len(data) > budget:  # the archive stays under LIMIT
+                data = data[-max(0, budget):]
+            budget -= len(data)
+            info = tarfile.TarInfo("report-%s/%s" % (rid, name))
+            info.size, info.mtime, info.mode = len(data), int(time.time()), 0o644
+            tar.addfile(info, io.BytesIO(data))
+    os.replace(archive + ".new", archive)
+    meta = {"id": rid, "time": int(time.time()), "subject": subject(events),
+            "body": summary(events, note), "archive": archive,
+            "attachments": [archive] + ([shot] if shot else []),
+            "events": [{k: v for k, v in ev.items() if k != "records"} for ev in events],
+            "sent": None, "status": "queued"}
+    path = os.path.join(QUEUE, rid + ".json")
+    write_json(path, meta)
+    prune()
+    return path
+
+
+def write_json(path, data):
+    with open(path + ".new", "w") as fh:
+        json.dump(data, fh, ensure_ascii=False, indent=1)
+    os.replace(path + ".new", path)
+
+
+def queued():
+    """The reports, oldest first: [(path, meta)]."""
+    found = []
+    try:
+        names = sorted(n for n in os.listdir(QUEUE) if n.endswith(".json") and n[0].isdigit())
+    except OSError:
+        return []
+    for name in names:
+        try:
+            with open(os.path.join(QUEUE, name)) as fh:
+                found.append((os.path.join(QUEUE, name), json.load(fh)))
+        except (OSError, ValueError):
+            continue
+    return found
+
+
+def prune():
+    """At most MAX_REPORTS, none older than MAX_AGE (decision 8)."""
+    reports = queued()
+    now = time.time()
+    drop = [r for r in reports if now - r[1].get("time", 0) > MAX_AGE]
+    keep = [r for r in reports if r not in drop]
+    drop += keep[:max(0, len(keep) - MAX_REPORTS)]
+    for path, meta in drop:
+        for f in [path] + meta.get("attachments", []):
+            try:
+                os.unlink(f)
+            except OSError:
+                pass
+
+
+# --- sending ---------------------------------------------------------------------------
+def mail_send(to, subj, body, attachments):
+    """«Почта»'s Send: "sent", "queued", "not-configured", or "no-mail"
+    when it is not there."""
+    try:
+        import gi
+        gi.require_version("Gio", "2.0")
+        from gi.repository import Gio, GLib
+        bus = Gio.bus_get_sync(Gio.BusType.SESSION, None)
+        res = bus.call_sync(MAIL[0], MAIL[1], MAIL[2], "Send",
+                            GLib.Variant("(sssas)", (to, subj, body, attachments)),
+                            GLib.VariantType("(s)"), Gio.DBusCallFlags.NONE, 60000, None)
+        return res.unpack()[0]
+    except Exception as exc:  # no Почта, no bus, a refusal
+        log("mail: %s" % exc)
+        return "no-mail"
+
+
+def send_queued():
+    """Each report not sent yet goes to «Почта»; the status of the last."""
+    to = conf().get("to", "")
+    last = None
+    for path, meta in queued():
+        if meta.get("status") in ("sent", "handed"):
+            continue
+        if not to:
+            last = "not-configured"
+            break
+        status = mail_send(to, meta["subject"], meta["body"], meta.get("attachments", []))
+        meta["status"] = "handed" if status in ("sent", "queued") else status
+        meta["sent"] = int(time.time()) if meta["status"] == "handed" else None
+        write_json(path, meta)
+        last = status
+        if meta["status"] != "handed":
+            break  # Почта not there or not set up: the rest waits too
+    return last
+
+
+def status():
+    reports = queued()
+    last = reports[-1][1] if reports else None
+    return {"name": conf().get("name", ""), "id": device_id(), "to": conf().get("to", ""),
+            "auto": conf().get("auto", "no") == "yes" and bool(conf().get("to")),
+            "waiting": sum(1 for _p, m in reports if m.get("status") != "handed"),
+            "last": None if last is None else {
+                "time": last.get("time"), "subject": last.get("subject"),
+                "status": last.get("status"), "sent": last.get("sent")}}
+
+
+# --- what went wrong -------------------------------------------------------------------
+STATE = os.path.join(QUEUE, "watch.json")
+
+
+def load_state():
+    try:
+        with open(STATE) as fh:
+            return json.load(fh)
+    except (OSError, ValueError):
+        return {}
+
+
+def file_lines(path, state, key):
+    """The lines added to path since the last look (by offset, again from
+    the start when the file was replaced or shrank)."""
+    try:
+        st = os.stat(path)
+    except OSError:
+        return []
+    seen = state.get(key, {})
+    start = seen.get("at", 0) if seen.get("ino") == st.st_ino and seen.get("at", 0) <= st.st_size \
+        else 0
+    try:
+        with open(path, "rb") as fh:
+            fh.seek(start)
+            data = fh.read(1024 * 1024)
+    except OSError:
+        return []
+    state[key] = {"ino": st.st_ino, "at": start + len(data)}
+    return data.decode(errors="replace").splitlines()
+
+
+def root_due(state):
+    """Whether root's look is worth a doas: at the watcher's start (pstore
+    is new only after a boot), after an OOM kill (/proc/vmstat's oom_kill),
+    after the update log changed, else every ROOT_EVERY."""
+    m = re.search(r"^oom_kill (\d+)", read(VMSTAT, 64 * 1024), re.M)
+    try:
+        mtime = int(os.stat(UPDATE_LOG).st_mtime)
+    except OSError:
+        mtime = 0
+    sign = [m.group(1) if m else None, mtime]
+    now = int(time.time())
+    if sign != state.get("root_sign") or now - state.get("root_at", 0) >= ROOT_EVERY:
+        state["root_sign"], state["root_at"] = sign, now
+        return True
+    return False
+
+
+def scan(state, root=None):
+    """New events since the last look, each {kind, program, time, detail,
+    records}. root: look at root's view too (default: when root_due)."""
+    events, now = [], int(time.time())
+    # Crash records from haltia_kit.crash (kit#17): *.json, and faulthandler's
+    # files of a C-level crash.
+    seen = set(state.get("crashes", []))
+    try:
+        names = sorted(os.listdir(CRASHES))
+    except OSError:
+        names = []
+    for name in names:
+        if name in seen:
+            continue
+        seen.add(name)
+        path = os.path.join(CRASHES, name)
+        text = read(path, 256 * 1024)
+        if name.endswith(".json"):
+            try:
+                rec = json.loads(text)
+            except ValueError:
+                rec = {}
+            events.append({"kind": "crash", "program": rec.get("program") or name.split("-")[0],
+                           "time": now, "detail": (rec.get("traceback") or "")[-2000:],
+                           "records": [text]})
+        elif "Fatal Python error" in text or "Segmentation fault" in text:
+            events.append({"kind": "crash", "program": name.split("-")[0], "time": now,
+                           "detail": text[-2000:], "records": [text]})
+    state["crashes"] = sorted(seen)[-200:]
+    # A program closed by the shell because it hung (haltia-ask → haltia-stop).
+    for line in file_lines(os.path.join(RUN, "stop.log"), state, "stop.log"):
+        m = re.match(r"haltia-stop: (\S+) stopped", line)
+        if m:
+            events.append({"kind": "hang", "program": m.group(1), "time": now, "detail": line})
+    # Daemons that ended with an error (haltia-keep in each daemon's log).
+    try:
+        logs = sorted(n for n in os.listdir(RUN) if n.endswith(".log"))
+    except OSError:
+        logs = []
+    for name in logs:
+        for line in file_lines(os.path.join(RUN, name), state, "keep:" + name):
+            m = re.match(r"haltia-keep: (\S+) ended \((\d+)\)", line)
+            if m and m.group(2) not in ("0", "143"):
+                events.append({"kind": "exit", "program": os.path.basename(m.group(1)),
+                               "time": now, "detail": line})
+    # Root's view: OOM kills, pstore after a crash reboot, update rollbacks.
+    due = root_due(state)  # also notes the signs root=True looked at
+    if not (due if root is None else root):
+        return events
+    try:
+        found = json.loads(run("doas", "-n", ROOT_HELPER, "scan", timeout=30) or "{}")
+    except ValueError:
+        found = {}
+    if not isinstance(found, dict):
+        found = {}
+    for kind in ("oom", "pstore", "rollback"):
+        known = set(state.get(kind, []))
+        items = found.get(kind)
+        for item in items if isinstance(items, list) else []:
+            if not isinstance(item, str) or item in known:
+                continue
+            known.add(item)
+            prog = None
+            if kind == "oom":
+                m = re.search(r"Killed process \d+ \(([^)]+)\)", item)
+                prog = m.group(1) if m else None
+            events.append({"kind": kind, "program": prog, "time": now, "detail": clean(item)})
+        state[kind] = sorted(known)[-200:]
+    return events
+
+
+def merge(pending, events):
+    """The same kind and program counted once (decision 3)."""
+    for ev in events:
+        key = "%s:%s" % (ev["kind"], ev.get("program"))
+        if key in pending:
+            pending[key]["count"] += 1
+            pending[key]["time"] = ev["time"]
+            pending[key]["detail"] = ev.get("detail") or pending[key].get("detail")
+            pending[key].setdefault("records", []).extend(ev.get("records", []))
+            del pending[key]["records"][:-3]
+        else:
+            pending[key] = dict(ev, count=1)
+    return pending
+
+
+def session_key():
+    """The compositor's socket: a new one each session, the same when
+    haltia-keep only restarts the watcher."""
+    sock = os.path.join(os.environ.get("XDG_RUNTIME_DIR", ""),
+                        os.environ.get("WAYLAND_DISPLAY", "wayland-0"))
+    try:
+        st = os.stat(sock)
+    except OSError:
+        return None
+    return "%d-%d" % (st.st_ino, int(st.st_ctime))
+
+
+def session_started(state, key=None):
+    """Three sessions (compositor sockets) within LOOP_WINDOW are a loop."""
+    now = int(time.time())
+    key = key or session_key()
+    starts = [s for s in state.get("sessions", [])
+              if isinstance(s, list) and now - s[0] < LOOP_WINDOW]
+    if key is None or any(s[1] == key for s in starts):
+        state["sessions"] = starts
+        return []
+    starts.append([now, key])
+    state["sessions"] = starts
+    if len(starts) >= LOOP_STARTS:
+        return [{"kind": "loop", "program": None, "time": now,
+                 "detail": "%d сеансов за %d с" % (len(starts), LOOP_WINDOW)}]
+    return []
+
+
+def watch():
+    state = load_state()
+    first = not state
+    pending = state.get("pending", {})
+    merge(pending, session_started(state))
+    if first:
+        scan(state, root=True)  # what was there before the watcher: not news
+    written = None
+    while True:
+        merge(pending, scan(state))
+        settings = conf()
+        due = time.time() - state.get("last_letter", 0) >= EVERY
+        if pending and due and settings.get("auto") == "yes" and settings.get("to"):
+            events = sorted(pending.values(), key=lambda e: -e["time"])
+            build(events)
+            state["last_letter"] = int(time.time())
+            pending = {}
+            send_queued()
+        elif pending and settings.get("auto") != "yes":
+            pending = {}  # sending by itself is off: nothing is kept for later
+        # What waits (no «Почта» yet, not set up, no network): again hourly.
+        if settings.get("to") and time.time() - state.get("retried", 0) >= EVERY:
+            state["retried"] = int(time.time())
+            if any(m.get("status") not in ("handed", "sent") for _p, m in queued()):
+                send_queued()
+        state["pending"] = pending
+        # Written only when it changed: the eMMC is spared a write a minute.
+        now_text = json.dumps(state, sort_keys=True)
+        if now_text != written:
+            try:
+                write_json(STATE, state)
+                written = now_text
+            except OSError as exc:
+                log("state: %s" % exc)
+        time.sleep(LOOK)
+
+
+def main(argv):
+    cmd = argv[1] if len(argv) > 1 else ""
+    note = argv[argv.index("--note") + 1] if "--note" in argv[:-1] else None
+    if cmd == "watch":
+        return watch() or 0
+    if cmd in ("now", "view"):
+        path = build([{"kind": "manual", "program": None, "time": int(time.time())}],
+                     note=note, screenshot="--screenshot" in argv)
+        if cmd == "view":
+            with open(path) as fh:
+                print(json.load(fh)["archive"])
+            return 0
+        print(send_queued() or "queued")
+        return 0
+    if cmd == "send":
+        print(send_queued() or "nothing")
+        return 0
+    if cmd == "status":
+        print(json.dumps(status(), ensure_ascii=False))
+        return 0
+    sys.stderr.write(__doc__)
+    return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))
