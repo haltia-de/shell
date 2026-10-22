@@ -17,6 +17,34 @@
   <content_rating type="oars-1.1"/>
   <developer id="io.github.haltia_de"><name>Mikhail Nevskiy</name></developer>
   <releases>
+    <release version="2.12.0" date="2026-10-22">
+      <description>
+        <ul>
+          <li>A failed update is rolled back again: the check waits for the new session, and closing Settings no longer interrupts an update</li>
+          <li>Touch settings are tried first and saved only after choosing Keep</li>
+          <li>After a restart in the dark the screen stays off, the touch filter keeps working, and a stuck sleep is ended</li>
+          <li>Updates of the power-key service take effect without a reboot</li>
+          <li>The home screen clock follows the time when it is set back, and the on-screen keyboard comes back by itself after a failure</li>
+          <li>A forgotten call notification disappears after 100 seconds</li>
+          <li>The Home button also appears in Settings on its first start after a session start</li>
+          <li>The helper's settings can turn off the «Закрыть …?» question before a program closes</li>
+          <li>The calculator's and Cards' headers are as high as the other programs', with the shell's buttons inside them</li>
+          <li>Updates show what came in past updates and the versions of the system components</li>
+        </ul>
+        <ul>
+          <li xml:lang="ru">Неудачное обновление снова откатывается: проверка ждёт нового сеанса, а закрытие Настроек больше не прерывает обновление</li>
+          <li xml:lang="ru">Настройки касаний сначала пробуются и сохраняются только после «Оставить»</li>
+          <li xml:lang="ru">После перезапуска в темноте экран остаётся выключенным, защита от случайных касаний продолжает работать, а зависший переход в сон завершается</li>
+          <li xml:lang="ru">Обновления службы кнопки питания начинают работать без перезагрузки</li>
+          <li xml:lang="ru">Часы на домашнем экране показывают верное время и после перевода назад, а экранная клавиатура сама возвращается после сбоя</li>
+          <li xml:lang="ru">Забытое уведомление о звонке исчезает через 100 секунд</li>
+          <li xml:lang="ru">Кнопка «Домой» появляется и в Настройках при первом открытии после начала сеанса</li>
+          <li xml:lang="ru">В Настройках у помощника можно выключить вопрос «Закрыть …?» перед закрытием программы</li>
+          <li xml:lang="ru">Заголовки Калькулятора и Пасьянсов той же высоты, что у других программ, кнопки оболочки — внутри них</li>
+          <li xml:lang="ru">В «Обновлениях» видно, что вошло в прошлые обновления, и версии системных компонентов</li>
+        </ul>
+      </description>
+    </release>
     <release version="2.11.0" date="2026-10-22">
       <description>
         <ul>
