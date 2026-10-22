@@ -1542,6 +1542,12 @@ RESULTS = {
 }
 
 
+def system_versions(packages):
+    """System packages as the notes page lists them: "name old → new"."""
+    return [("%s %s → %s" % tuple(p[:3]), "item") for p in packages] or \
+        [("Список пакетов не сохранился.", "note")]
+
+
 def run_async(args, done):
     """Runs a command in a thread; done(returncode, output) in the main loop."""
     import threading
@@ -1842,8 +1848,7 @@ class Updates:
             row = Gtk.ListBoxRow()
             line = Gtk.Box(spacing=16)
             if prog["name"] == "system":
-                sub = "обновится пакетов: %d" % len(prog["packages"])
-                row.set_activatable(False)
+                sub = "обновится пакетов: %d · что нового ›" % len(prog["packages"])
             else:
                 sub = "%s → %s · что нового ›" % (prog.get("old", "?"), prog.get("new", "?"))
             line.pack_start(row_box(prog["label"], sub), True, True, 0)
@@ -1995,7 +2000,7 @@ class Updates:
     # --- «Что нового» ----------------------------------------------------------
     def on_row(self, _lb, row):
         prog = row.prog
-        if prog["name"] == "system" or self.busy:
+        if self.busy:
             return
         self.notes_for = prog
         set_reading(self.notes_view, [("Узнаю, что нового…", "note")])
@@ -2004,6 +2009,11 @@ class Updates:
         self.notes_btn.set_visible(True)
         self.subpages["notes"].show_all()
         self.app.open_subpage("updates/notes", "%s: что нового" % prog["label"])
+        if prog["name"] == "system":
+            # No release notes for system packages: their names and versions,
+            # as a past update of them shows.
+            set_reading(self.notes_view, system_versions(prog.get("packages", [])))
+            return
         run_async(UPDATE + ["changes", prog["name"]], self.show_notes)
 
     def on_history_row(self, _lb, row):
@@ -2019,9 +2029,7 @@ class Updates:
         self.notes_btn.hide()
         self.app.open_subpage("updates/notes", "%s: что вошло" % prog["label"])
         if prog["name"] == "system":
-            set_reading(self.notes_view, [
-                ("%s %s → %s" % tuple(v), "item") for v in prog.get("versions", [])]
-                or [("Список пакетов не сохранился.", "note")])
+            set_reading(self.notes_view, system_versions(prog.get("versions", [])))
             return
         set_reading(self.notes_view, [("Узнаю, что вошло…", "note")])
         run_async(UPDATE + ["past", entry["id"], prog["name"]], self.show_notes)
