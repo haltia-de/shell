@@ -1,5 +1,27 @@
 # Что нового · What's new
 
+## 2.12.0 (2026-10-22)
+
+### Русский
+
+- Неудачное обновление снова откатывается: проверка ждёт нового сеанса, а закрытие Настроек больше не прерывает обновление
+- Настройки касаний сначала пробуются и сохраняются только после «Оставить»
+- После перезапуска в темноте экран остаётся выключенным, защита от случайных касаний продолжает работать, а зависший переход в сон завершается
+- Обновления службы кнопки питания начинают работать без перезагрузки
+- Часы на домашнем экране показывают верное время и после перевода назад, а экранная клавиатура сама возвращается после сбоя
+- Забытое уведомление о звонке исчезает через 100 секунд
+- Кнопка «Домой» появляется и в Настройках при первом открытии после начала сеанса
+
+### English
+
+- A failed update is rolled back again: the check waits for the new session, and closing Settings no longer interrupts an update
+- Touch settings are tried first and saved only after choosing Keep
+- After a restart in the dark the screen stays off, the touch filter keeps working, and a stuck sleep is ended
+- Updates of the power-key service take effect without a reboot
+- The home screen clock follows the time when it is set back, and the on-screen keyboard comes back by itself after a failure
+- A forgotten call notification disappears after 100 seconds
+- The Home button also appears in Settings on its first start after a session start
+
 ## 2.11.0 (2026-10-22)
 
 ### Русский
