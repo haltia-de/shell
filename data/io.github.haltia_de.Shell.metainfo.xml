@@ -17,6 +17,22 @@
   <content_rating type="oars-1.1"/>
   <developer id="io.github.haltia_de"><name>Mikhail Nevskiy</name></developer>
   <releases>
+    <release version="2.12.1" date="2026-10-22">
+      <description>
+        <ul>
+          <li>In Settings → «Для помощника»: where to send reports about failures, the tablet's name, sending by itself, «Отправить отчёт сейчас», system logs and the diagnostic report to look at</li>
+          <li>A screenshot from the power menu can be saved or sent</li>
+          <li>«USB: клавиатура» moved to Settings → USB</li>
+          <li>«О системе» shows the system, the author and the project page</li>
+        </ul>
+        <ul>
+          <li xml:lang="ru">В Настройках → «Для помощника»: куда отправлять отчёты о сбоях, имя планшета, отправка сама, «Отправить отчёт сейчас», системные журналы и диагностический отчёт</li>
+          <li xml:lang="ru">Снимок экрана из меню питания можно сохранить или отправить</li>
+          <li xml:lang="ru">«USB: клавиатура» переехала в Настройки → USB</li>
+          <li xml:lang="ru">«О системе» показывает систему, автора и страницу проекта</li>
+        </ul>
+      </description>
+    </release>
     <release version="2.12.0" date="2026-10-22">
       <description>
         <ul>

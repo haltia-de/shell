@@ -1,5 +1,21 @@
 # Что нового · What's new
 
+## 2.12.1 (2026-10-22)
+
+### Русский
+
+- В Настройках → «Для помощника»: куда отправлять отчёты о сбоях, имя планшета, отправка сама, «Отправить отчёт сейчас», системные журналы и диагностический отчёт
+- Снимок экрана из меню питания можно сохранить или отправить
+- «USB: клавиатура» переехала в Настройки → USB
+- «О системе» показывает систему, автора и страницу проекта
+
+### English
+
+- In Settings → «Для помощника»: where to send reports about failures, the tablet's name, sending by itself, «Отправить отчёт сейчас», system logs and the diagnostic report to look at
+- A screenshot from the power menu can be saved or sent
+- «USB: клавиатура» moved to Settings → USB
+- «О системе» shows the system, the author and the project page
+
 ## 2.12.0 (2026-10-22)
 
 ### Русский
