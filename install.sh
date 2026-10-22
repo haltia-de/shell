@@ -186,6 +186,12 @@ else
 		echo "permit nopass user cmd ${p}touchguard-conf"
 		if [ "$p" = /usr/libexec/haltia/haltia- ]; then
 			echo "permit nopass user cmd ${p}update"
+			# Reading what only root may (dmesg, /var/log, pstore) for
+			# haltia-report: these two words only.
+			# nolog: the watcher would put a syslog line into
+			# every report.
+			echo "permit nopass nolog user cmd ${p}report-root args scan"
+			echo "permit nopass nolog user cmd ${p}report-root args sections"
 		fi
 		if [ "$HALTIA_DOAS" = all ]; then
 			echo "permit nopass user cmd ${p}rootsh"

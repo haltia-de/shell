@@ -218,6 +218,11 @@ after_panel() {
 	if [ -x /usr/libexec/haltia/haltia-badges ]; then
 		setsid /usr/libexec/haltia/haltia-keep --session /usr/libexec/haltia/haltia-badges >"$run"/haltia/badges.log 2>&1 &
 	fi
+	# Diagnostic reports for the helper: what goes wrong is noticed and, when
+	# Настройки → «Для помощника» set an address, mailed through «Почта».
+	if [ -x /usr/libexec/haltia/haltia-report ]; then
+		setsid /usr/libexec/haltia/haltia-keep --session /usr/libexec/haltia/haltia-report watch >"$run"/haltia/report.log 2>&1 &
+	fi
 	# Сообщения (MAX) live in the background: messages buzz and the button
 	# counts them with no window open. (Until the program brings an XDG
 	# autostart file of its own; haltia-messenger was b8k-max.)

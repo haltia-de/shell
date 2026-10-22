@@ -1,0 +1,102 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0
+"""What only root may read, for haltia-report (doas, no password, no
+arguments of the caller's beyond the two words below), already cleaned of
+what is personal by haltia-report's own clean():
+
+    haltia-report-root scan       JSON: {"oom": [kernel lines], "pstore":
+                                  [names], "rollback": [update log lines]}
+    haltia-report-root sections   JSON {"root/NAME": text}: dmesg, /var/log's
+                                  haltia logs and messages, pstore's records,
+                                  the update log
+
+It reads only, writes nothing, and takes no path from the caller.
+"""
+import importlib.machinery
+import importlib.util
+import json
+import os
+import re
+import subprocess
+import sys
+
+HERE = os.path.dirname(os.path.realpath(__file__))
+PSTORE = "/sys/fs/pstore"
+UPDATE_LOG = "/var/lib/haltia/update/log"
+VAR_LOG = "/var/log"
+LOGS = re.compile(r"^(haltia-.*\.log|messages|rc\.log|dmesg)$")
+TAIL = 300
+OOM = re.compile(r"Killed process \d+")  # one line a kill
+ROLLBACK = re.compile(r"rolled back|going back|checks failed|session restarts|boots without")
+
+
+def report():
+    loader = importlib.machinery.SourceFileLoader("haltia_report",
+                                                  os.path.join(HERE, "haltia-report"))
+    spec = importlib.util.spec_from_loader("haltia_report", loader)
+    module = importlib.util.module_from_spec(spec)
+    loader.exec_module(module)
+    return module
+
+
+def dmesg():
+    try:
+        return subprocess.run(["dmesg"], capture_output=True, text=True, timeout=10).stdout
+    except (OSError, subprocess.SubprocessError):
+        return ""
+
+
+def pstore_names():
+    try:
+        return sorted(os.listdir(PSTORE))
+    except OSError:
+        return []
+
+
+def scan(rep):
+    lines = [l for l in dmesg().splitlines() if OOM.search(l)]
+    rollback = [l for l in rep.read(UPDATE_LOG, 1024 * 1024).splitlines() if ROLLBACK.search(l)]
+    # A record stays until removed, and the next crash may reuse its name:
+    # its time tells them apart.
+    stored = []
+    for name in pstore_names():
+        try:
+            stored.append("%s@%d" % (name, os.stat(os.path.join(PSTORE, name)).st_mtime))
+        except OSError:
+            continue
+    return {"oom": lines[-50:], "pstore": stored, "rollback": rollback[-50:]}
+
+
+def sections(rep):
+    out = [("root/dmesg.txt", "\n".join(dmesg().splitlines()[-TAIL:]) + "\n"),
+           ("root/update.log", rep.tail(UPDATE_LOG))]
+    try:
+        names = sorted(n for n in os.listdir(VAR_LOG) if LOGS.match(n))
+    except OSError:
+        names = []
+    for name in names:
+        out.append(("root/var-log/" + name, rep.tail(os.path.join(VAR_LOG, name))))
+    for name in pstore_names():
+        out.append(("root/pstore/" + name, rep.read(os.path.join(PSTORE, name), 64 * 1024)))
+    return out
+
+
+def main(argv):
+    rep = report()
+    cmd = argv[1] if len(argv) == 2 else ""
+    if cmd == "scan":
+        found = scan(rep)
+        print(json.dumps({k: [rep.clean(x) for x in v] for k, v in found.items()},
+                         ensure_ascii=False))
+        return 0
+    if cmd == "sections":
+        # JSON: no log line can pass itself off as another section.
+        print(json.dumps({name: rep.clean(text) for name, text in sections(rep)},
+                         ensure_ascii=False))
+        return 0
+    sys.stderr.write("usage: haltia-report-root scan|sections\n")
+    return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))

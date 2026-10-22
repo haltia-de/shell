@@ -105,6 +105,13 @@ if [ -x /etc/local.d/haltia-sleep.start ] &&
 	/etc/local.d/haltia-sleep.start
 fi
 
+# haltia-report's queue: the session user's, as it builds and sends the
+# reports in the session (what only root may read comes through doas).
+user=$(cat /etc/haltia/session-user 2>/dev/null)
+if [ -n "$user" ] && id "$user" >/dev/null 2>&1; then
+	install -d -m 700 -o "$user" -g "$(id -gn "$user")" /var/lib/haltia/reports
+fi
+
 # What an install.sh of 1.x left (a package removes its own files).
 rm -f /etc/local.d/b8k-sleep.start /etc/doas.d/z-b8k-shell.conf /etc/pam.d/b8k-session \
 	/etc/NetworkManager/dispatcher.d/90-b8k-panel \
