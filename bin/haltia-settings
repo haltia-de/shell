@@ -1688,7 +1688,7 @@ class Updates:
 
         # The past ones; going back from one is the helper's.
         box.pack_start(section("Прошлые обновления"), False, False, 0)
-        self.history = listbox(lambda *_a: None)
+        self.history = listbox(self.on_history_row)
         box.pack_start(self.history, False, False, 0)
         self.back_btn = button("Откатить последнее обновление", "plain", self.rollback_last)
         self.back_btn.get_style_context().add_class("danger")
@@ -1864,7 +1864,9 @@ class Updates:
         entries = self.st.get("history", [])
         for entry in entries:
             for prog in entry["programs"]:
-                row = Gtk.ListBoxRow(activatable=False)
+                # A tap: what came with it («что вошло», a subpage).
+                row = Gtk.ListBoxRow()
+                row.entry, row.prog = entry, prog
                 line = Gtk.Box(spacing=16)
                 if prog["name"] == "system":
                     sub = "пакетов: %d, %s" % (len(prog["packages"]), when(entry["time"]))
@@ -1873,7 +1875,7 @@ class Updates:
                                            when(entry["time"]))
                 if prog.get("rolled_back"):
                     sub += " · возвращена прежняя"
-                line.pack_start(row_box(prog["label"], sub), True, True, 0)
+                line.pack_start(row_box(prog["label"], sub, "›"), True, True, 0)
                 # Going back is the helper's (shown after the long press on
                 # «О системе»): an older version is not for the person to pick.
                 if not prog.get("rolled_back") and self.app.helper_open():
@@ -1999,9 +2001,30 @@ class Updates:
         set_reading(self.notes_view, [("Узнаю, что нового…", "note")])
         self.notes_btn.set_label("Обновить «%s»" % prog["label"])
         self.notes_btn.set_sensitive(True)
+        self.notes_btn.set_visible(True)
         self.subpages["notes"].show_all()
         self.app.open_subpage("updates/notes", "%s: что нового" % prog["label"])
         run_async(UPDATE + ["changes", prog["name"]], self.show_notes)
+
+    def on_history_row(self, _lb, row):
+        """A past update: what came with it, on the same subpage as «Что
+        нового», without «Обновить». System packages bring no notes: their
+        names and versions."""
+        if not hasattr(row, "prog") or self.busy:
+            return
+        prog, entry = row.prog, row.entry
+        self.notes_for = None
+        self.notes_btn.set_visible(False)
+        self.subpages["notes"].show_all()
+        self.notes_btn.hide()
+        self.app.open_subpage("updates/notes", "%s: что вошло" % prog["label"])
+        if prog["name"] == "system":
+            set_reading(self.notes_view, [
+                ("%s %s → %s" % tuple(v), "item") for v in prog.get("versions", [])]
+                or [("Список пакетов не сохранился.", "note")])
+            return
+        set_reading(self.notes_view, [("Узнаю, что вошло…", "note")])
+        run_async(UPDATE + ["past", entry["id"], prog["name"]], self.show_notes)
 
     def show_notes(self, code, out):
         if self.app.stack.get_visible_child_name() != "updates/notes":
