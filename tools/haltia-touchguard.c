@@ -825,6 +825,7 @@ static void write_pidfile(void)
 int main(int argc, char **argv)
 {
 	struct input_event evs[64];
+	int dropped = 0;
 	/* /etc/b8k is the old place, read until 3.0 (haltia-upgrade moves it). */
 	const char *config = argc > 1 ? argv[1]
 			     : access("/etc/haltia/touchguard.conf", F_OK) == 0 ||
@@ -871,6 +872,18 @@ int main(int argc, char **argv)
 	log_config();
 	write_pidfile();
 
+	/* The signals reach us only inside ppoll: one that came between the
+	 * look at the flags and the wait used to wait for the next touch. */
+	sigset_t block, unblocked;
+
+	sigemptyset(&block);
+	sigaddset(&block, SIGTERM);
+	sigaddset(&block, SIGINT);
+	sigaddset(&block, SIGHUP);
+	sigaddset(&block, SIGUSR1);
+	sigaddset(&block, SIGUSR2);
+	sigprocmask(SIG_BLOCK, &block, &unblocked);
+
 	while (running) {
 		struct pollfd pf = { in_fd, POLLIN, 0 };
 		int timeout = -1;
@@ -915,7 +928,9 @@ int main(int argc, char **argv)
 
 			timeout = left > 0 ? (int)left : 0;
 		}
-		if (poll(&pf, 1, timeout) < 0) {
+		struct timespec wait = { timeout / 1000, (long)(timeout % 1000) * 1000000L };
+
+		if (ppoll(&pf, 1, timeout < 0 ? NULL : &wait, &unblocked) < 0) {
 			if (errno == EINTR)
 				continue;
 			break;
@@ -943,6 +958,20 @@ int main(int argc, char **argv)
 			long long t = now_ms();
 			struct slot *s = &slots[cur_slot];
 
+			/* After lost events, the rest of that frame is not to be
+			 * trusted: skip to its SYN_REPORT, then ask the device
+			 * which slot it is on. */
+			if (dropped) {
+				if (ev->type == EV_SYN && ev->code == SYN_REPORT) {
+					struct input_absinfo slot_now;
+
+					dropped = 0;
+					if (ioctl(in_fd, EVIOCGABS(ABS_MT_SLOT), &slot_now) == 0)
+						cur_slot = slot_now.value >= 0 && slot_now.value < SLOTS
+								   ? slot_now.value : 0;
+				}
+				continue;
+			}
 			if (ev->type == EV_ABS) {
 				switch (ev->code) {
 				case ABS_MT_SLOT:
@@ -985,12 +1014,14 @@ int main(int argc, char **argv)
 				for (int i = 0; i < SLOTS; i++)
 					slots[i].fresh = 0;
 			} else if (ev->type == EV_SYN && ev->code == SYN_DROPPED) {
-				/* Lost events: start clean. */
+				/* Lost events: start clean. A finger still down stays
+				 * ignored until it lifts (its id is not sent again). */
 				cancel_all();
 				for (int i = 0; i < SLOTS; i++) {
 					slots[i].id = -1;
 					slots[i].state = FREE;
 				}
+				dropped = 1;
 			}
 		}
 	}

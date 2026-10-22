@@ -39,6 +39,15 @@ class Guards(unittest.TestCase):
         for path in ("tools/haltia-home.c", "tools/haltia-close.c"):
             self.assertIn("if (sfd < 0) {", read(path), path)
 
+    def test_touchguard_waits_with_ppoll_and_resyncs_after_a_drop(self):
+        body = read("tools/haltia-touchguard.c")
+        loop = body[body.index("while (running) {"):]
+        self.assertIn("ppoll(&pf, 1,", loop)  # SH2-30: signals only inside the wait
+        self.assertNotIn(" poll(&pf", loop)
+        self.assertIn("sigprocmask(SIG_BLOCK, &block, &unblocked);", body)
+        self.assertIn("EVIOCGABS(ABS_MT_SLOT)", body)  # SH2-31
+        self.assertIn("dropped = 1;", body)
+
     def test_keyboard_is_kept(self):
         launcher = read("bin/haltia-launcher")
         self.assertRegex(launcher, re.compile(
