@@ -1359,6 +1359,7 @@ REPORT_SAID = {"sent": "Отчёт отправлен.", "queued": "Отчёт �
                "no-mail": "Отчёт сохранён: «Почты» нет, уйдёт, когда она появится."}
 
 
+EMAIL = re.compile(r"[^@\s]+@[^@\s]+\.[^@\s]+")
 REPORT_PARTS = {"summary.txt": "Сводка (текст письма)", "problem.txt": "Что случилось",
                 "system.txt": "Система", "state.txt": "Состояние"}
 
@@ -1431,6 +1432,10 @@ class Helper:
         rc = report_conf()
         self.report_to = entry_line(box, "Куда отправлять отчёты", "адрес почты помощника",
                                     rc.get("to"), self.on_report_to)
+        self.report_to_note = Gtk.Label(xalign=0, wrap=True)
+        self.report_to_note.get_style_context().add_class("sub")
+        self.report_to_note.set_no_show_all(True)
+        box.pack_start(self.report_to_note, False, False, 0)
         self.report_name = entry_line(box, "Имя планшета", "например: Мама", rc.get("name"),
                                       lambda text: save_report_conf(name=text))
         self.report_auto = switch_line(
@@ -1495,6 +1500,13 @@ class Helper:
 
     # --- reports ---------------------------------------------------------------
     def on_report_to(self, text):
+        if text and not EMAIL.fullmatch(text):
+            # Neither saved nor switched on until it looks like an address.
+            self.report_to_note.set_text("Это не похоже на адрес почты: нужно вида имя@почта.ru. "
+                                         "Не сохранено.")
+            self.report_to_note.show()
+            return
+        self.report_to_note.hide()
         before = report_conf().get("to", "")
         values = {"to": text}
         if text and not before:
@@ -1587,7 +1599,7 @@ class Helper:
         self.view_lines = []
         return page
 
-    def open_view(self, title, source, refreshable=True, newest_first=True):
+    def open_view(self, title, source, refreshable=True, newest_first=True, text=None):
         """source() -> text, off the GTK thread; a log reads newest first,
         a report's section as it is."""
         current = self.app.stack.get_visible_child_name()
@@ -1603,7 +1615,10 @@ class Helper:
         # No keyboard until the search is tapped: GTK gives the entry the
         # focus once the page is shown.
         GLib.idle_add(lambda: self.app.win.set_focus(None))
-        self.reload_view()
+        if text is None:
+            self.reload_view()
+        else:  # already read: «Обновить» reads again
+            self.got_view(text)
 
     def reload_view(self):
         set_reading(self.view_text, [("Читаю…", "note")])
@@ -1639,7 +1654,7 @@ class Helper:
             self.logs_box.pack_start(row_box("Журналы не нашлись"), False, False, 0)
         lb = listbox(lambda _lb, row: self.open_view(
             row.name, lambda n=row.name: json.loads(
-                run(*REPORT, "logs", timeout=60) or "{}").get(n, "")))
+                run(*REPORT, "logs", timeout=60) or "{}").get(n, ""), text=logs[row.name]))
         for name in names:
             row = Gtk.ListBoxRow()
             row.name = name
@@ -1695,7 +1710,10 @@ class Helper:
     def save_diag(self):
         docs = GLib.get_user_special_dir(GLib.UserDirectory.DIRECTORY_DOCUMENTS) or \
             os.path.join(os.path.expanduser("~"), "Документы")
-        target = os.path.join(docs, "Отчёт Haltia %s.tar.gz" % time.strftime("%Y-%m-%d %H-%M"))
+        base = os.path.join(docs, "Отчёт Haltia %s" % time.strftime("%Y-%m-%d %H-%M-%S"))
+        target, n = base + ".tar.gz", 2
+        while os.path.exists(target):  # never over an earlier one
+            target, n = "%s (%d).tar.gz" % (base, n), n + 1
         try:
             os.makedirs(docs, exist_ok=True)
             shutil.copyfile(self.diag_archive, target)
