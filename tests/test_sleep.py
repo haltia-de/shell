@@ -77,5 +77,68 @@ class Sleep(unittest.TestCase):
             os.killpg(pid, 0)  # the whole group is gone
 
 
+class SelfRestart(unittest.TestCase):
+    """#24: a new version of haltia-sleep takes over in the same process."""
+
+    def setUp(self):
+        self.dir = tempfile.mkdtemp(prefix="haltia-sleep-restart.")
+        self.addCleanup(shutil.rmtree, self.dir)
+        self.self_path = os.path.join(self.dir, "haltia-sleep")
+        self.sock_path = os.path.join(self.dir, "wake.sock")
+        patches = [mock.patch.object(hs, "SELF", self.self_path),
+                   mock.patch.object(hs, "WAKE_SOCKET", self.sock_path),
+                   mock.patch.object(hs, "log", lambda _m: None)]
+        for p in patches:
+            p.start()
+            self.addCleanup(p.stop)
+
+    def write(self, text):
+        with open(self.self_path, "w") as fh:
+            fh.write(text)
+
+    def test_a_file_that_does_not_compile_is_not_run(self):
+        self.write("def broken(:\n")
+        with mock.patch.object(hs.os, "execve") as execve:
+            hs.restart_self(None)
+        execve.assert_not_called()
+
+    def test_the_new_version_gets_the_wake_socket(self):
+        self.write("print('new')\n")
+        waker = hs.open_wake_socket()
+        self.addCleanup(waker.close)
+        with mock.patch.object(hs.os, "execve") as execve:
+            hs.restart_self(waker)
+        exe, argv, env = execve.call_args[0]
+        self.assertEqual(argv[1:], [self.self_path])
+        self.assertEqual(env[hs.WAKE_FD_ENV], str(waker.fileno()))
+        self.assertTrue(os.get_inheritable(waker.fileno()))
+
+    def test_the_passed_socket_is_taken_over(self):
+        first = hs.open_wake_socket()
+        fd = first.detach()
+        with mock.patch.dict(hs.os.environ, {hs.WAKE_FD_ENV: str(fd)}):
+            again = hs.open_wake_socket()
+            self.assertNotIn(hs.WAKE_FD_ENV, hs.os.environ)
+        self.addCleanup(again.close)
+        self.assertEqual(again.fileno(), fd)
+        self.assertFalse(os.get_inheritable(fd))
+        # Still listening at the same path: a client queued meanwhile is heard.
+        client = hs.socket.socket(hs.socket.AF_UNIX, hs.socket.SOCK_STREAM)
+        self.addCleanup(client.close)
+        client.connect(self.sock_path)
+
+    def test_a_changed_file_has_a_new_id(self):
+        self.write("a\n")
+        before = hs.file_id(self.self_path)
+        os.replace(self._other("b\n"), self.self_path)  # as apk installs it
+        self.assertNotEqual(hs.file_id(self.self_path), before)
+
+    def _other(self, text):
+        path = self.self_path + ".new"
+        with open(path, "w") as fh:
+            fh.write(text)
+        return path
+
+
 if __name__ == "__main__":
     unittest.main()
