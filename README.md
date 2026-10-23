@@ -7,8 +7,7 @@
 [device-lenovo-b8000h](https://github.com/haltia-de/device-lenovo-b8000h)),
 но оболочка к нему не привязана
 ([ADR 0004](https://github.com/haltia-de/haltia/blob/main/docs/adr/0004-de-apart-from-device.md)
-в [haltia-de/haltia](https://github.com/haltia-de/haltia)). До 2.0 она
-называлась `b8k-shell`.
+в [haltia-de/haltia](https://github.com/haltia-de/haltia)).
 
 - **Панель** слева (waybar) с кнопкой «Домой», закреплёнными и открытыми
   программами, строкой состояния (Wi-Fi, звук, батарея; касание — меню
@@ -44,8 +43,7 @@ LauncherEntry, запреты сна logind, XDG autostart. Решение и с
 композитор из `compositor=` в `/etc/haltia/device.conf`, иначе `phoc`, с
 `/usr/share/haltia/phoc.ini` и `haltia-launcher`.
 
-Установка: пакет Alpine `haltia-shell` (armv7, aarch64, x86_64; заменяет
-`b8k-shell`) из
+Установка: пакет Alpine `haltia-shell` (armv7, aarch64, x86_64) из
 репозитория Haltia (https://haltia-de.github.io/packages/) или выпусков
 GitHub, подписан
 ключом проекта ([haltia-de/ci](https://github.com/haltia-de/ci)); его собирает
@@ -55,9 +53,7 @@ CI по тегу `vX.Y.Z` родным компилятором в Alpine armv7
 умолчанию `/opt/b8000h`) и `sh install.sh [ROOT]`. Пути: команды — `/usr/bin/haltia-*`, свои части
 оболочки — `/usr/libexec/haltia/`, данные — `/usr/share/haltia`, настройки
 — `/etc/haltia`, `~/.config/haltia`, `$XDG_RUNTIME_DIR/haltia/`;
-`/usr/local` остаётся человеку. До 3.0 старые имена (`b8k-*` в `/usr/bin`
-и `/usr/sbin`, `/usr/share/b8k`, `/etc/b8k`, темы `b8k*`, ключи
-`X-B8K-*`, переменные `B8K_*`) работают как ссылки и запасные. Как запускается сеанс и какой композитор — дело
+`/usr/local` остаётся человеку. Как запускается сеанс и какой композитор — дело
 устройства (`phoc -C /usr/share/haltia/phoc.ini -E haltia-launcher`).
 
 Устройство подключается без кода в оболочке: подсветка — `backlight=` в
