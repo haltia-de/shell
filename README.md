@@ -22,7 +22,9 @@
 - **Настройки** (`haltia-settings`) — всё в одном окне: сеть, звук и
   вибрация, экран, панель и домашний экран, уведомления, дата и время,
   обновления, о системе; скрытый раздел «Для помощника» (касания, терминал,
-  журнал обновлений, скрытие программ).
+  журнал обновлений, скрытие программ, отчёты о сбоях: адрес, имя планшета,
+  автоотправка, «Отправить отчёт сейчас», журналы, просмотр отчёта и
+  «Почта для отчётов»).
 - **Защита от случайных касаний** (`haltia-touchguard`) и вибрация на
   касание, с настройкой (Настройки → «Для помощника» → «Касания»); **кнопка питания** (`haltia-sleep`): экран, меню, сон.
 - **Поворот экрана** по акселерометру (`haltia-rotate`, `wlr-randr`): книжная
@@ -34,7 +36,8 @@
 Программы оболочка знает только по стандартам freedesktop: `.desktop`-файлы
 (`X-Haltia-Home`, `X-Haltia-Replaces`, `X-Haltia-Windows`), счётчики Unity
 LauncherEntry, запреты сна logind, XDG autostart. Решение и словарь — в
-репозитории устройства: `docs/adr/0001-three-layers.md`, `CONTEXT.md`.
+[haltia-de/haltia](https://github.com/haltia-de/haltia): `docs/adr/0001-three-layers.md`,
+`CONTEXT.md`.
 
 Сеанс под менеджером входа (tinydm в postmarketOS, greetd и другие) —
 `/usr/share/wayland-sessions/haltia.desktop` → `haltia-wayland-session`:
@@ -60,7 +63,9 @@ CI по тегу `vX.Y.Z` родным компилятором в Alpine armv7
 Устройство подключается без кода в оболочке: подсветка — `backlight=` в
 `/etc/haltia/device.conf` или первая в `/sys/class/backlight`; кнопка
 питания — `power_key=` там же или первое устройство с `KEY_POWER`; сон —
-хук `/usr/lib/haltia/hooks/suspend` или `freeze`; пороги касаний — доли от
+`haltia-sleep`: на внешнем питании экран гаснет, а система не засыпает, на
+батарее через 30 с вызывается хук `/usr/lib/haltia/hooks/suspend` или
+`freeze` (признак питания и выгрузка Wi-Fi — дело устройства); пороги касаний — доли от
 осей сенсора; правила doas — `HALTIA_DOAS` (`all`, `shell`, `none`). CI
 (`session`) поднимает сеанс под headless phoc на x86_64 и сохраняет снимок
 экрана (`ci/headless-session.sh`).
