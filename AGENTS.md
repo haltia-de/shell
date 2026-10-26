@@ -80,7 +80,7 @@ The session in `/etc/local.d/desktop.start` runs `phoc-gpu -C /usr/share/haltia/
   - `haltia-ask power` calls `doas -n /usr/libexec/haltia/haltia-poweroff off|reboot`. The doas rule is written by `install.sh`.
 - **Brightness and volume.**
   - `haltia-brightness` sets the level through logind `Session.SetBrightness` and keeps it in `~/.config/haltia/brightness`.
-  - `haltia-volume` steps the PulseAudio sink by 5% per press and, with a key held past 0.4 s, by 2% every 80 ms until release (its own repeat; at most 100%) and signals `SIGRTMIN+10` (the speaker in the status).
+  - `haltia-volume` reads every input device with a volume key (the Tab P11 has Volume Up on a GPIO key and Volume Down on the PMIC's RESIN, two devices), steps the PulseAudio sink by 5% per press and, with a key held past 0.4 s, by 2% every 80 ms until release (its own repeat; at most 100%) and signals `SIGRTMIN+10` (the speaker in the status).
   - The hardware `Speaker` gain is pinned at step 7 by a PulseAudio profile set (`pulse/`, selected by a udev rule), because steps 0–2 crackle.
 - **Tap feedback.**
   - Every panel `on-click` starts with `haltia-press <id> <signal>` (`tools/haltia-press.c`, built by `build-haltia-press.sh`). It marks `$XDG_RUNTIME_DIR/haltia/press/<id>` for 300 ms, which `haltia-launch status` and `haltia-meter` turn into the `pressed` class, and buzzes the motor for 70 ms.
