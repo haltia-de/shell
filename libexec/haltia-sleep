@@ -267,8 +267,8 @@ def charging():
 
 
 def updates_when_dark():
-    """At most once in UPDATE_EVERY, when the screen goes off on the charger:
-    look for updates, and with auto=yes (/etc/haltia/update.conf) install
+    """At most once in UPDATE_EVERY, when the screen goes off on the charger
+    (or would have, updates_when_kept_on): look for updates, and with auto=yes (/etc/haltia/update.conf) install
     them. haltia-update holds a sleep inhibitor while apk works, so the
     system stays up for it (suspend_due reads the inhibitors)."""
     if not os.access(UPDATE, os.X_OK) or not charging():
@@ -306,6 +306,24 @@ def updates_when_dark():
         log("UPDATES %s" % ("auto" if auto else "look"))
     except OSError as exc:
         log("UPDATES_FAIL %s" % exc.errno)
+
+
+def updates_when_kept_on(last_input, looked):
+    """The screen stays on only because of «on while charging», so sleep()
+    and its look for updates never come: once in each stretch without input
+    as long as the idle-off time, where the screen would have gone off,
+    look as updates_when_dark does (its UPDATE_EVERY stamp still holds).
+    looked is the last_input of the stretch already handled. Returns the
+    seconds until the look is due (None: nothing to wait for) and looked."""
+    if idle_off() is not None or looked == last_input:
+        return None, looked
+    left = last_input + _screen["off"] - time.monotonic()
+    if left > 0:
+        return left, looked
+    # A video playing would have kept the screen on anyway.
+    if not awake_held("screen"):
+        updates_when_dark()
+    return None, last_input
 
 
 def updates_when_light():
@@ -956,6 +974,7 @@ def listen():
     activity = activity_nodes(path)
     seen_nodes = event_nodes()
     last_input = time.monotonic()
+    looked = None  # last_input of the stretch updates_when_kept_on handled
     last = 0.0
     down = None  # press time while the key is held and not yet handled
     log("LISTEN asleep=%s activity=%d" % (int(lamp.asleep), len(activity)))
@@ -983,10 +1002,13 @@ def listen():
             due = lamp.suspend_due()
             idle = None
             off_after = idle_off()
+            kept = None
             if not lamp.asleep and off_after is not None:
                 idle = max(0.0, last_input + off_after - time.monotonic())
+            elif not lamp.asleep:
+                kept, looked = updates_when_kept_on(last_input, looked)
             # At least every RESCAN_SEC, to notice new devices.
-            waits = [t for t in (due, idle, RESCAN_SEC) if t is not None]
+            waits = [t for t in (due, idle, kept, RESCAN_SEC) if t is not None]
             ready = select.select([power] + activity + ([waker] if waker else []), [], [],
                                   min(waits))[0]
             if waker in ready:
