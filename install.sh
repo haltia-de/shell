@@ -166,6 +166,10 @@ install -d -m 755 "$root/etc/elogind/logind.conf.d"
 printf '[Login]\nHandlePowerKey=ignore\nHandlePowerKeyLongPress=ignore\n' \
 	>"$root/etc/elogind/logind.conf.d/haltia-power-key.conf"
 
+# A segfault leaves its registers in dmesg for the reports (the package's
+# post-install and post-upgrade apply it at once, the sysctl service at boot).
+install -D -m 644 "$here/etc/sysctl-haltia.conf" "$root/etc/sysctl.d/90-haltia.conf"
+
 # The panel's Wi-Fi follows NetworkManager at once.
 install -d -m 755 "$root/etc/NetworkManager/dispatcher.d"
 install -m 755 "$here/etc/nm-dispatcher-haltia-panel" "$root/etc/NetworkManager/dispatcher.d/90-haltia-panel"
