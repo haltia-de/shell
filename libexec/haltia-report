@@ -211,6 +211,8 @@ def clean(text, program=False, prose=True):
     """text without what is personal (decision 2). A program's log
     (program=True) keeps only its safe lines first; prose=False keeps
     Russian text (the helper's own note)."""
+    # keep_syslog's mark would read as Russian prose to _PROSE.
+    text = text.replace("[строки скрыты]", _HIDDEN)
     if program:
         text = keep_safe(text)
     text = "".join(_QUOTED.sub("'[сеть]'", line) if _NET_LINE.search(line) else line

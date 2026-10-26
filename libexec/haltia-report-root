@@ -28,6 +28,14 @@ UPDATE_LOG = "/var/lib/haltia/update/log"
 VAR_LOG = "/var/log"
 LOGS = re.compile(r"^(haltia-.*\.log|messages|rc\.log|dmesg)$")
 TAIL = 300
+# Kernel lines that tell a crash (kernel.print-fatal-signals: "potentially
+# unexpected fatal signal 11", then the registers); CONTEXT lines after each.
+CRASH = re.compile(r"fatal signal|Unable to handle|Oops|\bBUG\b|WARNING|Kernel panic|segfault")
+CONTEXT = 40
+HEAD_MAX = 1000
+# What the MT6628 Wi-Fi driver writes by the hundred after every resume.
+NOISE = {"fwdl": re.compile(r"wlan_mt6628: FWDL resp"),
+         "alloc": re.compile(r"\[MT6628\].*\b(allocated|freed)\b")}
 OOM = re.compile(r"Killed process \d+")  # one line a kill
 ROLLBACK = re.compile(r"rolled back|going back|checks failed|session restarts|boots without")
 # OpenRC's supervisor about a service it watches.
@@ -48,6 +56,48 @@ def dmesg():
         return subprocess.run(["dmesg"], capture_output=True, text=True, timeout=10).stdout
     except (OSError, subprocess.SubprocessError):
         return ""
+
+
+def dmesg_text(text):
+    """dmesg for a report: what tells a crash, from the whole buffer, then
+    the last TAIL lines, with the driver spam that fills the buffer after a
+    resume counted instead of kept."""
+    lines = collapse(text.splitlines())
+    head, tail = lines[:-TAIL], lines[-TAIL:]
+    out, upto = [], 0  # head's lines before upto are taken or counted
+    for i, line in enumerate(head):
+        if not CRASH.search(line):
+            continue
+        if i > upto:
+            out.append("[... %d lines ...]" % (i - upto))
+        # A fatal-signal line or an oops: the dump follows it.
+        end = min(i + 1 + CONTEXT, len(head))
+        out.extend(head[max(i, upto):end])
+        upto = max(upto, end)
+    if len(out) > HEAD_MAX:  # a warning repeated all over the buffer
+        out = ["[... earlier lines ...]"] + out[-HEAD_MAX:]
+    if out:
+        if upto < len(head):
+            out.append("[... %d lines ...]" % (len(head) - upto))
+        out.append("[last %d lines]" % len(tail))
+    return "\n".join(out + tail) + "\n"
+
+
+def collapse(lines):
+    """Each run of spam lines as one line of each kind, with its count."""
+    out, run = [], {}
+    for line in lines + [None]:
+        kind = next((k for k, rule in NOISE.items() if line and rule.search(line)), None)
+        if kind:
+            first, n = run.get(kind, (line, 0))
+            run[kind] = (first, n + 1)
+            continue
+        for first, n in run.values():
+            out.append(first if n == 1 else "%s [x%d such lines]" % (first, n))
+        run = {}
+        if line is not None:
+            out.append(line)
+    return out
 
 
 def pstore_names():
@@ -83,7 +133,7 @@ def scan(rep):
 
 
 def sections(rep):
-    out = [("root/dmesg.txt", "\n".join(dmesg().splitlines()[-TAIL:]) + "\n"),
+    out = [("root/dmesg.txt", dmesg_text(dmesg())),
            ("root/update.log", rep.tail(UPDATE_LOG))]
     try:
         names = sorted(n for n in os.listdir(VAR_LOG) if LOGS.match(n))

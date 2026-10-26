@@ -20,6 +20,9 @@ MAX=5
 WINDOW=60
 QUIET=3
 REST=300
+# A Python daemon killed by a fatal signal writes its Python stack to its
+# log (haltia-report reads "Fatal Python error").
+export PYTHONFAULTHANDLER=1
 # Whatever the starter held open (a lock's fd: flock) is not ours to keep.
 exec 3>&- 4>&- 5>&- 6>&- 7>&- 8>&- 9>&-
 socket=${XDG_RUNTIME_DIR:-/nonexistent}/${WAYLAND_DISPLAY:-wayland-0}
