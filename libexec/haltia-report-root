@@ -5,7 +5,9 @@ arguments of the caller's beyond the two words below), already cleaned of
 what is personal by haltia-report's own clean():
 
     haltia-report-root scan       JSON: {"oom": [kernel lines], "pstore":
-                                  [names], "rollback": [update log lines]}
+                                  [names], "rollback": [update log lines],
+                                  "daemon": [messages' lines of a service
+                                  supervise-daemon saw killed by a signal]}
     haltia-report-root sections   JSON {"root/NAME": text}: dmesg, /var/log's
                                   haltia logs and messages, pstore's records,
                                   the update log
@@ -28,6 +30,8 @@ LOGS = re.compile(r"^(haltia-.*\.log|messages|rc\.log|dmesg)$")
 TAIL = 300
 OOM = re.compile(r"Killed process \d+")  # one line a kill
 ROLLBACK = re.compile(r"rolled back|going back|checks failed|session restarts|boots without")
+# OpenRC's supervisor about a service it watches.
+DAEMON = re.compile(r"supervise-daemon\[\d+\]: /\S+, pid \d+, terminated by signal \d+$")
 
 
 def report():
@@ -53,6 +57,16 @@ def pstore_names():
         return []
 
 
+def daemon_lines(rep):
+    out = []
+    for line in rep.tail(os.path.join(VAR_LOG, "messages"), 1 << 30).splitlines():
+        m = rep._SYSLOG_LINE.match(line)
+        # user.* and local*.* are what any program (logger) may send.
+        if DAEMON.search(line) and not (m and m.group(1) not in rep._SYSLOG_FACILITY):
+            out.append(line)
+    return out
+
+
 def scan(rep):
     lines = [l for l in dmesg().splitlines() if OOM.search(l)]
     rollback = [l for l in rep.read(UPDATE_LOG, 1024 * 1024).splitlines() if ROLLBACK.search(l)]
@@ -64,7 +78,8 @@ def scan(rep):
             stored.append("%s@%d" % (name, os.stat(os.path.join(PSTORE, name)).st_mtime))
         except OSError:
             continue
-    return {"oom": lines[-50:], "pstore": stored, "rollback": rollback[-50:]}
+    return {"oom": lines[-50:], "pstore": stored, "rollback": rollback[-50:],
+            "daemon": daemon_lines(rep)[-50:]}
 
 
 def sections(rep):

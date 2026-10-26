@@ -183,6 +183,55 @@ class Report(unittest.TestCase):
         self.assertEqual(kinds, [("exit", "haltia-volume"), ("hang", "io.github.haltia_de.Paint"),
                                  ("oom", "firefox"), ("pstore", None)])
 
+    def test_a_supervised_daemon_killed_by_a_signal(self):
+        line = ("Oct 26 11:48:03 b8000h daemon.err supervise-daemon[849]: "
+                "/usr/libexec/iio-sensor-proxy, pid 850, terminated by signal 11")
+        root = json.dumps({"daemon": [line]})
+        with mock.patch.object(hr, "run", lambda *a, **k: root):
+            state = {}
+            events = hr.scan(state, root=True)
+            self.assertEqual([(e["kind"], e["program"]) for e in events],
+                             [("fault", "iio-sensor-proxy")])
+            self.assertIn("terminated by signal 11", events[0]["detail"])
+            self.assertEqual(time.localtime(events[0]["time"])[1:6], (10, 26, 11, 48, 3))
+            self.assertEqual(hr.scan(state, root=True), [])
+        self.assertIn("• сбой — iio-sensor-proxy (1)", hr.summary(events, None))
+
+    def test_a_signal_exit_of_a_session_daemon_is_a_fault(self):
+        with open(self.p("run", "rotate.log"), "w") as fh:
+            fh.write("haltia-keep: /usr/libexec/haltia/haltia-rotate ended (139) at 1792999683,"
+                     " starting it again\n"
+                     "haltia-keep: /usr/libexec/haltia/haltia-volume ended (1), starting it again\n")
+        with mock.patch.object(hr, "run", lambda *a, **k: "{}"):
+            events = hr.scan({})
+        self.assertEqual([(e["kind"], e["program"], e["time"]) for e in events][0],
+                         ("fault", "haltia-rotate", 1792999683))
+        self.assertEqual(events[1]["kind"], "exit")
+        self.assertIn("• сбой — haltia-rotate (1)", hr.summary(events, None))
+        out = hr.crash_section(events[:1])
+        self.assertTrue(out.startswith("сбой — haltia-rotate"))
+        self.assertIn("ended (139)", out)
+
+    def test_a_session_crash_asks_root_at_once(self):
+        calls = []
+        with open(self.p("run", "rotate.log"), "w") as fh:
+            fh.write("haltia-keep: /usr/libexec/haltia/haltia-rotate ended (132), starting it again\n")
+        with mock.patch.object(hr, "root_due", lambda _s: False), \
+                mock.patch.object(hr, "run", lambda *a, **k: calls.append(a) or "{}"):
+            hr.scan({})
+        self.assertEqual(len(calls), 1)
+
+    def test_crashes_together_are_named_in_the_summary(self):
+        events = [{"kind": "fault", "program": "haltia-rotate", "time": 1000},
+                  {"kind": "fault", "program": "iio-sensor-proxy", "time": 1002},
+                  {"kind": "fault", "program": "polkitd", "time": 1003},
+                  {"kind": "exit", "program": "haltia-volume", "time": 2000},
+                  {"kind": "hang", "program": "io.github.haltia_de.Paint", "time": 1001}]
+        text = hr.summary(events, None)
+        self.assertIn("Одновременно упали 3 программы (haltia-rotate, iio-sensor-proxy, "
+                      "polkitd)", text)
+        self.assertNotIn("Одновременно", hr.summary(events[:1] + events[3:], None))
+
     def test_the_same_merged_with_a_count(self):
         pending = {}
         ev = {"kind": "crash", "program": "Блокнот", "time": 1}
