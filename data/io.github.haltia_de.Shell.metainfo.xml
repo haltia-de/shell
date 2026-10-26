@@ -17,6 +17,18 @@
   <content_rating type="oars-1.1"/>
   <developer id="io.github.haltia_de"><name>Mikhail Nevskiy</name></developer>
   <releases>
+    <release version="2.12.4" date="2026-10-26">
+      <description>
+        <ul>
+          <li>A tablet kept on the charger with the screen on looks for updates again when nobody uses it</li>
+          <li>One reboot after a crash counts once in a report and is named «система»</li>
+        </ul>
+        <ul>
+          <li xml:lang="ru">Планшет, который стоит на зарядке с негаснущим экраном, снова сам ищет обновления, когда им не пользуются</li>
+          <li xml:lang="ru">Одна перезагрузка из-за сбоя считается в отчёте один раз и называется «система»</li>
+        </ul>
+      </description>
+    </release>
     <release version="2.12.3" date="2026-10-26">
       <description>
         <ul>
