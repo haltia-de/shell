@@ -68,6 +68,7 @@ while ours; do
 		child=
 		continue
 	fi
-	echo "haltia-keep: $1 ended ($code), starting it again" >&2
+	# The time: haltia-report tells crashes at once from one after another.
+	echo "haltia-keep: $1 ended ($code) at $(date +%s), starting it again" >&2
 	sleep 1
 done

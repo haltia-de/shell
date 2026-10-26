@@ -40,6 +40,7 @@ import os
 import re
 import secrets
 import shutil
+import signal
 import subprocess
 import sys
 import tarfile
@@ -68,10 +69,18 @@ CRASHES = os.path.join(os.environ.get("XDG_STATE_HOME") or os.path.join(HOME, ".
                        "haltia", "crashes")
 RUN = os.path.join(os.environ.get("XDG_RUNTIME_DIR") or os.path.join(HOME, ".cache"), "haltia")
 PROGRAM_LOGS = ("~/.cache/haltia-messenger/haltia-messenger.log",)
-KIND_TITLE = {"crash": "сбой", "hang": "зависание", "exit": "аварийное завершение",
+# "fault": a daemon killed by one of FAULT_SIGNALS. Its own kind, as "crash"
+# is what keeps a program's text to its safe lines (crash_section).
+KIND_TITLE = {"crash": "сбой", "fault": "сбой", "hang": "зависание",
+              "exit": "аварийное завершение",
               "loop": "сеанс перезапускается", "rollback": "откат обновления",
               "pstore": "перезагрузка из-за сбоя", "oom": "нехватка памяти",
               "manual": "отчёт"}
+FAULT_SIGNALS = {int(signal.SIGSEGV), int(signal.SIGBUS), int(signal.SIGILL),
+                 int(signal.SIGABRT)}
+CRASH_KINDS = ("crash", "fault", "exit")
+TOGETHER = 5  # s: crashes this close together point at the platform
+_MONTHS = ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
 
 
 def log(msg):
@@ -383,6 +392,19 @@ def tablet():
 
 
 # --- building ----------------------------------------------------------------------
+def together(events):
+    """The most programs that crashed within TOGETHER s of one another, when
+    more than one: several at once point at the platform, not at a program."""
+    crashed = sorted((ev.get("time", 0), ev.get("program") or "?")
+                     for ev in events if ev["kind"] in CRASH_KINDS)
+    best = set()
+    for i, (t, _p) in enumerate(crashed):
+        progs = {p for u, p in crashed[i:] if u - t <= TOGETHER}
+        if len(progs) > len(best):
+            best = progs
+    return best if len(best) > 1 else set()
+
+
 def summary(events, note):
     lines = ["Планшет: %s" % tablet(),
              "Время: %s" % time.strftime("%Y-%m-%d %H:%M:%S"),
@@ -392,6 +414,12 @@ def summary(events, note):
     for ev in events:
         lines.append("• %s — %s (%d)" % (KIND_TITLE.get(ev["kind"], ev["kind"]),
                                           ev.get("program") or "система", ev.get("count", 1)))
+    both = together(events)
+    if both:
+        n = len(both)
+        word = "программы" if n % 10 in (2, 3, 4) and n % 100 not in (12, 13, 14) else "программ"
+        lines += ["", "Одновременно упали %d %s (%s): похоже, дело в системе." % (
+            n, word, ", ".join(sorted(both)))]
     lines += ["", "Подробности — в приложенном архиве."]
     return "\n".join(lines) + "\n"
 
@@ -662,13 +690,19 @@ def scan(state, root=None):
         logs = []
     for name in logs:
         for line in file_lines(os.path.join(RUN, name), state, "keep:" + name):
-            m = re.match(r"haltia-keep: (\S+) ended \((\d+)\)", line)
+            m = re.match(r"haltia-keep: (\S+) ended \((\d+)\)(?: at (\d+))?", line)
             if m and m.group(2) not in ("0", "143"):
-                events.append({"kind": "exit", "program": os.path.basename(m.group(1)),
-                               "time": now, "detail": line})
-    # Root's view: OOM kills, pstore after a crash reboot, update rollbacks.
+                code = int(m.group(2))
+                events.append({"kind": "fault" if code - 128 in FAULT_SIGNALS else "exit",
+                               "program": os.path.basename(m.group(1)),
+                               "time": int(m.group(3) or now), "detail": line})
+    # Root's view: OOM kills, pstore after a crash reboot, update rollbacks,
+    # system daemons killed by a signal. A session daemon's crash asks for
+    # it at once: several crashing together point at the platform.
     due = root_due(state)  # also notes the signs root=True looked at
-    if not (due if root is None else root):
+    if root is None:
+        root = due or any(ev["kind"] in CRASH_KINDS for ev in events)
+    if not root:
         return events
     try:
         found = json.loads(run("doas", "-n", ROOT_HELPER, "scan", timeout=30) or "{}")
@@ -676,20 +710,48 @@ def scan(state, root=None):
         found = {}
     if not isinstance(found, dict):
         found = {}
-    for kind in ("oom", "pstore", "rollback"):
+    for kind in ("oom", "pstore", "rollback", "daemon"):
         known = set(state.get(kind, []))
         items = found.get(kind)
         for item in items if isinstance(items, list) else []:
             if not isinstance(item, str) or item in known:
                 continue
             known.add(item)
-            prog = None
+            prog, what, at = None, kind, now
             if kind == "oom":
                 m = re.search(r"Killed process \d+ \(([^)]+)\)", item)
                 prog = m.group(1) if m else None
-            events.append({"kind": kind, "program": prog, "time": now, "detail": clean(item)})
+            elif kind == "daemon":
+                m = re.search(r"(/\S+), pid \d+, terminated by signal (\d+)$", item)
+                if not m:
+                    continue
+                prog = os.path.basename(m.group(1))
+                what = "fault" if int(m.group(2)) in FAULT_SIGNALS else "exit"
+                at = syslog_time(item, now)
+            events.append({"kind": what, "program": prog, "time": at, "detail": clean(item)})
+        if kind == "daemon" and isinstance(items, list):
+            # Lines without a year sort badly: keep what root still sees.
+            known &= set(items)
         state[kind] = sorted(known)[-200:]
     return events
+
+
+def syslog_time(line, default):
+    """The time of a syslog line ("Oct 26 11:48:03 ..."), in the past year."""
+    m = re.match(r"(\w{3}) +(\d+) (\d\d):(\d\d):(\d\d) ", line)
+    if not m or m.group(1) not in _MONTHS:
+        return default
+    now = time.localtime(default)
+    for year in (now.tm_year, now.tm_year - 1):
+        try:
+            at = int(time.mktime((year, _MONTHS.index(m.group(1)) + 1, int(m.group(2)),
+                                  int(m.group(3)), int(m.group(4)), int(m.group(5)),
+                                  0, 0, -1)))
+        except (OverflowError, ValueError):
+            return default
+        if at <= default + 86400:
+            return at
+    return default
 
 
 def merge(pending, events):
