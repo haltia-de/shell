@@ -1,5 +1,17 @@
 # Что нового · What's new
 
+## 2.12.4 (2026-10-26)
+
+### Русский
+
+- Планшет, который стоит на зарядке с негаснущим экраном, снова сам ищет обновления, когда им не пользуются
+- Одна перезагрузка из-за сбоя считается в отчёте один раз и называется «система»
+
+### English
+
+- A tablet kept on the charger with the screen on looks for updates again when nobody uses it
+- One reboot after a crash counts once in a report and is named «система»
+
 ## 2.12.3 (2026-10-26)
 
 ### Русский
