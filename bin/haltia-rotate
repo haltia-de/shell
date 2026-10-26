@@ -215,7 +215,7 @@ def write_rotation(transform):
 
 def turn(output, way):
     try:
-        res = subprocess.run(["wlr-randr", "--output", output, "--transform", TRANSFORMS[way]],
+        res = subprocess.run(["wlr-randr", "--output", output, "--transform", transform_of(way)],
                              capture_output=True, text=True, timeout=10)
     except (OSError, subprocess.SubprocessError) as exc:
         log("wlr-randr: %s" % exc)
@@ -224,10 +224,24 @@ def turn(output, way):
         log("wlr-randr: %s" % (res.stderr.strip() or res.returncode))
         return False
     log("turned %s" % way)
-    write_rotation(TRANSFORMS[way])
+    write_rotation(transform_of(way))
     # The edge gestures follow the picture.
-    subprocess.call(["/usr/libexec/haltia/haltia-gestures", TRANSFORMS[way]])
+    subprocess.call(["/usr/libexec/haltia/haltia-gestures", transform_of(way)])
     return True
+
+
+def transform_of(way):
+    """The output transform for a way the tablet stands. transform_offset=
+    in /etc/haltia/device.conf (degrees, default 0) is added for a panel
+    that does not scan out in the tablet's landscape: the Tab P11's is
+    portrait, so it says 270."""
+    try:
+        offset = int(device_conf("transform_offset") or 0)
+    except ValueError:
+        offset = 0
+    degrees = {"normal": 0, "left-up": 90, "bottom-up": 180, "right-up": 270}[way]
+    turned = (degrees + offset) % 360
+    return "normal" if turned == 0 else str(turned)
 
 
 def orientation_of(way):
