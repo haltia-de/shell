@@ -17,6 +17,18 @@
   <content_rating type="oars-1.1"/>
   <developer id="io.github.haltia_de"><name>Mikhail Nevskiy</name></developer>
   <releases>
+    <release version="2.12.3" date="2026-10-26">
+      <description>
+        <ul>
+          <li>Failure reports also notice crashes of system services, call a death by a signal «сбой» and note when several programs crashed at once</li>
+          <li>Reports keep where a program crashed: the kernel's register dump and the Python stack; the Wi-Fi driver's noise no longer pushes the useful lines out</li>
+        </ul>
+        <ul>
+          <li xml:lang="ru">Отчёт о сбоях замечает и падения системных служб, называет «сбоем» смерть программы от сигнала и отмечает, когда несколько программ упали одновременно</li>
+          <li xml:lang="ru">В отчёт попадает, где именно упала программа: регистры из журнала ядра и стек Python, а шум драйвера Wi-Fi больше не вытесняет нужные строки</li>
+        </ul>
+      </description>
+    </release>
     <release version="2.12.2" date="2026-10-22">
       <description>
         <ul>

@@ -1,5 +1,17 @@
 # Что нового · What's new
 
+## 2.12.3 (2026-10-26)
+
+### Русский
+
+- Отчёт о сбоях замечает и падения системных служб, называет «сбоем» смерть программы от сигнала и отмечает, когда несколько программ упали одновременно
+- В отчёт попадает, где именно упала программа: регистры из журнала ядра и стек Python, а шум драйвера Wi-Fi больше не вытесняет нужные строки
+
+### English
+
+- Failure reports also notice crashes of system services, call a death by a signal «сбой» and note when several programs crashed at once
+- Reports keep where a program crashed: the kernel's register dump and the Python stack; the Wi-Fi driver's noise no longer pushes the useful lines out
+
 ## 2.12.2 (2026-10-22)
 
 ### Русский
