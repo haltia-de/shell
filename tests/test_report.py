@@ -183,6 +183,37 @@ class Report(unittest.TestCase):
         self.assertEqual(kinds, [("exit", "haltia-volume"), ("hang", "io.github.haltia_de.Paint"),
                                  ("oom", "firefox"), ("pstore", None)])
 
+    def test_pstore_files_from_one_crash_are_counted_once(self):
+        for offset in (0, 3, 5):
+            with self.subTest(offset=offset):
+                items = ["dmesg-ramoops-0@1793031835",
+                         "console-ramoops-0@%d" % (1793031835 + offset)]
+                with mock.patch.object(hr, "run", return_value=json.dumps({"pstore": items})):
+                    state = {}
+                    events = hr.scan(state, root=True)
+                    self.assertEqual(len(events), 1)
+                    self.assertEqual(events[0]["kind"], "pstore")
+                    for item in items:
+                        self.assertIn(item, events[0]["detail"])
+                    pending = hr.merge({}, events)
+                    self.assertEqual(pending["pstore:None"]["count"], 1)
+                    self.assertEqual(hr.scan(state, root=True), [])
+
+    def test_pstore_files_from_distant_crashes_stay_separate(self):
+        items = ["dmesg-ramoops-0@1793031835", "console-ramoops-0@1793031935"]
+        with mock.patch.object(hr, "run", return_value=json.dumps({"pstore": items})):
+            events = hr.scan({}, root=True)
+        self.assertEqual(len(events), 2)
+        self.assertEqual([ev["kind"] for ev in events], ["pstore", "pstore"])
+        self.assertEqual({ev["detail"] for ev in events}, set(items))
+
+    def test_a_programless_problem_names_the_system(self):
+        events = [{"kind": "pstore", "program": None, "time": 1793031835}]
+        text = hr.crash_section(events)
+        self.assertIn("перезагрузка из-за сбоя — система, 1 раз", text)
+        self.assertNotIn("?", text)
+        self.assertIn("перезагрузка из-за сбоя — система (1)", hr.summary(events, None))
+
     def test_a_supervised_daemon_killed_by_a_signal(self):
         line = ("Oct 26 11:48:03 b8000h daemon.err supervise-daemon[849]: "
                 "/usr/libexec/iio-sensor-proxy, pid 850, terminated by signal 11")

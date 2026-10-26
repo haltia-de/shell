@@ -348,7 +348,7 @@ def crash_section(events):
     parts = []
     for ev in events:
         parts.append("%s — %s, %d раз, последний %s" % (
-            KIND_TITLE.get(ev["kind"], ev["kind"]), ev.get("program") or "?",
+            KIND_TITLE.get(ev["kind"], ev["kind"]), ev.get("program") or "система",
             ev.get("count", 1), time.strftime("%Y-%m-%d %H:%M:%S",
                                                time.localtime(ev.get("time", 0)))))
         if ev.get("detail"):
@@ -715,6 +715,24 @@ def scan(state, root=None):
     for kind in ("oom", "pstore", "rollback", "daemon"):
         known = set(state.get(kind, []))
         items = found.get(kind)
+        if kind == "pstore" and isinstance(items, list):
+            crashes = []
+            for item in items:
+                if not isinstance(item, str) or item in known:
+                    continue
+                known.add(item)
+                m = re.search(r"@(\d+)$", item)
+                crashes.append((int(m.group(1)) if m else now, item))
+            group = None
+            for at, item in sorted(crashes):
+                # One panic leaves several files, written a few seconds apart.
+                if group is None or at - group["time"] > 5:
+                    group = {"kind": kind, "program": None, "time": at, "detail": clean(item)}
+                    events.append(group)
+                else:
+                    group["detail"] += "\n" + clean(item)
+            state[kind] = sorted(known)[-200:]
+            continue
         for item in items if isinstance(items, list) else []:
             if not isinstance(item, str) or item in known:
                 continue
