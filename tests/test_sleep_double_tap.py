@@ -1,0 +1,63 @@
+# SPDX-License-Identifier: GPL-2.0
+"""haltia-sleep: two short taps on the dark screen, or KEY_WAKEUP from a
+device, turn the lamp on (double_tap_wake=1 in device.conf).
+
+    python3 -m unittest discover -s tests
+"""
+import importlib.machinery
+import importlib.util
+import os
+import unittest
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+def load():
+    path = os.path.join(ROOT, "libexec/haltia-sleep")
+    loader = importlib.machinery.SourceFileLoader("haltia_sleep", path)
+    spec = importlib.util.spec_from_loader("haltia_sleep", loader)
+    module = importlib.util.module_from_spec(spec)
+    loader.exec_module(module)
+    return module
+
+
+S = load()
+
+
+def taps(events):
+    """Feed (value, time) presses; the times at which a double tap ends."""
+    t = S.DoubleTap()
+    return [now for value, now in events if t.feed(value, now)]
+
+
+class DoubleTapTest(unittest.TestCase):
+    def test_two_short_taps(self):
+        self.assertEqual(taps([(1, 0.0), (0, 0.1), (1, 0.3), (0, 0.4)]), [0.4])
+
+    def test_one_tap_is_not_enough(self):
+        self.assertEqual(taps([(1, 0.0), (0, 0.1)]), [])
+
+    def test_taps_too_far_apart(self):
+        self.assertEqual(taps([(1, 0.0), (0, 0.1), (1, 0.6), (0, 0.7)]), [])
+
+    def test_a_long_touch_is_no_tap(self):
+        self.assertEqual(taps([(1, 0.0), (0, 0.5), (1, 0.6), (0, 0.7)]), [])
+
+    def test_third_tap_starts_again(self):
+        self.assertEqual(taps([(1, 0.0), (0, 0.1), (1, 0.2), (0, 0.3),
+                               (1, 0.4), (0, 0.5)]), [0.3])
+
+    def test_key_wakeup_wakes(self):
+        r, w = os.pipe()
+        ev = S.InputEvent()
+        ev.type, ev.code, ev.value = S.EV_KEY, S.KEY_WAKEUP, 1
+        os.write(w, bytes(ev))
+        try:
+            self.assertTrue(S.woken_by(r, None))
+        finally:
+            os.close(r)
+            os.close(w)
+
+
+if __name__ == "__main__":
+    unittest.main()

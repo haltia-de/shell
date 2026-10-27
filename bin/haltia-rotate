@@ -311,35 +311,57 @@ def enabled():
 
 class SensorProxy:
     """The way the tablet stands from iio-sensor-proxy, or None where it is
-    not to be had (no service, no accelerometer, the claim refused)."""
+    not to be had (no service, no accelerometer, the claim refused). When
+    the service starts again (a device's sleep hook may stop it), its claims
+    are gone: the sensor is claimed again from the new one."""
+    NAME = "net.hadess.SensorProxy"
     WAYS = ("normal", "bottom-up", "left-up", "right-up")
 
     def __init__(self):
         self.bus = None
+        self.owner = None
         try:
             import gi
             gi.require_version("Gio", "2.0")
             from gi.repository import Gio, GLib
-            self.GLib = GLib
+            self.Gio, self.GLib = Gio, GLib
             bus = Gio.bus_get_sync(Gio.BusType.SYSTEM, None)
             if not self.get(bus, "HasAccelerometer"):
                 return
-            bus.call_sync("net.hadess.SensorProxy", "/net/hadess/SensorProxy",
-                          "net.hadess.SensorProxy", "ClaimAccelerometer", None, None,
-                          Gio.DBusCallFlags.NONE, 3000, None)
+            self.claim(bus)
             self.bus = bus
         except Exception as exc:  # ImportError, GLib.Error
             log("iio-sensor-proxy: %s" % getattr(exc, "message", exc))
 
     def get(self, bus, name):
-        v = bus.call_sync("net.hadess.SensorProxy", "/net/hadess/SensorProxy",
+        v = bus.call_sync(self.NAME, "/net/hadess/SensorProxy",
                           "org.freedesktop.DBus.Properties", "Get",
-                          self.GLib.Variant("(ss)", ("net.hadess.SensorProxy", name)),
+                          self.GLib.Variant("(ss)", (self.NAME, name)),
                           None, 0, 3000, None)
         return v.unpack()[0]
 
+    def name_owner(self, bus):
+        v = bus.call_sync("org.freedesktop.DBus", "/org/freedesktop/DBus",
+                          "org.freedesktop.DBus", "GetNameOwner",
+                          self.GLib.Variant("(s)", (self.NAME,)), None, 0, 3000, None)
+        return v.unpack()[0]
+
+    def claim(self, bus):
+        bus.call_sync(self.NAME, "/net/hadess/SensorProxy", self.NAME,
+                      "ClaimAccelerometer", None, None,
+                      self.Gio.DBusCallFlags.NONE, 3000, None)
+        self.owner = self.name_owner(bus)
+
     def way(self):
         try:
+            if self.name_owner(self.bus) != self.owner:
+                # The new service takes its name before it has found the
+                # accelerometer; a claim made then is counted but never
+                # turns the sensor on (TB-J606L, 27 Oct 2026). Wait for it.
+                if not self.get(self.bus, "HasAccelerometer"):
+                    return None
+                self.claim(self.bus)
+                log("iio-sensor-proxy started again: claimed the sensor again")
             w = self.get(self.bus, "AccelerometerOrientation")
         except Exception:
             return None

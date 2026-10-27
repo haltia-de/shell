@@ -19,6 +19,14 @@ is awake again, with what it took down brought back; its exit status is
 only logged. The lamp and the touch screen are not its business: they stay
 off and grabbed until a press of the power key, which this loop handles.
 
+With suspend=no in /etc/haltia/device.conf the system never sleeps: the
+lamp goes off and that is all.
+
+With double_tap_wake=1 in /etc/haltia/device.conf a double tap on the
+dark screen turns the lamp on as the power key does, and so does KEY_WAKEUP
+from a device: the touch screen sends it for a double tap that woke the
+system from sleep (the chip's own gesture mode).
+
 The power key is the key device named power_key= in
 /etc/haltia/device.conf, else the first one with KEY_POWER. It is grabbed so
 elogind cannot power the tablet off, and the other keys on it (Home on
@@ -47,6 +55,8 @@ EV_SYN = 0
 EV_KEY = 1
 SYN_REPORT = 0
 KEY_POWER = 116
+KEY_WAKEUP = 143
+BTN_TOUCH = 330
 BUS_VIRTUAL = 0x06
 
 LEVEL_PATH = "/run/haltia/sleep/level"
@@ -66,6 +76,8 @@ RESCAN_SEC = 30.0  # how often the input devices are looked at again
 # stops while the system sleeps) is stuck: logged and killed.
 SUSPEND_DEADLINE = 120.0
 FILTER_NAME = "haltia-touchguard touchscreen"
+TAP_MAX = 0.3  # seconds a finger rests for a tap
+TAP_GAP = 0.4  # seconds between the taps of a double tap
 NOTHING_TO_DO = 3  # exit status: no power key; haltia-sleep-loop stops
 POWER_SUPPLY = "/sys/class/power_supply"
 SUSPEND_HOOK = "/usr/lib/haltia/hooks/suspend"
@@ -407,7 +419,10 @@ def can_freeze():
 
 def suspend_command():
     """How the system sleeps: the device's hook, else s2idle by hand, else
-    None (no sleep at all)."""
+    None (no sleep at all; so too with suspend=no in device.conf, for a
+    device whose sleep is not to be trusted yet)."""
+    if device_conf("suspend") == "no":
+        return None
     if os.access(SUSPEND_HOOK, os.X_OK):
         return [SUSPEND_HOOK]
     if can_freeze():
@@ -467,6 +482,55 @@ def activity_nodes(power_path):
         except OSError as exc:
             log("ACTIVITY_OPEN_FAIL %s %s" % (path, exc.errno))
     return found
+
+
+class DoubleTap:
+    """Two short taps on the dark screen, from its BTN_TOUCH presses."""
+
+    def __init__(self):
+        self.down = None  # when the finger came down
+        self.tapped = None  # when the first tap ended
+
+    def feed(self, value, now):
+        """True when this press or release completes a double tap."""
+        if value == 1:
+            if self.tapped is not None and now - self.tapped > TAP_GAP:
+                self.tapped = None
+            self.down = now
+            return False
+        if value != 0 or self.down is None:
+            return False
+        tap = now - self.down <= TAP_MAX
+        self.down = None
+        if not tap:
+            self.tapped = None
+            return False
+        if self.tapped is not None:
+            self.tapped = None
+            return True
+        self.tapped = now
+        return False
+
+
+def woken_by(fd, taps):
+    """Read what a dark input device sent: True for KEY_WAKEUP, or for a
+    double tap when taps (a DoubleTap) watches for one."""
+    woke = False
+    size = ctypes.sizeof(InputEvent)
+    try:
+        data = os.read(fd, size * 64)
+    except OSError:
+        return False
+    now = time.monotonic()
+    for i in range(0, len(data) - size + 1, size):
+        ev = InputEvent.from_buffer_copy(data, i)
+        if ev.type != EV_KEY:
+            continue
+        if ev.code == KEY_WAKEUP and ev.value == 1:
+            woke = True
+        elif ev.code == BTN_TOUCH and taps is not None and taps.feed(ev.value, now):
+            woke = True
+    return woke
 
 
 def drain(fd):
@@ -977,6 +1041,7 @@ def listen():
     looked = None  # last_input of the stretch updates_when_kept_on handled
     last = 0.0
     down = None  # press time while the key is held and not yet handled
+    taps = DoubleTap() if device_conf("double_tap_wake") == "1" else None
     log("LISTEN asleep=%s activity=%d" % (int(lamp.asleep), len(activity)))
     while True:
         if down is None:
@@ -1009,7 +1074,8 @@ def listen():
                 kept, looked = updates_when_kept_on(last_input, looked)
             # At least every RESCAN_SEC, to notice new devices.
             waits = [t for t in (due, idle, kept, RESCAN_SEC) if t is not None]
-            ready = select.select([power] + activity + ([waker] if waker else []), [], [],
+            dark = lamp.touch if lamp.asleep else []
+            ready = select.select([power] + activity + dark + ([waker] if waker else []), [], [],
                                   min(waits))[0]
             if waker in ready:
                 ready.remove(waker)
@@ -1029,10 +1095,23 @@ def listen():
                         log("WAKE_TOO_SOON")
                     if not ready:
                         continue
+            woke = False
             for fd in ready:
-                if fd != power:
-                    drain(fd)
+                if fd in dark:
+                    # Grabbed while dark: only a wake gesture counts.
+                    woke = woken_by(fd, taps) or woke
+                elif fd != power:
+                    if lamp.asleep:
+                        woke = woken_by(fd, None) or woke
+                    else:
+                        drain(fd)
                     last_input = time.monotonic()
+            if woke and lamp.asleep:
+                log("WAKE_TAP")
+                last_input = time.monotonic()
+                lamp.wake()
+                continue
+            ready = [fd for fd in ready if fd not in dark]
             if power not in ready:
                 if ready:
                     continue
