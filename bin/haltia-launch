@@ -136,6 +136,26 @@ install_firefox_chrome() {
 	fi
 }
 
+# Firefox has one lock, $dir/firefox.lock, for its icon (open firefox) and
+# for links (url): two starts at once ran a second Firefox on the profile
+# the first was still reading, which only shows «Firefox is already running,
+# but is not responding». A cold start takes about 20 s on the B8000-H, so
+# both wait up to 40 s for its window.
+FIREFOX_TRIES=80
+
+# firefox_window: waits for a Firefox window ($names), up to FIREFOX_TRIES
+# half seconds. Fails when none came.
+firefox_window() {
+	i=0
+	while [ "$i" -lt "$FIREFOX_TRIES" ]; do
+		# shellcheck disable=SC2086 # app ids are split on spaces
+		/usr/bin/haltia-focus has $names >/dev/null 2>&1 && return 0
+		i=$((i + 1))
+		sleep 0.5
+	done
+	return 1
+}
+
 # An old shell id a program with a .desktop file took over (haltia-apps writes
 # "old new" lines: X-Haltia-Replaces), so the clock, the home screen and
 # anyone's own settings still reach it by the old id.
@@ -259,18 +279,18 @@ tap)
 	;;
 url)
 	# A link from a program (news: "open in the browser"). Firefox can take
-	# 20 s to start cold, so the splash shows meanwhile, taps while it
-	# starts are ignored, and the same link again within 15 s only raises
-	# Firefox: repeated taps used to open the same page in several tabs.
+	# 20 s to start cold, so the splash shows meanwhile, and the same link
+	# again within 15 s of the last one only raises Firefox: repeated taps
+	# used to open the same page in several tabs. A link that comes while
+	# Firefox starts (from its icon or for another link) waits for it under
+	# the shared lock and then goes to the running Firefox.
 	url=${2:-}
 	case $url in
 		https://* | http://*) ;;
 		*) exit 2 ;;
 	esac
-	exec 9>"$dir/url.lock"
-	if ! flock -n 9; then
-		exit 0
-	fi
+	exec 9>"$dir/firefox.lock"
+	flock -w 60 9 || exit 0
 	names=$(aliases_of firefox)
 	last="$dir/last-url"
 	if [ -f "$last" ] && [ "$(cat "$last")" = "$url" ] &&
@@ -280,13 +300,17 @@ url)
 	fi
 	printf '%s\n' "$url" >"$last"
 	if alive firefox; then
+		# One started some other way and still without a window has no
+		# remote service yet: a link now would start a second Firefox.
+		firefox_window || true
 		firefox "$url" >"$run"/haltia/app-firefox.log 2>&1 9>&- &
 		i=0
 		while [ "$i" -lt 10 ]; do
 			sleep 0.5
-			/usr/bin/haltia-focus activate $names >/dev/null 2>&1 && exit 0
+			/usr/bin/haltia-focus activate $names >/dev/null 2>&1 && break
 			i=$((i + 1))
 		done
+		touch "$last"
 		exit 0
 	fi
 	install_firefox_chrome
@@ -297,18 +321,14 @@ url)
 	fi
 	trap '[ -n "$splash_pid" ] && kill "$splash_pid" 2>/dev/null' EXIT
 	firefox "$url" >"$run"/haltia/app-firefox.log 2>&1 9>&- &
-	i=0
-	while [ "$i" -lt 80 ]; do
-		if /usr/bin/haltia-focus has $names >/dev/null 2>&1; then
-			exit 0
-		fi
-		i=$((i + 1))
-		sleep 0.5
-	done
+	firefox_window || true
+	# Taps on the same link that waited for this start only raise it.
+	touch "$last"
 	exit 0
 	;;
 open)
 	id=${2:-}
+	# One lock per program; Firefox's is the one url takes too.
 	exec 9>"$dir/$id.lock"
 	if ! flock -n 9; then
 		exit 0
@@ -318,8 +338,17 @@ open)
 		exit 0
 	fi
 	bin=$(bin_of "$id") || exit 0
+	tries=40
 	if [ "$id" = firefox ]; then
+		# A Firefox without a window yet is still starting (a link from
+		# a program, or one started some other way): wait for it rather
+		# than start a second one on the same profile.
+		if alive firefox && firefox_window; then
+			/usr/bin/haltia-focus activate $names >/dev/null 2>&1
+			exit 0
+		fi
 		install_firefox_chrome
+		tries=$FIREFOX_TRIES
 	fi
 	# The app must not inherit the lock fd. While it holds that fd,
 	# every later tap fails the lock and the window never switches.
@@ -360,7 +389,7 @@ open)
 	echo "$id $pid ${splash_pid:-0}" >"$dir/starting"
 	/usr/libexec/haltia/haltia-close update 2>/dev/null || true
 	i=0
-	while [ "$i" -lt 40 ] && [ -e "$dir/starting" ]; do
+	while [ "$i" -lt "$tries" ] && [ -e "$dir/starting" ]; do
 		if /usr/bin/haltia-focus has $names >/dev/null 2>&1; then
 			exit 0
 		fi
