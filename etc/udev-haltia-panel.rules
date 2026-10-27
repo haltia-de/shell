@@ -1,0 +1,4 @@
+# The panel's battery follows the charger at once, rather than at the
+# status's next 30 s poll: every change of a power supply refreshes it
+# (signal 10), as NetworkManager's dispatcher does for the Wi-Fi.
+ACTION=="change", SUBSYSTEM=="power_supply", RUN+="/usr/bin/haltia-panel-signal 10"
