@@ -18,13 +18,12 @@ A new Wi-Fi network's password is asked here and kept with the connection
 for every user (NetworkManager's system connection), so no secret agent
 (nm-applet) is needed afterwards.
 """
-import configparser
-import json
+# configparser, json, shutil, tarfile and NetworkManager's typelib are
+# imported where they are used: none of them is needed for the window to
+# show, and each costs its share of the start on the tablet's Cortex-A7.
 import os
 import re
-import shutil
 import subprocess
-import tarfile
 import sys
 import threading
 import time
@@ -39,11 +38,7 @@ gi.require_version("Gdk", "3.0")
 gi.require_version("Gtk", "3.0")
 from gi.repository import Gdk, Gio, Gtk  # noqa: E402
 
-try:
-    gi.require_version("NM", "1.0")
-    from gi.repository import NM  # noqa: E402
-except (ImportError, ValueError):
-    NM = None
+NM = None  # NetworkManager's typelib, loaded by load_nm() for the network page
 try:
     from haltia_kit import dialogs  # noqa: E402
 except ImportError:
@@ -190,6 +185,21 @@ def background(fetch, apply=None, fallback=None, latest=None, serial=False):
             return
         _draining[0] = True
     threading.Thread(target=drain, daemon=True).start()
+
+
+def load_nm():
+    """NetworkManager's typelib (NM-1.0), loaded on the first call into the
+    global NM, or None when it is not installed. Only the network page
+    needs it, and only once it is built."""
+    global NM
+    if NM is None:
+        try:
+            gi.require_version("NM", "1.0")
+            from gi.repository import NM as nm
+            NM = nm
+        except (ImportError, ValueError):
+            NM = False
+    return NM or None
 
 
 def spawn(*args):
@@ -411,7 +421,7 @@ class Network:
         self.switch.set_sensitive(False)
         # NetworkManager's client reads every device and access point over
         # D-Bus: asynchronously, the page shows at once.
-        if NM:
+        if load_nm():
             NM.Client.new_async(None, self.connected)
         else:
             self.refresh()
@@ -748,6 +758,9 @@ class Screen:
         self.widget, box = page_box()
         self.scale = None
         self.pending = None
+        # logind in a worker, the newest level only (haltia-brightness's
+        # Latest), so a slow logind never holds the window.
+        self.lamp = self.light.Latest(self.set_light) if self.light else None
         if self.light:
             box.pack_start(section("Яркость"), False, False, 0)
             top = self.light.read_int(self.light.SYSFS + "/max_brightness", 255)
@@ -812,13 +825,17 @@ class Screen:
 
     def apply_light(self):
         self.pending = None
-        level = int(self.scale.get_value())
+        self.lamp.put(int(self.scale.get_value()))
+        return False
+
+    def set_light(self, level):
         try:
             self.light.Brightness().set(level)
             self.light.save(level)
         except Exception as exc:  # logind refused, or the module changed
             sys.stderr.write("haltia-settings: brightness: %s\n" % exc)
-        return False
+        # A frame after the new duty, for the BLS to latch it.
+        GLib.idle_add(lambda: self.scale.queue_draw() and False)
 
 
 def brightness_module():
@@ -1324,6 +1341,7 @@ CLOSE_CONF = os.path.join(CONFIG, "close.conf")
 
 def close_asks():
     """«✕» asks «Закрыть «…»?» first (haltia-ask close-front reads ask=)."""
+    import configparser
     conf = configparser.ConfigParser(interpolation=None)
     try:
         conf.read(CLOSE_CONF, encoding="utf-8")
@@ -1340,6 +1358,7 @@ def set_close_asks(on):
 
 
 def chooser_get(key, default):
+    import configparser
     conf = configparser.ConfigParser(interpolation=None)
     try:
         conf.read(CHOOSER_CONF, encoding="utf-8")
@@ -1351,6 +1370,7 @@ def chooser_get(key, default):
 def chooser_set(**values):
     """Write the switches, keeping what the chooser keeps there (the last
     folder per program)."""
+    import configparser
     conf = configparser.ConfigParser(interpolation=None)
     try:
         conf.read(CHOOSER_CONF, encoding="utf-8")
@@ -1390,6 +1410,7 @@ def mail_app():
 def mail_address():
     """The mailbox «Почта» is signed in to, from its config (never its
     keyring): "" when none."""
+    import configparser
     parser = configparser.ConfigParser(interpolation=None)
     try:
         parser.read(MAIL_CONF, encoding="utf-8")
@@ -1597,6 +1618,8 @@ class Helper:
         save_report_conf(auto="yes" if switch.get_active() else "no")
 
     def show_last_report(self):
+        import json
+
         def text(st):
             last = (st or {}).get("last")
             if not last:
@@ -1713,6 +1736,8 @@ class Helper:
                                       ("Ничего не найдено." if word else "Пусто."), "log")])
 
     def open_logs(self):
+        import json
+
         for child in self.logs_box.get_children():
             self.logs_box.remove(child)
         self.logs_box.pack_start(row_box("Ищу журналы…"), False, False, 0)
@@ -1722,6 +1747,8 @@ class Helper:
                    self.fill_logs, fallback={})
 
     def fill_logs(self, logs):
+        import json
+
         for child in self.logs_box.get_children():
             self.logs_box.remove(child)
         names = sorted(logs, key=lambda n: (not n.startswith("root/"), n))
@@ -1747,6 +1774,8 @@ class Helper:
         self.app.open_subpage("helper/diag", "Диагностический отчёт")
 
         def build():
+            import json
+            import tarfile
             made = json.loads(run(*REPORT, "view", timeout=120) or "{}")
             sections = {}
             with tarfile.open(made["archive"]) as tar:
@@ -1789,6 +1818,7 @@ class Helper:
         target, n = base + ".tar.gz", 2
         while os.path.exists(target):  # never over an earlier one
             target, n = "%s (%d).tar.gz" % (base, n), n + 1
+        import shutil
         try:
             os.makedirs(docs, exist_ok=True)
             shutil.copyfile(self.diag_archive, target)
@@ -1867,7 +1897,9 @@ class Helper:
                 return
             self.app.stack.add_named(self.touch.widget, "helper/touch")
             self.touch.widget.show_all()
-        self.touch.enter()
+        if self.touch.enter() is False:
+            say(self.app.win, "Касания уже открыты в отдельном окне.")
+            return
         self.app.open_subpage("helper/touch", "Касания", wide=True)
 
     def open_log(self):
@@ -1931,6 +1963,9 @@ class Helper:
     def closing(self):
         if self.touch:
             self.touch.leave()
+            # The drop of what was not kept reaches the filter before the
+            # process ends (the touch page's helper runs in a worker).
+            getattr(self.touch, "wait", lambda: None)()
 
 
 def css_provider(css):

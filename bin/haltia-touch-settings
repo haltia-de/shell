@@ -13,18 +13,22 @@
 # within 15 s, the values go back to what was kept: a filter that no longer
 # takes the finger undoes itself. Closing the window undoes what was not
 # kept, too, and the helper drops a try nobody kept 20 s on by itself, so a
-# window killed or crashed mid-try leaves nothing behind.
+# window killed or crashed mid-try leaves nothing behind. The helper runs
+# in one worker thread, in the order asked (Ordered), never on the GTK
+# thread: doas and a shell are a second or so on the tablet.
 #
 # Настройки (haltia-settings) show the same as a page of «Для помощника»:
 # Setup(embedded=True).widget, with enter() when the page opens and leave()
 # when it goes. Its style is scoped to the class .touch, so it leaves the
-# rest of the window alone.
+# rest of the window alone. The page takes touch-settings.lock while it is
+# open, as the window does, so the two never try values over each other.
 import fcntl
 import os
 import re
 import signal
 import subprocess
 import sys
+import threading
 
 import gi
 
@@ -222,6 +226,74 @@ def helper(*args):
     return None
 
 
+class Ordered:
+    """Runs jobs one at a time in a worker thread, in the order they were
+    given, and hands each result to its done() in the main loop, in the
+    same order: a try never overtakes an earlier one, and keep or drop
+    come after the tries before them, while the GTK thread never waits
+    for doas (SH2-47). post: how done() reaches the main loop."""
+
+    def __init__(self, post=None):
+        self.post = post or GLib.idle_add
+        self.cond = threading.Condition()
+        self.jobs = []  # (work, done) not started yet
+        self.answers = []  # (done, result) not handed over yet
+        self.busy = False  # a worker thread runs
+
+    def submit(self, work, done=None):
+        with self.cond:
+            self.jobs.append((work, done))
+            if self.busy:
+                return
+            self.busy = True
+        threading.Thread(target=self._run, daemon=True).start()
+
+    def wait(self, timeout):
+        """True once every job given so far has run (not their done())."""
+        with self.cond:
+            return self.cond.wait_for(lambda: not self.busy, timeout)
+
+    def _run(self):
+        while True:
+            with self.cond:
+                if not self.jobs:
+                    self.busy = False
+                    self.cond.notify_all()
+                    return
+                work, done = self.jobs.pop(0)
+            try:
+                result = work()
+            except Exception as exc:  # noqa: BLE001 - told like the helper's error
+                result = str(exc)
+            if done is not None:
+                with self.cond:
+                    self.answers.append((done, result))
+                self.post(self._hand_over)
+
+    def _hand_over(self):
+        # One call hands over every answer waiting, oldest first: the order
+        # holds whatever order the main loop runs its callbacks in.
+        while True:
+            with self.cond:
+                if not self.answers:
+                    return False
+                done, result = self.answers.pop(0)
+            done(result)
+
+
+def take_lock():
+    """touch-settings.lock, held while the window or the page in Настройки
+    is open: the open file, or None when another one holds it."""
+    run = os.environ.get("XDG_RUNTIME_DIR") or os.path.expanduser("~/.cache")
+    lock = open(os.path.join(run, "haltia/touch-settings.lock"), "a")
+    try:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        lock.close()
+        return None
+    return lock
+
+
 class Toggle(Gtk.Switch):
     """A switch that reads and sets like a slider, 0 or 1."""
 
@@ -280,13 +352,18 @@ class Setup:
             lo, hi = self.ranges.get(key, (0, 0))
             v = current.get(key, self.defaults.get(key, lo))
             self.kept[key] = min(max(v, lo), hi)
-        self.applied = dict(self.kept)
+        self.applied = dict(self.kept)  # what the filter took
+        self.sent = dict(self.kept)  # what it was asked last, maybe not answered yet
+        self.worker = Ordered()
+        self.epoch = 0  # turned by leave(): answers to what came before go unheard
+        self.lock = None  # touch-settings.lock, while the page is open in Настройки
         self.scales = {}
         self.values = {}
         self.pending = None
         self.countdown = None
         self.left = 0
         self.log = None
+        self.opening = None  # the epoch of a "log on" not answered yet
         self.renew = None
         self.taps = []  # (x, y, alpha) of what reached the window
         self.build()
@@ -464,15 +541,36 @@ class Setup:
     def apply(self):
         self.pending = None
         want = self.current()
-        diff = ["%s=%d" % (k, v) for k, v in want.items() if self.applied.get(k) != v]
-        if diff:
-            # Back to what is kept: nothing to try any more. Otherwise the
-            # change is tried (the helper drops it by itself unless kept).
-            err = helper("drop") if want == self.kept else helper("set", *diff)
+        diff = ["%s=%d" % (k, v) for k, v in want.items() if self.sent.get(k) != v]
+        if not diff:
+            self.settled()
+            return False
+        # Back to what is kept: nothing to try any more. Otherwise the
+        # change is tried (the helper drops it by itself unless kept).
+        args = ("drop",) if want == self.kept else ("set",) + tuple(diff)
+        self.sent = dict(want)
+        epoch = self.epoch
+
+        def done(err):
+            if epoch != self.epoch:
+                return
             if err:
                 self.say("Не применено: " + err, "palm")
+                # Asked again on the next change, unless a later try
+                # asks something else anyway.
+                for k, v in want.items():
+                    if self.sent.get(k) == v:
+                        self.sent[k] = self.applied.get(k)
             else:
                 self.applied.update(want)
+            self.settled()
+
+        self.worker.submit(lambda: helper(*args), done)
+        return False
+
+    def settled(self):
+        """The countdown while what the filter took differs from what is
+        kept."""
         if self.applied != self.kept:
             self.left = CONFIRM_S
             if self.countdown is None:
@@ -480,7 +578,6 @@ class Setup:
             self.show_banner()
         else:
             self.hide_banner()
-        return False
 
     def set_all(self, values):
         for key, scale in self.scales.items():
@@ -492,15 +589,38 @@ class Setup:
             GLib.source_remove(self.pending)
             self.apply()
         # The values themselves, not "what is tried": the helper's watch
-        # may have dropped the try already.
-        err = helper("keep", *("%s=%d" % (k, v) for k, v in self.applied.items()
-                               if self.kept.get(k) != v))
-        if err:
-            self.say("Не сохранено: " + err, "palm")
-            return
-        self.kept = dict(self.applied)
-        self.hide_banner()
-        self.say("Настройки сохранены", "ok")
+        # may have dropped the try already. The worker sends them after the
+        # tries before, so they are the values last asked.
+        values = dict(self.sent)
+        args = ["%s=%d" % (k, v) for k, v in values.items() if self.kept.get(k) != v]
+        self.hide_banner()  # no revert while the answer is on its way
+        epoch = self.epoch
+
+        def done(err):
+            if epoch != self.epoch:
+                # The page went meanwhile: leave() showed the old values.
+                if not err:
+                    self.kept = values
+                    self.reset_to(values)
+                return
+            if err:
+                self.say("Не сохранено: " + err, "palm")
+                self.settled()
+                return
+            self.kept = values
+            self.hide_banner()
+            self.say("Настройки сохранены", "ok")
+
+        self.worker.submit(lambda: helper("keep", *args), done)
+
+    def reset_to(self, values):
+        """The sliders show values, which the filter has: nothing to send."""
+        self.applied = dict(values)
+        self.sent = dict(values)
+        self.set_all(values)
+        if self.pending is not None:  # set_all's own change
+            GLib.source_remove(self.pending)
+            self.pending = None
 
     def revert(self):
         self.set_all(self.kept)
@@ -531,11 +651,17 @@ class Setup:
         self.banner.hide()
 
     def enter(self):
-        """The page is on screen: the filter tells its decisions."""
-        if self.log is None:
+        """The page is on screen: the filter tells its decisions. False in
+        Настройки while the window of its own is open (it holds the lock)."""
+        if self.embedded and self.lock is None:
+            self.lock = take_lock()
+            if self.lock is None:
+                return False
+        if self.log is None and self.opening != self.epoch:
             self.open_log()
         if self.renew is None:
             self.renew = GLib.timeout_add_seconds(LOG_RENEW_S, self.renew_log)
+        return True
 
     def leave(self):
         """The page goes: what was not kept goes back, the filter stops
@@ -547,20 +673,27 @@ class Setup:
             GLib.source_remove(self.countdown)
             self.countdown = None
             self.hide_banner()
-        if self.applied != self.kept:
-            helper("drop")
-            self.applied = dict(self.kept)
-            self.set_all(self.kept)
-            if self.pending is not None:  # set_all's own change: nothing to send
-                GLib.source_remove(self.pending)
-                self.pending = None
+        self.epoch += 1
+        if self.applied != self.kept or self.sent != self.kept:
+            self.worker.submit(lambda: helper("drop"))
+            self.reset_to(self.kept)
         if self.renew is not None:
             GLib.source_remove(self.renew)
             self.renew = None
-        if self.log is not None:
-            helper("log", "off")
-            self.log.close()
-            self.log = None
+        if self.log is not None or self.opening is not None:
+            self.worker.submit(lambda: helper("log", "off"))
+            if self.log is not None:
+                self.log.close()
+                self.log = None
+            self.opening = None
+        if self.lock is not None:
+            # Let go once what this page asked is done.
+            lock, self.lock = self.lock, None
+            self.worker.submit(lambda: lock.close())
+
+    def wait(self, timeout=12):
+        """Before the process ends: what was asked reaches the filter."""
+        return self.worker.wait(timeout)
 
     def on_close(self, *_args):
         self.leave()
@@ -610,7 +743,14 @@ class Setup:
             old.destroy()
 
     def open_log(self):
-        err = helper("log", "on")
+        epoch = self.opening = self.epoch
+        self.worker.submit(lambda: helper("log", "on"),
+                           lambda err: self.log_opened(err, epoch))
+
+    def log_opened(self, err, epoch):
+        if epoch != self.epoch:
+            return  # the page went before the filter answered (leave)
+        self.opening = None
         try:
             self.log = open(EVENTS, errors="replace")
             self.log.seek(0, os.SEEK_END)
@@ -623,7 +763,7 @@ class Setup:
         GLib.timeout_add(200, self.read_log)
 
     def renew_log(self):
-        helper("log", "on")
+        self.worker.submit(lambda: helper("log", "on"))
         return True
 
     def read_log(self):
@@ -653,12 +793,9 @@ class Setup:
 
 def main():
     GLib.set_prgname("io.github.haltia_de.TouchSettings")
-    run = os.environ.get("XDG_RUNTIME_DIR") or os.path.expanduser("~/.cache")
-    lock = open(os.path.join(run, "haltia/touch-settings.lock"), "a")
-    try:
-        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except BlockingIOError:
-        return 0  # already open
+    lock = take_lock()
+    if lock is None:
+        return 0  # already open, here or in Настройки
     setup = Setup()
     # Stopped from outside, it undoes what was not kept as well.
     try:
@@ -668,6 +805,7 @@ def main():
     except (ImportError, ValueError):
         GLib.unix_signal_add(GLib.PRIORITY_DEFAULT, signal.SIGTERM, setup.on_close)
     Gtk.main()
+    setup.wait()  # the drop and "log off" of leave()
     return 0
 
 
