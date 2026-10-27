@@ -19,6 +19,9 @@ is awake again, with what it took down brought back; its exit status is
 only logged. The lamp and the touch screen are not its business: they stay
 off and grabbed until a press of the power key, which this loop handles.
 
+With suspend=no in /etc/haltia/device.conf the system never sleeps: the
+lamp goes off and that is all.
+
 With double_tap_wake=1 in /etc/haltia/device.conf a double tap on the
 dark screen turns the lamp on as the power key does, and so does KEY_WAKEUP
 from a device: the touch screen sends it for a double tap that woke the
@@ -416,7 +419,10 @@ def can_freeze():
 
 def suspend_command():
     """How the system sleeps: the device's hook, else s2idle by hand, else
-    None (no sleep at all)."""
+    None (no sleep at all; so too with suspend=no in device.conf, for a
+    device whose sleep is not to be trusted yet)."""
+    if device_conf("suspend") == "no":
+        return None
     if os.access(SUSPEND_HOOK, os.X_OK):
         return [SUSPEND_HOOK]
     if can_freeze():
