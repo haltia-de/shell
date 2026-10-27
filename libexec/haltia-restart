@@ -32,11 +32,14 @@ once), and each updated program that runs is started again:
 
 py3-haltia-kit counts as every program of the .desktop files.
 """
+import contextlib
+import fcntl
 import importlib.machinery
 import importlib.util
 import os
 import subprocess
 import sys
+import tempfile
 import time
 
 HERE = os.path.dirname(os.path.realpath(__file__))
@@ -172,14 +175,49 @@ def restart_helpers():
         log("%s started again" % name)
 
 
-def remember(sid, label):
-    lines = read_pending()
-    lines = [x for x in lines if x[0] != sid] + [(sid, label, int(time.time()))]
+@contextlib.contextmanager
+def pending_lock():
+    """remember, pending and closed run at once (Настройки, haltia-focus,
+    haltia-update-notify): each reads, changes and writes the list under
+    this lock, or one's change was lost (SH2-21)."""
     os.makedirs(RUN, exist_ok=True)
-    with open(PENDING + ".new", "w") as fh:
-        for s, lbl, t in lines:
-            fh.write("%s\t%s\t%d\n" % (s, lbl, t))
-    os.replace(PENDING + ".new", PENDING)
+    with open(PENDING + ".lock", "a") as fh:
+        fcntl.flock(fh, fcntl.LOCK_EX)
+        yield
+
+
+def write_pending(lines):
+    """The list, replaced at once through a temporary file of its own: a
+    shared .new name let one writer's rename take another's file away."""
+    fd, tmp = tempfile.mkstemp(prefix=".restart-pending.", dir=RUN)
+    try:
+        with os.fdopen(fd, "w") as fh:
+            for s, lbl, t in lines:
+                fh.write("%s\t%s\t%d\n" % (s, lbl, t))
+        os.replace(tmp, PENDING)
+    except OSError:
+        with contextlib.suppress(OSError):
+            os.unlink(tmp)
+        raise
+
+
+def stop_program(sid, app_ids):
+    """haltia-stop for one program; one that hangs past a minute is left,
+    and the rest are still seen to."""
+    try:
+        subprocess.run(["/usr/libexec/haltia/haltia-stop", sid, *app_ids],
+                       stdout=subprocess.DEVNULL, timeout=60)
+    except (OSError, subprocess.SubprocessError) as exc:
+        log("%s: haltia-stop: %s" % (sid, exc))
+        return False
+    return True
+
+
+def remember(sid, label):
+    with pending_lock():
+        lines = read_pending()
+        lines = [x for x in lines if x[0] != sid] + [(sid, label, int(time.time()))]
+        write_pending(lines)
 
 
 def read_pending():
@@ -201,16 +239,13 @@ def pending():
     known = sections()
     btime = boot_time()
     still = []
-    for sid, label, when in read_pending():
-        app_ids = known.get(sid, {}).get("app_ids", "").split()
-        pids = stop.program(sid, app_ids)
-        if any((started(p, btime) or when) < when for p in pids):
-            still.append((sid, label, when))
-    os.makedirs(RUN, exist_ok=True)
-    with open(PENDING + ".new", "w") as fh:
-        for s, lbl, t in still:
-            fh.write("%s\t%s\t%d\n" % (s, lbl, t))
-    os.replace(PENDING + ".new", PENDING)
+    with pending_lock():
+        for sid, label, when in read_pending():
+            app_ids = known.get(sid, {}).get("app_ids", "").split()
+            pids = stop.program(sid, app_ids)
+            if any((started(p, btime) or when) < when for p in pids):
+                still.append((sid, label, when))
+        write_pending(still)
     for _sid, label, _when in still:
         print(label)
     return 0
@@ -222,26 +257,28 @@ def closed(app_ids):
     background now."""
     known = sections()
     shown = windows()
-    left = []
-    for sid, label, when in read_pending():
-        ids = known.get(sid, {}).get("app_ids", "").split()
-        if not set(ids) & set(app_ids) or shown & set(ids):
-            left.append((sid, label, when))
-            continue
-        if stop.program(sid, ids):
-            subprocess.run(["/usr/libexec/haltia/haltia-stop", sid, *ids],
-                           stdout=subprocess.DEVNULL, timeout=60)
+    left, due = [], []
+    with pending_lock():
+        for sid, label, when in read_pending():
+            ids = known.get(sid, {}).get("app_ids", "").split()
+            if not set(ids) & set(app_ids) or shown & set(ids):
+                left.append((sid, label, when))
+            else:
+                due.append((sid, ids))
+        write_pending(left)
+    # Outside the lock: a stop takes seconds, a look from Настройки waits.
+    for sid, ids in due:
+        if stop.program(sid, ids) and stop_program(sid, ids):
             log("%s started again in the background, its window closed" % sid)
-    with open(PENDING + ".new", "w") as fh:
-        for s, lbl, t in left:
-            fh.write("%s\t%s\t%d\n" % (s, lbl, t))
-    os.replace(PENDING + ".new", PENDING)
     return 0
 
 
 def restart(packages, asking):
-    subprocess.run(["/usr/bin/haltia-apps", "reload"], stdout=subprocess.DEVNULL,
-                   stderr=subprocess.DEVNULL, timeout=60)
+    try:
+        subprocess.run(["/usr/bin/haltia-apps", "reload"], stdout=subprocess.DEVNULL,
+                       stderr=subprocess.DEVNULL, timeout=60)
+    except (OSError, subprocess.SubprocessError) as exc:
+        log("haltia-apps reload: %s" % exc)
     if "haltia-shell" in packages:
         restart_helpers()
     known = sections()
@@ -253,12 +290,10 @@ def restart(packages, asking):
             continue  # not running: it starts new next time
         label = fields.get("label", sid)
         if not shown & set(app_ids):
-            subprocess.run(["/usr/libexec/haltia/haltia-stop", sid, *app_ids],
-                           stdout=subprocess.DEVNULL, timeout=60)
-            log("%s started again in the background" % sid)
+            if stop_program(sid, app_ids):
+                log("%s started again in the background" % sid)
         elif asking and ask(label):
-            subprocess.run(["/usr/libexec/haltia/haltia-stop", sid, *app_ids],
-                           stdout=subprocess.DEVNULL, timeout=60)
+            stop_program(sid, app_ids)
             subprocess.Popen(["/usr/bin/haltia-launch", "open", sid], start_new_session=True,
                              stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                              stderr=subprocess.DEVNULL)
