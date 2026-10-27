@@ -190,6 +190,36 @@ class BackStep(unittest.TestCase):
         self.module.BackStep(self.bus)
         self.wait_for(APP_ID + " 0\n", seconds=8)
 
+    def test_a_busy_player_does_not_hold_up_the_loop(self):
+        # SH2-33: a new player's properties are asked without waiting.
+        name = "org.mpris.MediaPlayer2.BusyTest"
+        script = os.path.join(self.run_dir, "busy.py")
+        with open(script, "w") as fh:
+            fh.write(BUSY)
+        proc = subprocess.Popen([sys.executable, script, self.dbus.get_bus_address(), name,
+                                 "/io/github/haltia_de/Unused"])
+        self.addCleanup(proc.kill)
+        unique, end = None, time.monotonic() + 5
+        while unique is None and time.monotonic() < end:
+            try:
+                unique = self.bus.call_sync(
+                    "org.freedesktop.DBus", "/org/freedesktop/DBus", "org.freedesktop.DBus",
+                    "GetNameOwner", GLib.Variant("(s)", (name,)), None,
+                    Gio.DBusCallFlags.NONE, -1, None).unpack()[0]
+            except GLib.Error:
+                time.sleep(0.05)
+        self.assertIsNotNone(unique)
+        start = time.monotonic()
+        self.module.add_player(self.bus, name, unique)
+        self.assertLess(time.monotonic() - start, 0.5)
+        ctx = GLib.MainContext.default()
+        end = time.monotonic() + 8
+        while unique not in self.module.players and time.monotonic() < end:
+            while ctx.pending():
+                ctx.iteration(False)
+            time.sleep(0.02)
+        self.assertEqual(self.module.players.get(unique, [None])[0], name)
+
     def test_foreign_program_always_has_the_button(self):
         with open(os.path.join(self.run_dir, "haltia", "apps.conf"), "w") as fh:
             fh.write("[calc]\napp_ids = galculator Galculator\nback = none\n")

@@ -45,6 +45,7 @@ import os
 import subprocess
 import sys
 import signal
+import threading
 
 import gi
 
@@ -248,23 +249,44 @@ def play_mark(app_id, status, name):
     redraw(panel_signal(app_id), *slot_signals())
 
 
-def player_prop(bus, name, iface, prop):
-    try:
-        res = bus.call_sync(name, "/org/mpris/MediaPlayer2", "org.freedesktop.DBus.Properties",
-                            "Get", GLib.Variant("(ss)", (iface, prop)),
-                            GLib.VariantType("(v)"), Gio.DBusCallFlags.NONE, 2000, None)
-        return res.unpack()[0]
-    except GLib.Error:
-        return None
+def player_prop(bus, name, iface, prop, done):
+    """done(value) with a property of the player, None when it does not
+    answer. Asked without waiting: a busy player (Firefox) used to hold up
+    the loop, and with it every badge, play mark and «⇤», for two seconds
+    a question (SH2-33)."""
+    def finish(conn, res, *_data):
+        try:
+            value = conn.call_finish(res).unpack()[0]
+        except GLib.Error:
+            value = None
+        done(value)
+    bus.call(name, "/org/mpris/MediaPlayer2", "org.freedesktop.DBus.Properties", "Get",
+             GLib.Variant("(ss)", (iface, prop)), GLib.VariantType("(v)"),
+             Gio.DBusCallFlags.NONE, 2000, None, finish)
+
+
+joining = {}  # unique bus name -> well-known name, while its properties are asked
 
 
 def add_player(bus, name, unique):
     """A player came onto the bus: whose it is (DesktopEntry, else the
-    end of its bus name) and how it plays now."""
-    entry = player_prop(bus, name, MPRIS, "DesktopEntry") or name[len(MPRIS) + 1:]
-    app = program_of(entry)
-    players[unique] = [name, app]
-    play_mark(app, player_prop(bus, name, MPRIS + ".Player", "PlaybackStatus"), name)
+    end of its bus name) and how it plays now. One that leaves before the
+    answers come is forgotten."""
+    joining[unique] = name
+
+    def with_entry(entry):
+        if joining.get(unique) != name:
+            return
+        app = program_of(entry or name[len(MPRIS) + 1:])
+
+        def with_status(status):
+            if joining.get(unique) != name:
+                return
+            del joining[unique]
+            players[unique] = [name, app]
+            play_mark(app, status, name)
+        player_prop(bus, name, MPRIS + ".Player", "PlaybackStatus", with_status)
+    player_prop(bus, name, MPRIS, "DesktopEntry", with_entry)
 
 
 def on_props(_bus, sender, _path, _iface, _signal, params, _data):
@@ -371,6 +393,7 @@ class Recording:
         self.path = os.path.join(run, "haltia", "rec")
         self.shown = None
         self.pending = None
+        self.looking = self.again = False
         self.mic = microphone()
         self.cam = False
         self.look_camera()
@@ -389,10 +412,29 @@ class Recording:
         return True
 
     def check(self):
-        """A source output came or went: the microphone read again."""
+        """A source output came or went: the microphone read again, in a
+        thread (three pactl calls, up to 5 s each while PulseAudio is
+        slow, held up the loop: SH2-33), one look at a time; events during
+        a look make another after it."""
         self.pending = None
-        self.mic = microphone()
+        if self.looking:
+            self.again = True
+            return False
+        self.looking = True
+
+        def look():
+            mic = microphone()
+            GLib.idle_add(self.looked, mic)
+        threading.Thread(target=look, daemon=True).start()
+        return False
+
+    def looked(self, mic):
+        self.looking = False
+        self.mic = mic
         self.show()
+        if self.again:
+            self.again = False
+            self.soon()
         return False
 
     def show(self):
@@ -612,6 +654,7 @@ def main():
         name, old, new = params.unpack()
         if not name.startswith(MPRIS + "."):
             return
+        joining.pop(old, None)
         if old and old in players:
             gone = players.pop(old)
             play_mark(gone[1], "Stopped", gone[0])
