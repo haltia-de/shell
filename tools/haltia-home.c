@@ -1076,12 +1076,35 @@ static int pid_path(char *out, size_t n)
 	return 0;
 }
 
+/* The pid in the pid file while the daemon that wrote it still holds the
+ * file's lock. After a crash or a SIGKILL the file stays and its pid may be
+ * another process's by now, which a signal would end (SH2-38). */
+static pid_t live_pid(const char *path)
+{
+	char buf[32];
+	ssize_t n;
+	int fd = open(path, O_RDONLY | O_CLOEXEC);
+
+	if (fd < 0)
+		return 0;
+	if (flock(fd, LOCK_SH | LOCK_NB) == 0) { /* nobody holds it */
+		close(fd);
+		return 0;
+	}
+	n = read(fd, buf, sizeof(buf) - 1);
+	close(fd);
+	if (n <= 0)
+		return 0;
+	buf[n] = '\0';
+	n = atoi(buf);
+	return n > 1 ? (pid_t)n : 0;
+}
+
 static int command(const char *cmd)
 {
-	char path[512], buf[32];
+	char path[512];
 	int sig;
 	pid_t pid;
-	FILE *f;
 
 	if (!strcmp(cmd, "toggle"))
 		sig = SIGUSR1;
@@ -1095,15 +1118,10 @@ static int command(const char *cmd)
 		fprintf(stderr, "usage: haltia-home [toggle|show|hide|reload]\n");
 		return 2;
 	}
-	if (pid_path(path, sizeof(path)) < 0 || !(f = fopen(path, "r")))
+	if (pid_path(path, sizeof(path)) < 0)
 		return 1;
-	if (!fgets(buf, sizeof(buf), f)) {
-		fclose(f);
-		return 1;
-	}
-	fclose(f);
-	pid = (pid_t)atoi(buf);
-	return pid > 1 && kill(pid, sig) == 0 ? 0 : 1;
+	pid = live_pid(path);
+	return pid && kill(pid, sig) == 0 ? 0 : 1;
 }
 
 static void arm_minute(int tfd)
@@ -1136,11 +1154,10 @@ int main(int argc, char **argv)
 	lock = open(path, O_RDWR | O_CREAT | O_CLOEXEC, 0600);
 	if (lock < 0 || flock(lock, LOCK_EX | LOCK_NB) < 0)
 		return 0;
-	if (ftruncate(lock, 0) == 0) {
-		snprintf(buf, sizeof(buf), "%d\n", getpid());
-		if (write(lock, buf, strlen(buf)) < 0)
-			perror("haltia-home: pid file");
-	}
+	/* An old pid out at once; ours only once the signals are blocked, as
+	 * SIGUSR1 or SIGHUP would end us before. */
+	if (ftruncate(lock, 0) < 0)
+		perror("haltia-home: pid file");
 
 	signal(SIGCHLD, SIG_IGN); /* the programs started are not waited for */
 	sigemptyset(&mask);
@@ -1156,6 +1173,9 @@ int main(int argc, char **argv)
 		perror("haltia-home: signalfd"); /* blocked for good otherwise */
 		return 1;
 	}
+	snprintf(buf, sizeof(buf), "%d\n", getpid());
+	if (pwrite(lock, buf, strlen(buf), 0) < 0)
+		perror("haltia-home: pid file");
 
 	display = wl_display_connect(NULL);
 	if (!display)

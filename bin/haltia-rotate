@@ -404,11 +404,21 @@ def watch():
     else:
         matrix = mount_matrix(accel)
         log("%s (%s), output %s" % (accel, read(os.path.join(accel, "name")), output))
-    with open(PIDFILE, "w") as fh:
-        fh.write("%d\n" % os.getpid())
     changed = [True]
     signal.signal(signal.SIGUSR1, lambda *_a: changed.__setitem__(0, True))
     signal.signal(signal.SIGTERM, lambda *_a: sys.exit(0))
+    # The pid file stays open and locked while this runs: tell() signals
+    # only a pid whose file is held.
+    import fcntl
+    held = open(PIDFILE, "a+")
+    try:
+        fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        log("another haltia-rotate runs")
+        return NOTHING
+    held.truncate(0)
+    held.write("%d\n" % os.getpid())
+    held.flush()
     shown, candidate, since, on = None, None, 0.0, None
     panel, reload = "landscape", False  # haltia-launcher starts with landscape
     while True:
@@ -446,12 +456,31 @@ def watch():
         time.sleep(PERIOD)
 
 
-def tell():
+def live_pid(path):
+    """The pid in a daemon's pid file while that daemon still holds the
+    file's lock (haltia-close, haltia-rotate): a file left by one that
+    crashed may name another process by now, which a signal would end
+    (SH2-38)."""
+    import fcntl
     try:
-        with open(PIDFILE) as fh:
-            os.kill(int(fh.read().strip()), signal.SIGUSR1)
+        with open(path) as fh:
+            try:
+                fcntl.flock(fh, fcntl.LOCK_SH | fcntl.LOCK_NB)
+                return None  # nobody holds it
+            except BlockingIOError:
+                pid = int(fh.read().strip() or 0)
     except (OSError, ValueError):
-        pass
+        return None
+    return pid if pid > 1 else None
+
+
+def tell():
+    pid = live_pid(PIDFILE)
+    if pid:
+        try:
+            os.kill(pid, signal.SIGUSR1)
+        except OSError:
+            pass
 
 
 def main():
