@@ -359,7 +359,11 @@ open)
 			splash_pid=
 		fi
 		# No longer starting: the close button (haltia-close) looks again.
-		rm -f "$dir/starting"
+		# Only our own line goes: another program started meanwhile wrote
+		# its own, which its start removes (SH2-46).
+		if [ -n "${mine:-}" ] && [ "$(cat "$dir/starting" 2>/dev/null)" = "$mine" ]; then
+			rm -f "$dir/starting"
+		fi
 		/usr/libexec/haltia/haltia-close update 2>/dev/null || true
 	}
 	trap stop_splash EXIT
@@ -386,7 +390,8 @@ open)
 	# While it starts, the close button stops it (haltia-ask close-front kills
 	# the pid and the curtain, and removes this file) and the home button
 	# takes the curtain away (haltia-home).
-	echo "$id $pid ${splash_pid:-0}" >"$dir/starting"
+	mine="$id $pid ${splash_pid:-0}"
+	echo "$mine" >"$dir/starting"
 	/usr/libexec/haltia/haltia-close update 2>/dev/null || true
 	i=0
 	while [ "$i" -lt "$tries" ] && [ -e "$dir/starting" ]; do

@@ -2,6 +2,7 @@
 """haltia-launch starts one Firefox: its icon (open firefox) and a link from
 a program (url) share one lock, and either waits for a Firefox that is still
 starting instead of running a second one on the same profile (#31, FFX2-1).
+A start removes only its own curtain marker (SH2-46).
 Run on a copy with Firefox and haltia-focus as stand-ins.
 
     python3 -m unittest discover -s tests
@@ -40,7 +41,9 @@ exit 0
 """
 
 
-class FirefoxLock(unittest.TestCase):
+class LaunchCopy(unittest.TestCase):
+    """A copy of haltia-launch with stand-ins; no tests of its own."""
+
     def setUp(self):
         self.dir = tempfile.mkdtemp(prefix="haltia-firefox-lock.")
         self.addCleanup(shutil.rmtree, self.dir)
@@ -102,6 +105,8 @@ class FirefoxLock(unittest.TestCase):
     def starts(self):
         return [line for line in self.log() if line.startswith("start")]
 
+
+class FirefoxLock(LaunchCopy):
     def test_link_while_icon_starts_firefox(self):
         icon = self.launch_bg("open", "firefox")
         time.sleep(0.3)
@@ -121,7 +126,9 @@ class FirefoxLock(unittest.TestCase):
 
     def test_icon_waits_for_a_firefox_without_a_window(self):
         # A Firefox started some other way, still without its window.
-        subprocess.Popen(["sh", os.path.join(self.bin, "firefox")], env=self.env())
+        other = subprocess.Popen(["sh", os.path.join(self.bin, "firefox")], env=self.env())
+        self.addCleanup(other.wait)
+        self.addCleanup(other.kill)
         time.sleep(0.3)
         icon = self.launch_bg("open", "firefox")
         self.assertEqual(icon.wait(timeout=15), 0)
@@ -141,6 +148,34 @@ class FirefoxLock(unittest.TestCase):
         self.assertEqual(again.wait(timeout=15), 0)
         self.assertEqual(self.starts(), ["start https://example.org/story"])
         self.assertFalse([line for line in self.log() if line.startswith("remote")])
+
+
+class Starting(LaunchCopy):
+    """Two programs starting at once: the one that gets its window first
+    leaves the other's curtain marker alone (#31: SH2-46)."""
+
+    def setUp(self):
+        super().setUp()
+        d = self.dir
+        with open(os.path.join(d, "run/haltia/apps.conf"), "a") as fh:
+            for name in ("quick", "slow"):
+                fh.write("[%s]\nlabel = %s\napp_ids = %s.App\nexec = %s\n" % (name, name, name, name))
+        for name, delay in (("quick", "0.3"), ("slow", "2.5")):
+            self.write(name, "#!/bin/sh\n( sleep %s; touch \"%%(dir)s/win-%s.App\" ) &\n"
+                       "exec sleep 6\n" % (delay, name))
+        self.write("haltia-focus", '#!/bin/sh\n[ "$1" = has ] || exit 1\nshift\n'
+                   'for n in "$@"; do [ -e "%(dir)s/win-$n" ] && exit 0; done\nexit 1\n')
+
+    def test_one_start_leaves_the_others_marker(self):
+        starting = os.path.join(self.dir, "run/haltia/launch/starting")
+        quick = self.launch_bg("open", "quick")
+        time.sleep(0.1)
+        slow = self.launch_bg("open", "slow")  # writes its line over quick's
+        self.assertEqual(quick.wait(timeout=10), 0)
+        with open(starting) as fh:
+            self.assertTrue(fh.read().startswith("slow "))
+        self.assertEqual(slow.wait(timeout=10), 0)
+        self.assertFalse(os.path.exists(starting))
 
 
 if __name__ == "__main__":
