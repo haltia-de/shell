@@ -81,7 +81,9 @@ int main(int argc, char **argv)
 
 		if (fgets(buf, sizeof(buf), f)) {
 			buf[strcspn(buf, "\n")] = 0;
-			active = buf;
+			/* "ttyN"; anything shorter would put active + 3 past it. */
+			if (!strncmp(buf, "tty", 3) && buf[3])
+				active = buf;
 		}
 		fclose(f);
 	}
