@@ -59,5 +59,27 @@ class DoubleTapTest(unittest.TestCase):
             os.close(w)
 
 
+class Filter(unittest.TestCase):
+    """haltia-touchguard lets the double tap through while the screen is
+    dark, and passes the chip's KEY_WAKEUP on (#81 review). The filter is C
+    and needs root and uinput: these look at its source."""
+
+    @classmethod
+    def setUpClass(cls):
+        with open(os.path.join(ROOT, "tools/haltia-touchguard.c")) as fh:
+            cls.src = fh.read()
+
+    def test_no_repeat_drop_while_dark(self):
+        at = self.src.index("int repeat = ")
+        rule = self.src[at:self.src.index(";", at)]
+        self.assertIn("!screen_dark()", rule)
+        self.assertIn('"/run/haltia/screen-dark"', self.src)
+        self.assertIn(S.DARK_PATH, self.src)
+
+    def test_key_wakeup_goes_through(self):
+        self.assertIn("UI_SET_KEYBIT, KEY_WAKEUP", self.src)
+        self.assertIn("emit(EV_KEY, KEY_WAKEUP, ev->value)", self.src)
+
+
 if __name__ == "__main__":
     unittest.main()

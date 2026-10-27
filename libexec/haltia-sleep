@@ -25,7 +25,11 @@ lamp goes off and that is all.
 With double_tap_wake=1 in /etc/haltia/device.conf a double tap on the
 dark screen turns the lamp on as the power key does, and so does KEY_WAKEUP
 from a device: the touch screen sends it for a double tap that woke the
-system from sleep (the chip's own gesture mode).
+system from sleep (the chip's own gesture mode; haltia-touchguard passes it
+on, and lets a double tap through while the screen is dark). Without it,
+touches and KEY_WAKEUP on a dark screen are not read at all. A press of the
+power key right after such a wake (WAKE_GRACE) is the one that woke the
+system too: it leaves the lamp on rather than turning it off again.
 
 The power key is the key device named power_key= in
 /etc/haltia/device.conf, else the first one with KEY_POWER. It is grabbed so
@@ -78,6 +82,10 @@ SUSPEND_DEADLINE = 120.0
 FILTER_NAME = "haltia-touchguard touchscreen"
 TAP_MAX = 0.3  # seconds a finger rests for a tap
 TAP_GAP = 0.4  # seconds between the taps of a double tap
+# A power key press this soon after a tap or KEY_WAKEUP turned the lamp on
+# came with the same wake-up (a device that sends KEY_WAKEUP as the power
+# key resumes the system): it must not turn the lamp straight off.
+WAKE_GRACE = 1.0
 NOTHING_TO_DO = 3  # exit status: no power key; haltia-sleep-loop stops
 POWER_SUPPLY = "/sys/class/power_supply"
 SUSPEND_HOOK = "/usr/lib/haltia/hooks/suspend"
@@ -1042,6 +1050,7 @@ def listen():
     last = 0.0
     down = None  # press time while the key is held and not yet handled
     taps = DoubleTap() if device_conf("double_tap_wake") == "1" else None
+    tap_woke = -WAKE_GRACE  # when a tap or KEY_WAKEUP last turned the lamp on
     log("LISTEN asleep=%s activity=%d" % (int(lamp.asleep), len(activity)))
     while True:
         if down is None:
@@ -1074,7 +1083,10 @@ def listen():
                 kept, looked = updates_when_kept_on(last_input, looked)
             # At least every RESCAN_SEC, to notice new devices.
             waits = [t for t in (due, idle, kept, RESCAN_SEC) if t is not None]
-            dark = lamp.touch if lamp.asleep else []
+            # The grabbed touch devices are read while dark only when a
+            # gesture there can turn the lamp on: otherwise every touch in
+            # a bag woke this real-time loop for nothing.
+            dark = lamp.touch if lamp.asleep and taps is not None else []
             ready = select.select([power] + activity + dark + ([waker] if waker else []), [], [],
                                   min(waits))[0]
             if waker in ready:
@@ -1101,14 +1113,15 @@ def listen():
                     # Grabbed while dark: only a wake gesture counts.
                     woke = woken_by(fd, taps) or woke
                 elif fd != power:
-                    if lamp.asleep:
+                    if lamp.asleep and taps is not None:
+                        # KEY_WAKEUP counts only with double_tap_wake on.
                         woke = woken_by(fd, None) or woke
                     else:
                         drain(fd)
                     last_input = time.monotonic()
             if woke and lamp.asleep:
                 log("WAKE_TAP")
-                last_input = time.monotonic()
+                last_input = tap_woke = time.monotonic()
                 lamp.wake()
                 continue
             ready = [fd for fd in ready if fd not in dark]
@@ -1140,7 +1153,9 @@ def listen():
         if ev.type == EV_KEY and ev.code == KEY_POWER:
             now = time.monotonic()
             if ev.value == 1:
-                if now - last >= 0.4:
+                if now - tap_woke < WAKE_GRACE:
+                    log("WAKE_KEY_WITH_TAP")  # the same wake-up: lamp stays on
+                elif now - last >= 0.4:
                     down = now
             elif ev.value == 0 and down is not None:
                 # A short press acts on release, so a hold for the menu

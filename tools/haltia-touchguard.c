@@ -21,7 +21,12 @@
  *  - repeat_ms / repeat_radius: a new touch this soon after the last one
  *    (from its lift to the new landing), this near to it, is a tremor's
  *    second strike and is dropped (Ignore Repeat); a quick double tap is
- *    one tap. 300 ms and 6.27% of the width (some 80 px) by default.
+ *    one tap. 300 ms and 6.27% of the width (some 80 px) by default. Not
+ *    while the screen is dark on purpose (/run/haltia/screen-dark, made
+ *    by haltia-sleep): there a double tap may turn it on (double_tap_wake),
+ *    and its second tap must come through.
+ *  - KEY_WAKEUP from the screen (a chip's own wake gesture) goes through
+ *    as it is, as the grab would keep it from haltia-sleep otherwise.
  *  - multitouch (on by default): a second finger that lands while the first
  *    is down starts a gesture (a pinch, a two-finger scroll), and every
  *    finger then goes through live, in its own slot, at once: no hold, no
@@ -350,6 +355,16 @@ static int setup_abs(int code, int min, int max, const struct input_absinfo *fro
 	return ioctl(out_fd, UI_ABS_SETUP, &a);
 }
 
+static int wake_key; /* the screen has KEY_WAKEUP, and so has our device */
+
+/* haltia-sleep keeps the screen dark on purpose (root's file, lstat only). */
+static int screen_dark(void)
+{
+	struct stat st;
+
+	return lstat("/run/haltia/screen-dark", &st) == 0;
+}
+
 static int create_output(void)
 {
 	struct input_absinfo ai;
@@ -365,6 +380,13 @@ static int create_output(void)
 	ioctl(out_fd, UI_SET_KEYBIT, BTN_TOUCH);
 	ioctl(out_fd, UI_SET_EVBIT, EV_ABS);
 	ioctl(out_fd, UI_SET_PROPBIT, INPUT_PROP_DIRECT);
+	unsigned long keys[BITS(KEY_MAX + 1)] = { 0 };
+
+	/* The chip's wake key, only when the screen has one. */
+	if (ioctl(in_fd, EVIOCGBIT(EV_KEY, sizeof(keys)), keys) >= 0 && TEST(KEY_WAKEUP, keys)) {
+		wake_key = 1;
+		ioctl(out_fd, UI_SET_KEYBIT, KEY_WAKEUP);
+	}
 	unsigned long has[BITS(ABS_MAX + 1)] = { 0 };
 
 	ioctl(in_fd, EVIOCGBIT(EV_ABS, sizeof(has)), has);
@@ -731,7 +753,8 @@ static void frame(long long t)
 		/* A new contact. */
 		int dx = s->x0 - last_x, dy = s->y0 - last_y;
 		int repeat = t - last_up < cfg.repeat_ms &&
-			     dx * dx + dy * dy < lim.repeat_radius * lim.repeat_radius;
+			     dx * dx + dy * dy < lim.repeat_radius * lim.repeat_radius &&
+			     !screen_dark();
 
 		if (t < palm_until || repeat || primary >= 0 || nlive) {
 			if (debugging() && repeat && t >= palm_until && primary < 0 && !nlive)
@@ -1009,6 +1032,9 @@ int main(int argc, char **argv)
 					s->pressure = ev->value;
 					break;
 				}
+			} else if (ev->type == EV_KEY && ev->code == KEY_WAKEUP && wake_key) {
+				emit(EV_KEY, KEY_WAKEUP, ev->value);
+				sync_out();
 			} else if (ev->type == EV_SYN && ev->code == SYN_REPORT) {
 				frame(t);
 				for (int i = 0; i < SLOTS; i++)
