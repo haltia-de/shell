@@ -173,6 +173,8 @@ install -D -m 644 "$here/etc/sysctl-haltia.conf" "$root/etc/sysctl.d/90-haltia.c
 # The panel's Wi-Fi follows NetworkManager at once.
 install -d -m 755 "$root/etc/NetworkManager/dispatcher.d"
 install -m 755 "$here/etc/nm-dispatcher-haltia-panel" "$root/etc/NetworkManager/dispatcher.d/90-haltia-panel"
+# And its battery the charger.
+install -D -m 644 "$here/etc/udev-haltia-panel.rules" "$root/usr/lib/udev/rules.d/90-haltia-panel.rules"
 
 # The session user's commands without a password (HALTIA_DOAS): the power
 # menu, the touch settings (haltia-touchguard-conf checks every value

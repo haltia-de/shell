@@ -51,7 +51,11 @@ RAMP = 2  # percent per tick while it is held
 TICK = 0.08  # seconds between ticks
 
 
-def find_keypad():
+def find_keypads():
+    """Every input device with a volume key. Most keypads have both keys;
+    some machines split them (the Tab P11's Volume Up is a GPIO key, its
+    Volume Down the PMIC's RESIN), so each one is read."""
+    found = []
     for node in sorted(os.listdir("/sys/class/input")):
         if not node.startswith("event"):
             continue
@@ -64,9 +68,9 @@ def find_keypad():
         bits = 0
         for i, word in enumerate(reversed(words)):
             bits |= int(word, 16) << (LONG_BITS * i)
-        if bits >> KEY_VOLUMEUP & 1 and bits >> KEY_VOLUMEDOWN & 1:
-            return "/dev/input/" + node
-    return None
+        if bits >> KEY_VOLUMEUP & 1 or bits >> KEY_VOLUMEDOWN & 1:
+            found.append("/dev/input/" + node)
+    return found
 
 
 def pactl(*args):
@@ -105,44 +109,47 @@ def step(level, by):
 
 
 def main():
-    path = find_keypad()
-    if not path:
+    paths = find_keypads()
+    if not paths:
         # Nothing to do on this machine: a clean end, which haltia-keep
         # leaves off instead of starting it again and again.
         sys.stderr.write("haltia-volume: no device with volume keys\n")
         return 0
-    try:
-        dev = open(path, "rb", buffering=0)
-    except OSError as exc:
-        sys.exit("haltia-volume: %s: %s" % (path, exc.strerror))
+    devs = {}
+    for path in paths:
+        try:
+            devs[open(path, "rb", buffering=0)] = path
+        except OSError as exc:
+            sys.exit("haltia-volume: %s: %s" % (path, exc.strerror))
     # A press steps STEP; a key held past HOLD goes on by RAMP every TICK
     # until it is let go: a smooth slope, whether or not the keypad repeats
     # the key itself (its own repeats, value 2, are ignored).
     held = None  # (code, direction, level, next step time)
-    with dev:
-        while True:
-            timeout = None if held is None else max(0.0, held[3] - time.monotonic())
-            if not select.select([dev], [], [], timeout)[0]:
-                code, by, level, _due = held
-                held = (code, by, step(level, by * RAMP), time.monotonic() + TICK)
-                continue
-            data = dev.read(EVENT.size)
-            if len(data) < EVENT.size:
-                # The keypad went away (EOF): end, and haltia-keep starts
-                # this again, which looks the keypad up afresh, instead of
-                # waking every second on a dead device.
-                sys.exit("haltia-volume: %s: gone" % path)
-            _sec, _usec, etype, code, value = EVENT.unpack(data)
-            if etype != EV_KEY or code not in (KEY_VOLUMEUP, KEY_VOLUMEDOWN):
-                continue
-            if value == 0:
-                if held and held[0] == code:
-                    held = None
-                continue
-            if value != 1:
-                continue
-            by = 1 if code == KEY_VOLUMEUP else -1
-            held = (code, by, step(volume(), by * STEP), time.monotonic() + HOLD)
+    while True:
+        timeout = None if held is None else max(0.0, held[3] - time.monotonic())
+        ready = select.select(list(devs), [], [], timeout)[0]
+        if not ready:
+            code, by, level, _due = held
+            held = (code, by, step(level, by * RAMP), time.monotonic() + TICK)
+            continue
+        dev = ready[0]
+        data = dev.read(EVENT.size)
+        if len(data) < EVENT.size:
+            # A keypad went away (EOF): end, and haltia-keep starts
+            # this again, which looks the keypads up afresh, instead of
+            # waking every second on a dead device.
+            sys.exit("haltia-volume: %s: gone" % devs[dev])
+        _sec, _usec, etype, code, value = EVENT.unpack(data)
+        if etype != EV_KEY or code not in (KEY_VOLUMEUP, KEY_VOLUMEDOWN):
+            continue
+        if value == 0:
+            if held and held[0] == code:
+                held = None
+            continue
+        if value != 1:
+            continue
+        by = 1 if code == KEY_VOLUMEUP else -1
+        held = (code, by, step(volume(), by * STEP), time.monotonic() + HOLD)
 
 
 if __name__ == "__main__":

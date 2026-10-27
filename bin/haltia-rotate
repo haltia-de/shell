@@ -16,7 +16,9 @@ puts it into the screen's frame with the device's in_mount_matrix. It turns
 the output (the first one wlr-randr lists, or
 output=<name> there) through wlr-output-management (wlr-randr) once the
 tablet has stood the new way for a second. Lying flat, or half way between
-two ways, it keeps what it has. With the screen off it reads seldom.
+two ways, it keeps what it has. With the screen off it reads seldom. A
+sensor that comes up after the session (a DSP sensor core can take a
+minute) is waited for up to SENSOR_WAIT seconds.
 
 Between landscape and portrait it moves the panel too: it writes the
 orientation to $XDG_RUNTIME_DIR/haltia/orientation, haltia-apps writes the
@@ -69,6 +71,7 @@ PERIOD = 0.3      # seconds between readings with the screen on
 DARK_PERIOD = 2.0  # and with it off
 STEADY = 1.0      # seconds the tablet stands the new way before the turn
 FLAT = 0.45       # g: less than this in the screen's plane is lying flat
+SENSOR_WAIT = 120  # seconds to wait for a late accelerometer
 CLEAR = 1.4       # one axis this many times the other, or it is half way
 G = 9.80665
 
@@ -215,7 +218,7 @@ def write_rotation(transform):
 
 def turn(output, way):
     try:
-        res = subprocess.run(["wlr-randr", "--output", output, "--transform", TRANSFORMS[way]],
+        res = subprocess.run(["wlr-randr", "--output", output, "--transform", transform_of(way)],
                              capture_output=True, text=True, timeout=10)
     except (OSError, subprocess.SubprocessError) as exc:
         log("wlr-randr: %s" % exc)
@@ -224,10 +227,24 @@ def turn(output, way):
         log("wlr-randr: %s" % (res.stderr.strip() or res.returncode))
         return False
     log("turned %s" % way)
-    write_rotation(TRANSFORMS[way])
+    write_rotation(transform_of(way))
     # The edge gestures follow the picture.
-    subprocess.call(["/usr/libexec/haltia/haltia-gestures", TRANSFORMS[way]])
+    subprocess.call(["/usr/libexec/haltia/haltia-gestures", transform_of(way)])
     return True
+
+
+def transform_of(way):
+    """The output transform for a way the tablet stands. transform_offset=
+    in /etc/haltia/device.conf (degrees, default 0) is added for a panel
+    that does not scan out in the tablet's landscape: the Tab P11's is
+    portrait, so it says 270."""
+    try:
+        offset = int(device_conf("transform_offset") or 0)
+    except ValueError:
+        offset = 0
+    degrees = {"normal": 0, "left-up": 90, "bottom-up": 180, "right-up": 270}[way]
+    turned = (degrees + offset) % 360
+    return "normal" if turned == 0 else str(turned)
 
 
 def orientation_of(way):
@@ -335,15 +352,20 @@ def watch():
         log("no output (wlr-randr)")
         return 0
     write_rotation(current_transform(output) or "normal")
-    proxy = SensorProxy()
-    accel = matrix = None
+    deadline = time.monotonic() + SENSOR_WAIT
+    while True:
+        proxy = SensorProxy()
+        accel = None if proxy.bus else find_accel()
+        if proxy.bus or accel:
+            break
+        if time.monotonic() >= deadline:
+            log("no accelerometer")
+            return 0
+        time.sleep(DARK_PERIOD)
+    matrix = None
     if proxy.bus:
         log("iio-sensor-proxy, output %s" % output)
     else:
-        accel = find_accel()
-        if not accel:
-            log("no accelerometer")
-            return 0
         matrix = mount_matrix(accel)
         log("%s (%s), output %s" % (accel, read(os.path.join(accel, "name")), output))
     with open(PIDFILE, "w") as fh:
