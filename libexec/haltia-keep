@@ -7,7 +7,9 @@
 # A second later each time. More than MAX ends within WINDOW seconds mean
 # it cannot run now: it is left off for REST seconds, then tried again.
 # One that ends well (0) within its first QUIET seconds has nothing to do
-# (another copy holds its lock, no device for it) and stays off.
+# (another copy holds its lock, no device for it) and stays off, as does
+# one that ends with NOTHING (3) at any time: it looked a while for a
+# device that never came (haltia-rotate, haltia-volume).
 # --session: it stops for good with the session, when the compositor's
 # socket is gone or is another compositor's (the session loop starts the
 # next one under the same name at once: its inode and change time, as an
@@ -19,6 +21,7 @@
 MAX=5
 WINDOW=60
 QUIET=3
+NOTHING=3
 REST=300
 # A Python daemon killed by a fatal signal writes its Python stack to its
 # log (haltia-report reads "Fatal Python error").
@@ -51,6 +54,10 @@ while ours; do
 	child=
 	now=$(secs)
 	if [ "$code" -eq 0 ] && [ $((now - began)) -lt "$QUIET" ]; then
+		exit 0
+	fi
+	if [ "$code" -eq "$NOTHING" ]; then
+		echo "haltia-keep: $1 has nothing to do here, left off" >&2
 		exit 0
 	fi
 	recent=

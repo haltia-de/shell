@@ -80,5 +80,18 @@ class Rotation(unittest.TestCase):
         self.assertTrue(os.path.exists(gestures))
 
 
+    def test_without_output_or_sensor_it_is_nothing_to_do(self):
+        # SH2-36: an end haltia-keep leaves off, after waiting a while.
+        with mock.patch.object(self.rot, "SENSOR_WAIT", 0):
+            with mock.patch.object(self.rot, "output_name", return_value=None):
+                self.assertEqual(self.rot.watch(), self.rot.NOTHING)
+
+            class NoProxy:
+                bus = None
+            with mock.patch.object(self.rot, "SensorProxy", NoProxy), \
+                    mock.patch.object(self.rot, "find_accel", return_value=None):
+                self.assertEqual(self.rot.watch(), self.rot.NOTHING)
+
+
 if __name__ == "__main__":
     unittest.main()

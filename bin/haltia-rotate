@@ -18,7 +18,10 @@ output=<name> there) through wlr-output-management (wlr-randr) once the
 tablet has stood the new way for a second. Lying flat, or half way between
 two ways, it keeps what it has. With the screen off it reads seldom. A
 sensor that comes up after the session (a DSP sensor core can take a
-minute) is waited for up to SENSOR_WAIT seconds.
+minute) is waited for up to SENSOR_WAIT seconds, and so is an output
+wlr-randr does not list yet; without either it ends with NOTHING (3), which
+haltia-keep leaves off for the session instead of starting it every two
+minutes.
 
 Between landscape and portrait it moves the panel too: it writes the
 orientation to $XDG_RUNTIME_DIR/haltia/orientation, haltia-apps writes the
@@ -72,6 +75,7 @@ DARK_PERIOD = 2.0  # and with it off
 STEADY = 1.0      # seconds the tablet stands the new way before the turn
 FLAT = 0.45       # g: less than this in the screen's plane is lying flat
 SENSOR_WAIT = 120  # seconds to wait for a late accelerometer
+NOTHING = 3  # exit status: no output or no sensor here, haltia-keep leaves it off
 CLEAR = 1.4       # one axis this many times the other, or it is half way
 G = 9.80665
 
@@ -315,6 +319,7 @@ class SensorProxy:
     the service starts again (a device's sleep hook may stop it), its claims
     are gone: the sensor is claimed again from the new one."""
     NAME = "net.hadess.SensorProxy"
+    said = None
     WAYS = ("normal", "bottom-up", "left-up", "right-up")
 
     def __init__(self):
@@ -331,7 +336,11 @@ class SensorProxy:
             self.claim(bus)
             self.bus = bus
         except Exception as exc:  # ImportError, GLib.Error
-            log("iio-sensor-proxy: %s" % getattr(exc, "message", exc))
+            # Once: asked every two seconds while waiting for a sensor.
+            text = "iio-sensor-proxy: %s" % getattr(exc, "message", exc)
+            if text != SensorProxy.said:
+                SensorProxy.said = text
+                log(text)
 
     def get(self, bus, name):
         v = bus.call_sync(self.NAME, "/net/hadess/SensorProxy",
@@ -369,12 +378,17 @@ class SensorProxy:
 
 
 def watch():
-    output = output_name()
-    if not output:
-        log("no output (wlr-randr)")
-        return 0
-    write_rotation(current_transform(output) or "normal")
     deadline = time.monotonic() + SENSOR_WAIT
+    output = output_name()
+    while not output:
+        # The compositor may not list it yet at the session's start: a
+        # clean end then left turning off for the whole session (SH2-36).
+        if time.monotonic() >= deadline:
+            log("no output (wlr-randr)")
+            return NOTHING
+        time.sleep(DARK_PERIOD)
+        output = output_name()
+    write_rotation(current_transform(output) or "normal")
     while True:
         proxy = SensorProxy()
         accel = None if proxy.bus else find_accel()
@@ -382,7 +396,7 @@ def watch():
             break
         if time.monotonic() >= deadline:
             log("no accelerometer")
-            return 0
+            return NOTHING
         time.sleep(DARK_PERIOD)
     matrix = None
     if proxy.bus:
