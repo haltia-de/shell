@@ -20,9 +20,11 @@ session user runs it through doas without a password (z-haltia-shell.conf).
     haltia-update state              everything the window shows, as JSON
     haltia-update log                the update log's last lines, newest
                                      first (Настройки → «Для помощника»)
-    haltia-update news               what happened by itself since last
-                                     asked (updated, rolled back): KIND
-                                     <tab> LABELS lines, for a notification
+    haltia-update news               what happened by itself and was not
+                                     told yet (updated, rolled back): KIND
+                                     <tab> LABELS <tab> PACKAGES <tab> TIME
+                                     lines, for a notification
+    haltia-update news --ack TIME... those were told (the notification is up)
     haltia-update health             the checks after an update (greenboot's
                                      scheme); all pass: the update is good
     haltia-update session-start      a session started (counts restarts)
@@ -885,20 +887,27 @@ def tell(kind, names):
     """Something that happened by itself, for a notification (news)."""
     path = os.path.join(STATE, "news.json")
     news = read_json(path, [])
-    news.append({"kind": kind, "names": names, "time": int(time.time())})
+    # The time names the item for news --ack, so no two share one.
+    when = max([int(time.time())] + [n.get("time", 0) + 1 for n in news])
+    news.append({"kind": kind, "names": names, "time": when})
     write_json(path, news[-20:])
 
 
-def news():
+def news(ack=None):
     """What happened by itself and was not told yet: KIND <tab> labels <tab>
-    the packages (for haltia-restart)."""
+    the packages (for haltia-restart) <tab> its time. An item counts as told
+    only when haltia-update-notify acks its time after Notify went through:
+    marked as soon as it was read, «Обновление не прижилось» was lost
+    while mako was not up yet (SH2-22)."""
     path = os.path.join(STATE, "news.json")
-    items = [n for n in read_json(path, []) if not n.get("told")]
-    for item in items:
-        log("%s\t%s\t%s" % (item["kind"], ", ".join(sorted({label(n) for n in item["names"]})),
-                             " ".join(sorted(set(item["names"])))))
-    if items:
-        write_json(path, [dict(n, told=True) for n in read_json(path, [])])
+    if ack is not None:
+        items = read_json(path, [])
+        if any(n.get("time") in ack and not n.get("told") for n in items):
+            write_json(path, [dict(n, told=True) if n.get("time") in ack else n for n in items])
+        return 0
+    for item in (n for n in read_json(path, []) if not n.get("told")):
+        log("%s\t%s\t%s\t%s" % (item["kind"], ", ".join(sorted({label(n) for n in item["names"]})),
+                                 " ".join(sorted(set(item["names"]))), item.get("time", 0)))
     return 0
 
 
@@ -1302,6 +1311,11 @@ def main():
             sid = names[0] if names and names[0].isdigit() else None
             return rollback(sid, names=names[1:] if sid else ())
         if cmd == "news":
+            if "--ack" in args:
+                if any(not n.isdigit() for n in names):
+                    log("error: not a time")
+                    return 2
+                return news(ack={int(n) for n in names})
             return news()
         if cmd == "history":
             return history()

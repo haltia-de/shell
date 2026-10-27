@@ -278,6 +278,25 @@ class Update(unittest.TestCase):
         self.assertFalse([e for e in self.world() if "><" in e])
         self.assertTrue(self.pending())
 
+    def test_news_stays_until_the_notification_acks_it(self):
+        # SH2-22: read but not acked (mako not up yet) is told again.
+        lines = []
+        hu.tell("rolled back", ["haltia-shell"])
+        hu.tell("updated", ["py3-haltia-kit"])
+        with mock.patch.object(hu, "log", lines.append):
+            hu.news()
+            self.assertEqual(len(lines), 2)
+            when = [line.split("\t")[3] for line in lines]
+            self.assertNotEqual(when[0], when[1])
+            lines.clear()
+            hu.news()
+            self.assertEqual(len(lines), 2)
+            lines.clear()
+            hu.news(ack={int(when[0])})
+            hu.news()
+            self.assertEqual(len(lines), 1)
+            self.assertTrue(lines[0].startswith("updated\t"))
+
     def test_program_update_is_good_in_the_running_session(self):
         self.assertEqual(hu.upgrade(names=["py3-haltia-kit"]), 0)
         pending = hu.read_json(os.path.join(hu.STATE, "pending.json"), {})
