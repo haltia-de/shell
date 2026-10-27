@@ -355,6 +355,11 @@ class SensorProxy:
     def way(self):
         try:
             if self.name_owner(self.bus) != self.owner:
+                # The new service takes its name before it has found the
+                # accelerometer; a claim made then is counted but never
+                # turns the sensor on (TB-J606L, 27 Oct 2026). Wait for it.
+                if not self.get(self.bus, "HasAccelerometer"):
+                    return None
                 self.claim(self.bus)
                 log("iio-sensor-proxy started again: claimed the sensor again")
             w = self.get(self.bus, "AccelerometerOrientation")
