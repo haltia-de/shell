@@ -758,6 +758,14 @@ def main():
             item["place"] = panel.index(item["id"]) if item["id"] in panel else -1
         print(json.dumps(items, ensure_ascii=False))
         return 0
+    # One run at a time (Настройки' reload, haltia-rotate's panel,
+    # haltia-restart, a pin): runs side by side wrote the same .new files,
+    # an invalid waybar.json that a SIGUSR2 turned into a session restart,
+    # or apps.conf and waybar.json from different runs (SH2-42). Held until
+    # the end; the file is not inherited by anything started.
+    import fcntl
+    lock = open(os.path.join(out_dir(), "apps.lock"), "a")
+    fcntl.flock(lock, fcntl.LOCK_EX)
     if cmd in ("pin", "unpin") and len(sys.argv) > 2:
         if not pin(sys.argv[2], cmd == "pin"):
             return 1
