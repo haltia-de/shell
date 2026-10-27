@@ -218,6 +218,18 @@ none`): над ним кнопка видна. Решение и исследо�
 D-Bus, из терминала): `91-haltia-shell.gschema.override` ставит её и
 ключом `org.gnome.desktop.interface gtk-theme`.
 
+Анимаций нет: каждый кадр рисует процессор, и нажатие, смена страницы или
+раскрытие стоят один кадр, а не 8–15 за ~200 мс (исследование
+haltia-de/haltia `docs/research/2026-10-26-gtk3-performance.md`, 2.2 и
+2.3). Тот же файл переопределения ставит
+`org.gnome.desktop.interface enable-animations=false` — GTK 3 на Wayland
+берёт `gtk-enable-animations` оттуда; значение, заданное человеком в dconf,
+сильнее. Тема сама по себе убирает у кнопок и строк в окнах программ
+переходы (`transition: none`) и тени (`box-shadow`, `text-shadow`,
+`-gtk-icon-shadow`); цвета прежние: нажатая кнопка по-прежнему меняет фон,
+фокус — пунктирная рамка Adwaita, а не тень, поле ввода сохраняет свою.
+Правила ограничены `window:not(#waybar)`, панель их не получает.
+
 Окно выбора файлов у всех программ — простое, из Файлов (`haltia-files
 --portal`, бэкенд `org.freedesktop.impl.portal.FileChooser`): крупные
 места («Недавние», Документы, Загрузки, Изображения, Музыка, Видео, карта
