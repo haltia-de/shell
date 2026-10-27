@@ -795,6 +795,14 @@ def upgrade(auto=False, names=()):
     sid, missing = take_snapshot(plan)
     note("upgrade %s: %s%s" % (sid, ", ".join("%s %s→%s" % c for c in plan),
                                " (no way back for %s)" % ", ".join(missing) if missing else ""))
+    # pending.json before apk changes anything, marked "installing": an
+    # upgrade cut short (power, OOM, a kill) leaves it, and the next boot,
+    # session start or health run, which never overlap an update (the
+    # lock), rolls it back (interrupted()) instead of leaving a half-applied
+    # system that nothing would ever look at again (SH2-4).
+    pending = {"snapshot": sid, "boots": 0, "starts": [], "auto": auto,
+               "session": needs_session(plan)}
+    write_json(os.path.join(STATE, "pending.json"), dict(pending, installing=True))
     # No sleep while apk works (haltia-sleep reads logind's block inhibitors).
     # Everything is downloaded into the cache before anything changes, so a
     # network that fails half way (it did: TLS) leaves the system as it was;
@@ -812,16 +820,23 @@ def upgrade(auto=False, names=()):
         note("upgrade %s: download failed, again (%s)" % (sid, (res.stderr_text or "").strip()[-120:]))
         time.sleep(10)
     clear_progress()
-    if res.returncode:
-        note("upgrade %s failed: %s" % (sid, (res.stderr_text or res.stdout_text).strip()[-200:]))
+    why = (res.stderr_text or res.stdout_text or "").strip()[-200:]
+    if res.returncode and all_in(plan):
+        # A post-install script or a trigger failed after every package was
+        # in. Rolling back would run the same script and fail again, with
+        # Haltia's packages left held (SH2-6); the health checks judge it.
+        note("upgrade %s: apk ended with an error, but everything is in: %s" % (sid, why))
+    elif res.returncode:
+        note("upgrade %s failed: %s" % (sid, why))
         if rollback(sid, reason="failed") == 0:
             # Nothing of it stayed: no past update to show or go back from.
             shutil.rmtree(os.path.join(STATE, sid), ignore_errors=True)
+        else:
+            # Not back either: the usual checks judge what is in now.
+            write_json(os.path.join(STATE, "pending.json"), pending)
         log("failed, going back")
         return 1
-    write_json(os.path.join(STATE, "pending.json"), {"snapshot": sid, "boots": 0,
-                                                     "starts": [], "auto": auto,
-                                                     "session": needs_session(plan)})
+    write_json(os.path.join(STATE, "pending.json"), pending)
     drop_old_snapshots()
     # What check found and this installed is no longer to be updated.
     status = read_json(os.path.join(STATE, "status.json"), {})
@@ -840,6 +855,23 @@ def upgrade(auto=False, names=()):
     note("upgrade %s done, pending checks" % sid)
     log("updated")
     return 0
+
+
+def all_in(plan):
+    """Every package of the plan is at its new version."""
+    have = installed()
+    return bool(plan) and all(have.get(name) == new for name, _old, new in plan)
+
+
+def interrupted(pending):
+    """An upgrade that never finished (pending.json still says installing)
+    goes back. Called only with the lock held, so no upgrade runs now. Like
+    a failed one it says nothing about the new versions: nothing is held."""
+    if not pending.get("installing"):
+        return None
+    log("an update was cut short, going back")
+    note("upgrade %s was cut short" % pending["snapshot"])
+    return rollback(pending["snapshot"], reason="interrupted")
 
 
 def clear_progress():
@@ -908,6 +940,7 @@ def rollback(sid=None, reason="asked", names=()):
         if left:
             note("rollback %s: not changed by that update, left as they are: %s"
                  % (sid, ", ".join("%s %s" % (n, now.get(n, "-")) for n, _v in left)))
+    before = read_world()
     folder = os.path.join(STATE, sid, "apk")
     try:
         kept = os.listdir(folder)
@@ -920,13 +953,15 @@ def rollback(sid=None, reason="asked", names=()):
             files.append(os.path.join(folder, found[0]))
         else:
             unfiled.append((name, ver))
-    before = read_world()
     stage("rollback")
     errors = []
     if files:
         res = apk("add", "--no-network", "--", *files)
         if res.returncode:
-            # apk changed nothing: world is still as it was.
+            # Usually apk changed nothing; but a failing script leaves the
+            # packages in and their checksum holds in world, which would
+            # keep them from updating again (SH2-6): world as it was.
+            write_world(before)
             clear_progress()
             note("rollback %s (%s) failed: %s" % (sid, reason, res.stderr.strip()[-200:]))
             log("rollback failed")
@@ -944,7 +979,7 @@ def rollback(sid=None, reason="asked", names=()):
         write_world(before)
     else:
         target = list(before)
-        if reason != "failed":
+        if reason not in ("failed", "interrupted"):
             for name, ver in back:
                 if name in now and name in came and is_haltia(name):
                     pin = "%s=%s" % (name, ver)
@@ -969,7 +1004,7 @@ def rollback(sid=None, reason="asked", names=()):
         return 1
     # Remember the bad version: not when the upgrade only failed to
     # install, which says nothing about the version.
-    if reason != "failed":
+    if reason not in ("failed", "interrupted"):
         bad = held()
         for name, _ver in back:
             if name in now and is_haltia(name):
@@ -1057,6 +1092,8 @@ def needs_session(plan):
 
 def health():
     pending = read_json(os.path.join(STATE, "pending.json"), None)
+    if pending is not None and pending.get("installing"):
+        return interrupted(pending)
     if pending is not None and pending.get("session") and not pending.get("new_session"):
         # session_start() marks the first session after the update; there
         # the checks run (and fail, rolling back, when its panel is gone).
@@ -1080,6 +1117,8 @@ def session_start():
     pending = read_json(path, None)
     if pending is None:
         return 0
+    if pending.get("installing"):
+        return interrupted(pending)
     now = int(time.time())
     starts = [t for t in pending.get("starts", []) if now - t < RESTART_WINDOW] + [now]
     pending["starts"] = starts
@@ -1097,6 +1136,8 @@ def boot():
     pending = read_json(path, None)
     if pending is None:
         return 0
+    if pending.get("installing"):
+        return interrupted(pending)
     pending["boots"] = pending.get("boots", 0) + 1
     write_json(path, pending)
     if pending["boots"] > BOOTS:
