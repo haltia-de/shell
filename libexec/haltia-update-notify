@@ -29,7 +29,7 @@ WAIT = 15 * 60  # seconds a notification may stay before we stop waiting
 
 def items():
     if len(sys.argv) == 3:
-        return [(sys.argv[1], sys.argv[2])]
+        return [(sys.argv[1], sys.argv[2], "")]
     try:
         out = subprocess.run(UPDATE + ["news"], capture_output=True, text=True,
                              timeout=60).stdout
@@ -38,15 +38,14 @@ def items():
     found = []
     changed = set()
     for line in out.splitlines():
-        kind, _tab, rest = line.partition("\t")
-        names, _tab, packages = rest.partition("\t")
+        kind, names, packages, when = (line.split("\t") + ["", "", ""])[:4]
         if kind in ("updated", "rolled back"):
             changed.update(packages.split())
         if kind == "updated":
-            found.append(("Обновлены: %s" % names, "Нажмите, чтобы узнать, что нового"))
+            found.append(("Обновлены: %s" % names, "Нажмите, чтобы узнать, что нового", when))
         elif kind == "rolled back":
             found.append(("Обновление не прижилось",
-                          "Вернул прежнюю версию: %s" % names))
+                          "Вернул прежнюю версию: %s" % names, when))
     if changed:
         # The new versions start: programs in the background at once, ones
         # with a window when they are next opened (haltia-restart).
@@ -89,7 +88,8 @@ def main():
         bus.signal_subscribe("org.freedesktop.Notifications", "org.freedesktop.Notifications",
                              name, "/org/freedesktop/Notifications", None,
                              Gio.DBusSignalFlags.NONE, signal)
-    for title, body in todo:
+    told = []
+    for title, body, when in todo:
         try:
             res = bus.call_sync(
                 "org.freedesktop.Notifications", "/org/freedesktop/Notifications",
@@ -98,8 +98,17 @@ def main():
                                                  title, body, ["default", "Открыть"], {}, -1)),
                 GLib.VariantType("(u)"), Gio.DBusCallFlags.NONE, 10000, None)
             waiting.add(res.unpack()[0])
+            if when.isdigit():
+                told.append(when)
         except GLib.Error as exc:
             sys.stderr.write("haltia-update-notify: %s\n" % exc.message)
+    if told:
+        # Told only now: one that did not get through is told next time.
+        try:
+            subprocess.run(UPDATE + ["news", "--ack", *told], stdin=subprocess.DEVNULL,
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=60)
+        except (OSError, subprocess.SubprocessError):
+            pass
     if waiting:
         GLib.timeout_add_seconds(WAIT, loop.quit)
         loop.run()

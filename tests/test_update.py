@@ -222,6 +222,81 @@ class Update(unittest.TestCase):
         self.assertFalse(self.pending())
         self.assertEqual(hu.installed(), BEFORE)
 
+    def cut_short(self):
+        """An upgrade whose apk is killed half way (power, OOM): one
+        package changed, and haltia-update itself ends there."""
+        def half_then_killed(_cmd):
+            db = hu.installed()
+            db["haltia-shell"] = "2.9.0-r0"
+            self.write_db(db)
+            raise SystemExit(137)
+        with mock.patch.object(hu, "run_apk_with_progress", half_then_killed):
+            with self.assertRaises(SystemExit):
+                hu.upgrade()
+        pending = hu.read_json(os.path.join(hu.STATE, "pending.json"), {})
+        self.assertTrue(pending.get("installing"))
+
+    def test_an_upgrade_cut_short_goes_back_at_boot(self):
+        # SH2-4: pending.json is there before apk starts.
+        self.cut_short()
+        self.assertEqual(hu.boot(), 0)
+        self.assertEqual(hu.installed(), BEFORE)
+        self.assertEqual(self.world(), WORLD)
+        self.assertEqual(hu.held(), {})  # says nothing about the version
+        self.assertFalse(self.pending())
+
+    def test_an_upgrade_cut_short_goes_back_at_a_session_start(self):
+        self.cut_short()
+        self.assertEqual(hu.session_start(), 0)
+        self.assertEqual(hu.installed(), BEFORE)
+        self.assertFalse(self.pending())
+
+    def test_a_finished_upgrade_is_not_installing(self):
+        self.assertEqual(hu.upgrade(), 0)
+        pending = hu.read_json(os.path.join(hu.STATE, "pending.json"), {})
+        self.assertNotIn("installing", pending)
+        self.assertEqual(hu.boot(), 0)
+        self.assertEqual(hu.installed()["haltia-shell"], "2.9.0-r0")
+
+    def test_a_failing_script_after_everything_is_in_is_kept(self):
+        # SH2-6: apk returns 1 for a post-install script, yet every package
+        # is in. A rollback would fail on the same script; the checks judge.
+        self.fail("script")
+        self.assertEqual(hu.upgrade(), 0)
+        self.assertEqual(hu.installed()["haltia-shell"], "2.9.0-r0")
+        self.assertTrue(self.pending())
+        self.assertEqual(hu.held(), {})
+
+    def test_a_rollback_whose_script_fails_leaves_no_holds(self):
+        # SH2-6: the files went in and apk wrote their checksum holds into
+        # world before a script failed; world comes back as it was.
+        self.assertEqual(hu.upgrade(), 0)
+        world = self.world()
+        self.fail("script")
+        self.assertEqual(hu.rollback(), 1)
+        self.assertEqual(self.world(), world)
+        self.assertFalse([e for e in self.world() if "><" in e])
+        self.assertTrue(self.pending())
+
+    def test_news_stays_until_the_notification_acks_it(self):
+        # SH2-22: read but not acked (mako not up yet) is told again.
+        lines = []
+        hu.tell("rolled back", ["haltia-shell"])
+        hu.tell("updated", ["py3-haltia-kit"])
+        with mock.patch.object(hu, "log", lines.append):
+            hu.news()
+            self.assertEqual(len(lines), 2)
+            when = [line.split("\t")[3] for line in lines]
+            self.assertNotEqual(when[0], when[1])
+            lines.clear()
+            hu.news()
+            self.assertEqual(len(lines), 2)
+            lines.clear()
+            hu.news(ack={int(when[0])})
+            hu.news()
+            self.assertEqual(len(lines), 1)
+            self.assertTrue(lines[0].startswith("updated\t"))
+
     def test_program_update_is_good_in_the_running_session(self):
         self.assertEqual(hu.upgrade(names=["py3-haltia-kit"]), 0)
         pending = hu.read_json(os.path.join(hu.STATE, "pending.json"), {})

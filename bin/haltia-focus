@@ -311,10 +311,29 @@ def publish_front(found):
     os.rename(front_path() + ".new", front_path())
     try:
         run = os.environ.get("XDG_RUNTIME_DIR", "")
-        with open(os.path.join(run, "haltia/close.pid")) as fh:
-            os.kill(int(fh.read().strip()), signal.SIGUSR1)
-    except (OSError, ValueError):
+        pid = live_pid(os.path.join(run, "haltia/close.pid"))
+        if pid:
+            os.kill(pid, signal.SIGUSR1)
+    except OSError:
         pass  # no close button running: it looks again within seconds anyway
+
+
+def live_pid(path):
+    """The pid in a daemon's pid file while that daemon still holds the
+    file's lock (haltia-close, haltia-rotate): a file left by one that
+    crashed may name another process by now, which a signal would end
+    (SH2-38)."""
+    import fcntl
+    try:
+        with open(path) as fh:
+            try:
+                fcntl.flock(fh, fcntl.LOCK_SH | fcntl.LOCK_NB)
+                return None  # nobody holds it
+            except BlockingIOError:
+                pid = int(fh.read().strip() or 0)
+    except (OSError, ValueError):
+        return None
+    return pid if pid > 1 else None
 
 
 def publish(found, prev):

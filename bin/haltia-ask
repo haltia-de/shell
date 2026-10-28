@@ -53,12 +53,21 @@ conf() {
 # ask TITLE ITEM... -- prints the index of the chosen item, nothing on cancel.
 # The last item, Отмена, is the one highlighted, so Enter never does harm.
 # ASK_LINE (pt) overrides the config's line height, for a longer list.
+# fuzzel does not get the lock's fd: one left behind by a killed haltia-ask
+# (haltia-restart's timeout) kept every later question away.
 ask() {
 	title=$1
 	shift
 	printf '%s\n' "$@" | fuzzel --config /usr/share/haltia/fuzzel-ask.ini \
 		${ASK_LINE:+--line-height=$ASK_LINE} --lines=$# \
-		--dmenu --index --mesg "$title" --cache /dev/null --select-index $(($# - 1)) 2>/dev/null
+		--dmenu --index --mesg "$title" --cache /dev/null --select-index $(($# - 1)) \
+		2>/dev/null 9>&-
+}
+
+# quick COMMAND...: a look at the system for a question, at most 3 s: the
+# lock is held meanwhile, and every other question fails while it is.
+quick() {
+	timeout 3 "$@" 9>&-
 }
 
 chosen() {
@@ -71,7 +80,8 @@ windows() {
 }
 
 # close_program ID LABEL APP_ID...: close a program that the person chose to
-# close. The window is asked to close (the program may save first) under a
+# close. BEFORE, when set, is its window count from before the question: one
+# that closed by itself meanwhile (a call that ended) is not a hang. The window is asked to close (the program may save first) under a
 # curtain «Закрываю «…»…», so the tap shows at once. A program that has not
 # closed within five seconds hangs: haltia-stop stops it, and it starts
 # again in the background if it lives there. A new window of the program
@@ -81,6 +91,9 @@ close_program() {
 	cid=$1 clabel=$2
 	shift 2
 	before=$(windows "$@")
+	if [ -n "${BEFORE:-}" ] && { [ "$before" -lt "$BEFORE" ] || [ "$before" -eq 0 ]; }; then
+		return 0 # closed by itself while the question was up
+	fi
 	splash=
 	if [ -x /usr/libexec/haltia/haltia-splash ]; then
 		/usr/libexec/haltia/haltia-splash "$cid" "Закрываю «$clabel»…" >/dev/null 2>&1 &
@@ -93,7 +106,7 @@ close_program() {
 		# Fewer windows: the one asked has closed (another window of the
 		# program, Firefox's second one, may stay).
 		n=$(windows "$@")
-		if [ "$n" -lt "$before" ]; then
+		if [ "$n" -lt "$before" ] || [ "$n" -eq 0 ]; then
 			state=closed
 			break
 		fi
@@ -210,9 +223,11 @@ close)
 	id=${2:-}
 	[ -n "$id" ] || exit 2
 	label=$(conf "$id" label)
+	ids=$(conf "$id" app_ids)
+	# shellcheck disable=SC2086 # the app_ids are separate words
+	BEFORE=$(windows ${ids:-$id})
 	[ "$(ask "Закрыть «${label:-$id}»?" "Закрыть" "Отмена")" = 0 ] || exit 0
 	chosen
-	ids=$(conf "$id" app_ids)
 	# shellcheck disable=SC2086 # the app_ids are separate words
 	close_program "$id" "${label:-$id}" ${ids:-$id}
 	;;
@@ -244,6 +259,7 @@ close-front)
 		}' "$APPS")
 	label=
 	[ -n "$id" ] && label=$(conf "$id" label)
+	BEFORE=$(windows "$app")
 	# Настройки → «Для помощника» may switch the question off
 	# (~/.config/haltia/close.conf, ask = no): «✕» then closes at once, its
 	# own tap having buzzed already.
@@ -275,7 +291,7 @@ status)
 	# The status card on the panel: the charge in the question, the network
 	# by name, brightness and volume on one card, sound off or on.
 	title="Состояние"
-	info=$(/usr/libexec/haltia/haltia-meter battery-info)
+	info=$(quick /usr/libexec/haltia/haltia-meter battery-info)
 	if [ -n "$info" ]; then
 		title="Заряд ${info%% *} %"
 		case ${info#* } in
@@ -283,9 +299,9 @@ status)
 		full) title="$title, заряжен" ;;
 		esac
 	fi
-	net=$(nmcli -t -f NAME,TYPE connection show --active 2>/dev/null |
+	net=$(quick nmcli -t -f NAME,TYPE connection show --active 2>/dev/null |
 		awk -F: '$2 ~ /wireless/ { print $1; exit }')
-	case $(pactl get-sink-mute @DEFAULT_SINK@ 2>/dev/null | awk '{ print $2 }') in
+	case $(quick pactl get-sink-mute @DEFAULT_SINK@ 2>/dev/null | awk '{ print $2 }') in
 	yes | да) sound="Включить звук" ;;
 	*) sound="Выключить звук" ;;
 	esac
@@ -303,7 +319,7 @@ status)
 	1) chosen; /usr/bin/haltia-brightness 9>&- & ;;
 	2)
 		chosen
-		pactl set-sink-mute @DEFAULT_SINK@ toggle
+		quick pactl set-sink-mute @DEFAULT_SINK@ toggle
 		/usr/bin/haltia-panel-signal 10 2>/dev/null
 		;;
 	esac
@@ -313,11 +329,11 @@ service)
 	# screen like a tile does (haltia-launch tap lowers it).
 	set -- settings touch brightness sound rotate term
 	command -v wlr-randr >/dev/null && [ -x /usr/bin/haltia-rotate ] || set -- settings touch brightness sound term
-	case $(pactl get-sink-mute @DEFAULT_SINK@ 2>/dev/null | awk '{ print $2 }') in
+	case $(quick pactl get-sink-mute @DEFAULT_SINK@ 2>/dev/null | awk '{ print $2 }') in
 	yes | да) sound="Включить звук" ;;
 	*) sound="Выключить звук" ;;
 	esac
-	case $(/usr/bin/haltia-rotate status 2>/dev/null) in
+	case $(quick /usr/bin/haltia-rotate status 2>/dev/null) in
 	off) rotate="Включить поворот" ;;
 	*) rotate="Выключить поворот" ;;
 	esac
@@ -344,7 +360,7 @@ service)
 	case $1 in
 	brightness) /usr/bin/haltia-brightness 9>&- & ;;
 	sound)
-		pactl set-sink-mute @DEFAULT_SINK@ toggle
+		quick pactl set-sink-mute @DEFAULT_SINK@ toggle
 		/usr/bin/haltia-panel-signal 10 2>/dev/null
 		;;
 	rotate) /usr/bin/haltia-rotate toggle ;;

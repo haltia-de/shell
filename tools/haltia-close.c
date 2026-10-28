@@ -531,6 +531,30 @@ static int pid_path(char *out, size_t n)
 	return 0;
 }
 
+/* The pid in the pid file while the daemon that wrote it still holds the
+ * file's lock. After a crash or a SIGKILL the file stays and its pid may be
+ * another process's by now, which a signal would end (SH2-38). */
+static pid_t live_pid(const char *path)
+{
+	char buf[32];
+	ssize_t n;
+	int fd = open(path, O_RDONLY | O_CLOEXEC);
+
+	if (fd < 0)
+		return 0;
+	if (flock(fd, LOCK_SH | LOCK_NB) == 0) { /* nobody holds it */
+		close(fd);
+		return 0;
+	}
+	n = read(fd, buf, sizeof(buf) - 1);
+	close(fd);
+	if (n <= 0)
+		return 0;
+	buf[n] = '\0';
+	n = atoi(buf);
+	return n > 1 ? (pid_t)n : 0;
+}
+
 int main(int argc, char **argv)
 {
 	struct wl_display *display;
@@ -541,29 +565,26 @@ int main(int argc, char **argv)
 
 	if (argc > 1) {
 		/* haltia-close update: tell the running one to look again. */
-		FILE *f;
+		pid_t pid;
 
 		if (strcmp(argv[1], "update")) {
 			fprintf(stderr, "usage: haltia-close [update]\n");
 			return 2;
 		}
-		if (pid_path(path, sizeof(path)) < 0 || !(f = fopen(path, "r")))
+		if (pid_path(path, sizeof(path)) < 0)
 			return 1;
-		if (!fgets(buf, sizeof(buf), f))
-			buf[0] = '\0';
-		fclose(f);
-		return atoi(buf) > 1 && kill(atoi(buf), SIGUSR1) == 0 ? 0 : 1;
+		pid = live_pid(path);
+		return pid && kill(pid, SIGUSR1) == 0 ? 0 : 1;
 	}
 	if (pid_path(path, sizeof(path)) < 0)
 		return 1;
 	lock = open(path, O_RDWR | O_CREAT | O_CLOEXEC, 0600);
 	if (lock < 0 || flock(lock, LOCK_EX | LOCK_NB) < 0)
 		return 0; /* one per session */
-	if (ftruncate(lock, 0) == 0) {
-		snprintf(buf, sizeof(buf), "%d\n", getpid());
-		if (write(lock, buf, strlen(buf)) < 0)
-			perror("haltia-close: pid file");
-	}
+	/* An old pid out at once; ours only once SIGUSR1 is blocked, which
+	 * would end us before. */
+	if (ftruncate(lock, 0) < 0)
+		perror("haltia-close: pid file");
 
 	signal(SIGCHLD, SIG_IGN);
 	sigemptyset(&mask);
@@ -576,6 +597,9 @@ int main(int argc, char **argv)
 		perror("haltia-close: signalfd"); /* blocked for good otherwise */
 		return 1;
 	}
+	snprintf(buf, sizeof(buf), "%d\n", getpid());
+	if (pwrite(lock, buf, strlen(buf), 0) < 0)
+		perror("haltia-close: pid file");
 
 	display = wl_display_connect(NULL);
 	if (!display)

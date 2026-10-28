@@ -15,7 +15,11 @@ way (autostart, D-Bus activation, a terminal), every process of the
 session's user whose command is the section's exec (python3 SCRIPT counts
 as SCRIPT) or one of the window app ids; with each of them, all its
 descendants (Видео's player). The shell's own processes (SHELL) are
-never touched, nor anything below them.
+never touched, nor anything below them. An exec that only starts another
+program (flatpak run, gio launch: LAUNCHERS) matches by app id alone; a
+Flatpak program also gets flatpak kill. The SIGKILL goes only to processes
+that still have the start time they were chosen with, and to children they
+forked meanwhile.
 
 A program that lives in the background (an autostart entry ID.desktop, as
 Сообщения) starts again in the background, so its notifications go on.
@@ -36,6 +40,10 @@ SHELL = {"waybar", "phoc", "phoc-gpu", "haltia-home", "haltia-close", "haltia-la
          "python3", "python", "env", "setsid"}
 # Commands that run another: a process is the shell's by what they run.
 INTERPRETERS = {"sh", "bash", "python3", "python", "env", "setsid"}
+# Commands that start a program and say nothing about which: their name in
+# exec matched every program they started (stopping one Flatpak program
+# killed all of them, SH2-8). A Flatpak program goes through flatpak kill.
+LAUNCHERS = {"flatpak", "gio", "gtk-launch", "xdg-open", "dbus-launch"}
 
 
 def runtime():
@@ -122,6 +130,13 @@ def launched(sid):
     return pid if start and start_time(pid) == start else None
 
 
+def flatpak_app(exe):
+    """The application id of a "flatpak run [OPTIONS] ID [ARGS]" exec."""
+    if len(exe) < 2 or os.path.basename(exe[0]) != "flatpak" or exe[1] != "run":
+        return None
+    return next((a for a in exe[2:] if not a.startswith("-")), None)
+
+
 def program(sid, app_ids):
     procs = processes()
     roots = set()
@@ -130,7 +145,7 @@ def program(sid, app_ids):
         roots.add(pid)
     exe = section(sid).get("exec", "").split()
     wanted = set(app_ids)
-    if exe:
+    if exe and os.path.basename(exe[0]) not in LAUNCHERS:
         wanted.add(os.path.basename(exe[0]))
     wanted -= SHELL
     for pid, (_ppid, names) in procs.items():
@@ -160,7 +175,27 @@ def alive(pid):
         return False
 
 
+def descendants(pids):
+    """Every live process below these, born after they were chosen too,
+    leaving out the shell's."""
+    procs = processes()
+    children = {}
+    for pid, (ppid, _names) in procs.items():
+        children.setdefault(ppid, []).append(pid)
+    found, todo = set(), [c for p in pids for c in children.get(p, [])]
+    while todo:
+        pid = todo.pop()
+        if pid in found or pid == os.getpid() or is_shell(procs[pid][1]):
+            continue
+        found.add(pid)
+        todo.extend(children.get(pid, []))
+    return found
+
+
 def stop(pids):
+    # Each pid with its start time: two seconds on, a pid that ended may
+    # name another process, which must not get the SIGKILL (SH2-23).
+    started = {pid: start_time(pid) for pid in pids}
     for pid in pids:
         try:
             os.kill(pid, signal.SIGTERM)
@@ -169,7 +204,9 @@ def stop(pids):
     end = time.monotonic() + TERM_WAIT
     while time.monotonic() < end and any(alive(p) for p in pids):
         time.sleep(0.1)
-    left = [p for p in pids if alive(p)]
+    left = [p for p in pids if alive(p) and start_time(p) == started[p]]
+    # Children forked meanwhile by what is left go with it.
+    left += sorted(descendants(left) - set(left))
     for pid in left:
         try:
             os.kill(pid, signal.SIGKILL)
@@ -197,10 +234,18 @@ def main():
         return 2
     sid, app_ids = args[0], args[1:]
     pids = program(sid, app_ids)
-    if not pids:
+    flatpak = flatpak_app(section(sid).get("exec", "").split())
+    if not pids and not flatpak:
         sys.stderr.write("haltia-stop: no process of %s\n" % sid)
         return 1
     killed = stop(sorted(pids))
+    if flatpak:
+        # Inside its sandbox the program's processes carry no name of ours.
+        try:
+            subprocess.run(["flatpak", "kill", flatpak], timeout=10,
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except (OSError, subprocess.SubprocessError):
+            pass
     sys.stderr.write("haltia-stop: %s stopped (%d processes, %d killed)\n"
                      % (sid, len(pids), len(killed)))
     try:

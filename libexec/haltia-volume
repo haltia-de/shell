@@ -42,13 +42,18 @@ import time
 
 KEY_VOLUMEDOWN = 114
 KEY_VOLUMEUP = 115
+EV_SYN = 0
 EV_KEY = 1
+SYN_DROPPED = 3
 EVENT = struct.Struct("llHHi")  # struct input_event (a timeval of two longs)
 LONG_BITS = ctypes.sizeof(ctypes.c_long) * 8
 STEP = 5  # percent per press; up stops at 100, past which PulseAudio would overdrive
 HOLD = 0.4  # seconds a key is held before the slope starts
 RAMP = 2  # percent per tick while it is held
 TICK = 0.08  # seconds between ticks
+PACTL_WAIT = 2  # seconds: a PulseAudio that hangs must not take the keys with it
+DEVICE_WAIT = 30  # seconds a late keypad is looked for at start
+NOTHING = 3  # exit status: nothing to do here, haltia-keep leaves it off
 
 
 def find_keypads():
@@ -74,14 +79,20 @@ def find_keypads():
 
 
 def pactl(*args):
-    subprocess.call(["pactl"] + list(args), stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL)
+    try:
+        subprocess.call(["pactl"] + list(args), stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL, timeout=PACTL_WAIT)
+    except (OSError, subprocess.SubprocessError):
+        pass
 
 
 def volume():
     # Current default-sink volume in percent, rounded to the step grid.
-    out = subprocess.run(["pactl", "get-sink-volume", "@DEFAULT_SINK@"],
-                         capture_output=True, text=True).stdout
+    try:
+        out = subprocess.run(["pactl", "get-sink-volume", "@DEFAULT_SINK@"],
+                             capture_output=True, text=True, timeout=PACTL_WAIT).stdout
+    except (OSError, subprocess.SubprocessError):
+        out = ""
     try:
         pct = int(out.split("/")[1].strip().rstrip("%"))
     except (IndexError, ValueError):
@@ -108,19 +119,30 @@ def step(level, by):
     return new
 
 
+def open_keypads():
+    """{file: path} of the keypads that open; a late one (still probing
+    at boot) is waited for up to DEVICE_WAIT seconds."""
+    deadline = time.monotonic() + DEVICE_WAIT
+    while True:
+        devs = {}
+        for path in find_keypads():
+            try:
+                devs[open(path, "rb", buffering=0)] = path
+            except OSError as exc:
+                # One that does not open (a headset going away) leaves the rest.
+                sys.stderr.write("haltia-volume: %s: %s\n" % (path, exc.strerror))
+        if devs or time.monotonic() >= deadline:
+            return devs
+        time.sleep(2)
+
+
 def main():
-    paths = find_keypads()
-    if not paths:
-        # Nothing to do on this machine: a clean end, which haltia-keep
-        # leaves off instead of starting it again and again.
+    devs = open_keypads()
+    if not devs:
+        # Nothing to do on this machine: haltia-keep leaves it off instead
+        # of starting it again and again (SH2-36).
         sys.stderr.write("haltia-volume: no device with volume keys\n")
-        return 0
-    devs = {}
-    for path in paths:
-        try:
-            devs[open(path, "rb", buffering=0)] = path
-        except OSError as exc:
-            sys.exit("haltia-volume: %s: %s" % (path, exc.strerror))
+        return NOTHING
     # A press steps STEP; a key held past HOLD goes on by RAMP every TICK
     # until it is let go: a smooth slope, whether or not the keypad repeats
     # the key itself (its own repeats, value 2, are ignored).
@@ -133,13 +155,26 @@ def main():
             held = (code, by, step(level, by * RAMP), time.monotonic() + TICK)
             continue
         dev = ready[0]
-        data = dev.read(EVENT.size)
+        try:
+            data = dev.read(EVENT.size)
+        except OSError:  # ENODEV: unplugged
+            data = b""
         if len(data) < EVENT.size:
-            # A keypad went away (EOF): end, and haltia-keep starts
-            # this again, which looks the keypads up afresh, instead of
-            # waking every second on a dead device.
-            sys.exit("haltia-volume: %s: gone" % devs[dev])
+            # A keypad went away (a USB keyboard or headset unplugged):
+            # the others go on. With none left, end: haltia-keep starts
+            # this again, which looks the keypads up afresh.
+            sys.stderr.write("haltia-volume: %s: gone\n" % devs.pop(dev))
+            dev.close()
+            held = None
+            if not devs:
+                return 1
+            continue
         _sec, _usec, etype, code, value = EVENT.unpack(data)
+        if etype == EV_SYN and code == SYN_DROPPED:
+            # Events were lost, a release perhaps: a held key would slide
+            # the volume to the end and on (SH2-34).
+            held = None
+            continue
         if etype != EV_KEY or code not in (KEY_VOLUMEUP, KEY_VOLUMEDOWN):
             continue
         if value == 0:

@@ -69,6 +69,57 @@ class Stop(unittest.TestCase):
             self.assertEqual(stop.program("prog", []), set())
 
 
+class StopWhat(unittest.TestCase):
+    """SH2-8 and SH2-23: what haltia-stop stops, and what it SIGKILLs."""
+
+    def setUp(self):
+        self.run = tempfile.mkdtemp(prefix="haltia-stop-test.")
+        self.addCleanup(shutil.rmtree, self.run)
+        os.makedirs(os.path.join(self.run, "haltia/launch/pid"))
+        with open(os.path.join(self.run, "haltia/apps.conf"), "w") as fh:
+            fh.write("[flat]\nlabel = Flat\napp_ids = org.example.Flat\n"
+                     "exec = flatpak run --branch=stable org.example.Flat @@u %U @@\n")
+        p = mock.patch.dict(os.environ, {"XDG_RUNTIME_DIR": self.run})
+        p.start()
+        self.addCleanup(p.stop)
+
+    def test_flatpak_exec_is_not_every_flatpak(self):
+        other = {4242: (1, {"flatpak"}), 4243: (4242, {"bwrap"})}
+        with mock.patch.object(stop, "processes", return_value=other):
+            self.assertEqual(stop.program("flat", ["org.example.Flat"]), set())
+        self.assertEqual(stop.flatpak_app(
+            "flatpak run --branch=stable org.example.Flat @@u %U @@".split()), "org.example.Flat")
+        self.assertIsNone(stop.flatpak_app(["firefox"]))
+
+    def test_a_reused_pid_gets_no_sigkill(self):
+        times = iter([100, 200])  # chosen at 100; two seconds on, another process
+        sent = []
+        with mock.patch.object(stop, "start_time", lambda _p: next(times)), \
+                mock.patch.object(stop, "alive", lambda _p: True), \
+                mock.patch.object(stop, "descendants", lambda _p: set()), \
+                mock.patch.object(stop, "TERM_WAIT", 0.1), \
+                mock.patch.object(stop.os, "kill", lambda pid, sig: sent.append((pid, sig))):
+            self.assertEqual(stop.stop([4242]), [])
+        self.assertEqual(sent, [(4242, stop.signal.SIGTERM)])
+
+    def test_children_forked_after_the_choice_go_too(self):
+        mark = os.path.join(self.run, "late")
+        # Ignores SIGTERM and forks a child when it gets one.
+        prog = subprocess.Popen(["sh", "-c", 'trap "sleep 30 & echo \\$! >%s" TERM; '
+                                 'while :; do sleep 0.1; done' % mark])
+        self.addCleanup(prog.wait)
+        self.addCleanup(prog.kill)
+        import time
+        time.sleep(0.3)
+        with mock.patch.object(stop, "TERM_WAIT", 0.5):
+            stop.stop([prog.pid])
+        prog.wait(timeout=5)
+        with open(mark) as fh:
+            late = int(fh.read())
+        time.sleep(0.2)
+        self.assertFalse(stop.alive(late))
+
+
 class SleepRead(unittest.TestCase):
     """haltia-sleep's read_user_file, without importing the daemon (it
     needs root and devices)."""

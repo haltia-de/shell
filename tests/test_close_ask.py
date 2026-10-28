@@ -23,6 +23,10 @@ esac
 """
 FUZZEL = """#!/bin/sh
 echo asked >>"%(dir)s/fuzzel"
+# The question's lock must not live on in fuzzel (SH2-44).
+[ -e /proc/self/fd/9 ] && echo leaked >>"%(dir)s/fd9"
+# A window that closes by itself while the question is up (SH2-45).
+[ -e "%(dir)s/close-meanwhile" ] && touch "%(dir)s/closed"
 cat >/dev/null
 [ -e "%(dir)s/answer" ] && cat "%(dir)s/answer"
 exit 0
@@ -92,6 +96,19 @@ class CloseAsk(unittest.TestCase):
         self.run_ask()
         self.assertFalse(self.asked())
         self.assertTrue(self.closed())
+
+
+    def test_the_lock_stays_out_of_fuzzel(self):
+        self.run_ask()
+        self.assertTrue(self.asked())
+        self.assertFalse(os.path.exists(os.path.join(self.dir, "fd9")))
+
+    def test_a_window_gone_during_the_question_is_no_hang(self):
+        open(os.path.join(self.dir, "close-meanwhile"), "w").close()
+        with open(os.path.join(self.dir, "answer"), "w") as fh:
+            fh.write("0\n")  # «Закрыть», after the window went by itself
+        self.run_ask()
+        self.assertFalse(os.path.exists(os.path.join(self.dir, "stopped")))
 
 
 if __name__ == "__main__":

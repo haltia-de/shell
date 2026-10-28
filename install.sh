@@ -98,7 +98,12 @@ if command -v glib-compile-schemas >/dev/null && [ -z "$root" ]; then
 	glib-compile-schemas /usr/share/glib-2.0/schemas
 fi
 install -D -m 644 "$here/share/galculator.conf" "$root/etc/skel/.config/galculator/galculator.conf"
-if [ -d "$root/home/user" ] && [ ! -e "$root/home/user/.config/galculator/galculator.conf" ]; then
+# Not through a link of the person's (run as root on a live system, install
+# -o would follow it to a root file).
+cfg=$root/home/user/.config
+if [ -d "$root/home/user" ] && [ ! -L "$root/home/user" ] && [ ! -L "$cfg" ] &&
+	[ ! -L "$cfg/galculator" ] && [ ! -e "$cfg/galculator/galculator.conf" ] &&
+	[ ! -L "$cfg/galculator/galculator.conf" ]; then
 	install -d -m 755 -o 1000 -g 1000 "$root/home/user/.config/galculator"
 	install -m 644 -o 1000 -g 1000 "$here/share/galculator.conf" \
 		"$root/home/user/.config/galculator/galculator.conf"
