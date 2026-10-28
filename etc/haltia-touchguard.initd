@@ -21,6 +21,13 @@ extra_started_commands="reload"
 description_reload="Read the settings again"
 
 start_pre() {
+	# A device whose screen needs no filter says so in device.conf; a
+	# runlevel link left from an earlier install must not grab its screen.
+	if [ "$(sed -n 's/^[[:space:]]*touchguard[[:space:]]*=[[:space:]]*//p' \
+		/etc/haltia/device.conf 2>/dev/null | tail -n 1)" = no ]; then
+		eerror "touchguard=no in /etc/haltia/device.conf: this device runs without the filter"
+		return 1
+	fi
 	checkpath -d -m 755 /run/haltia
 }
 
