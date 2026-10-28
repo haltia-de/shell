@@ -1,5 +1,23 @@
 # Что нового · What's new
 
+## 2.13.0 (2026-10-28)
+
+### Русский
+
+- Погасший экран включается двойным касанием, если устройство это умеет; кнопка питания сразу после такого включения экран не гасит
+- Кнопки громкости работают, даже когда они на разных устройствах, а отключённая USB-клавиатура не мешает остальным
+- Программы и Настройки отзываются быстрее: нет анимаций и теней, ползунки яркости и громкости и смена даты и времени не подвешивают окно
+- Firefox больше не запускается дважды, если нажать значок и ссылку одновременно
+- Обновление, прерванное посередине, откатывается после перезагрузки; закрытие зависшей программы не задевает другие
+
+### English
+
+- A dark screen turns on by a double tap where the device can do it; the power key right after such a wake keeps it on
+- Volume keys work even when they sit on different devices, and an unplugged USB keyboard no longer stops the others
+- Programs and Settings answer sooner: no animations or shadows, and the brightness and volume sliders and changing the date and time no longer freeze the window
+- Firefox no longer starts twice when its icon and a link are tapped together
+- An update cut off halfway is rolled back after a reboot; closing a hung program no longer touches others
+
 ## 2.12.4 (2026-10-26)
 
 ### Русский
