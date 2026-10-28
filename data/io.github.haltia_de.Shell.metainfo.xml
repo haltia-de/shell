@@ -17,6 +17,16 @@
   <content_rating type="oars-1.1"/>
   <developer id="io.github.haltia_de"><name>Mikhail Nevskiy</name></developer>
   <releases>
+    <release version="2.13.2" date="2026-10-28">
+      <description>
+        <ul>
+          <li>Settings open faster: their code is loaded already compiled.</li>
+        </ul>
+        <ul>
+          <li xml:lang="ru">Настройки открываются быстрее: их код загружается уже скомпилированным.</li>
+        </ul>
+      </description>
+    </release>
     <release version="2.13.1" date="2026-10-28">
       <description>
         <ul>
