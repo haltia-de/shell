@@ -372,6 +372,10 @@ static int create_output(void)
 	static const int copy[] = { ABS_X, ABS_Y, ABS_PRESSURE, ABS_MT_POSITION_X,
 				    ABS_MT_POSITION_Y, ABS_MT_TOUCH_MAJOR, ABS_MT_TOUCH_MINOR,
 				    ABS_MT_PRESSURE };
+	/* The multitouch axis a single-touch one stands for (we write them
+	 * from the same values). */
+	static const int mt_of[] = { ABS_MT_POSITION_X, ABS_MT_POSITION_Y, ABS_MT_PRESSURE,
+				     -1, -1, -1, -1, -1 };
 
 	out_fd = open("/dev/uinput", O_WRONLY | O_NONBLOCK | O_CLOEXEC);
 	if (out_fd < 0)
@@ -391,8 +395,20 @@ static int create_output(void)
 
 	ioctl(in_fd, EVIOCGBIT(EV_ABS, sizeof(has)), has);
 	for (unsigned i = 0; i < sizeof(copy) / sizeof(copy[0]); i++) {
-		/* Only the screen's own axes: libinput refuses min == max. */
-		if (!TEST(copy[i], has) || ioctl(in_fd, EVIOCGABS(copy[i]), &ai) < 0)
+		/* Only the screen's own axes, and only with a range: libinput
+		 * refuses a device with min == max, so a screen that lists
+		 * ABS_X/ABS_Y/ABS_PRESSURE as 0..0 (the TB-J606L's NT36523W)
+		 * left the session without a single touch. Such a single-touch
+		 * axis takes its multitouch twin's range instead. */
+		int ok = TEST(copy[i], has) && ioctl(in_fd, EVIOCGABS(copy[i]), &ai) == 0 &&
+			 ai.maximum > ai.minimum;
+
+		if (!ok && mt_of[i] >= 0) {
+			memset(&ai, 0, sizeof(ai));
+			ok = TEST(mt_of[i], has) && ioctl(in_fd, EVIOCGABS(mt_of[i]), &ai) == 0 &&
+			     ai.maximum > ai.minimum;
+		}
+		if (!ok)
 			continue;
 		ioctl(out_fd, UI_SET_ABSBIT, copy[i]);
 		setup_abs(copy[i], 0, 0, &ai);
