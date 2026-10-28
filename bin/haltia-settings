@@ -927,6 +927,7 @@ class DateTime:
         self.note = Gtk.Label(xalign=0, wrap=True)
         self.note.get_style_context().add_class("note")
         box.pack_start(self.note, False, False, 0)
+        self.zone = None  # as refresh() read it last
         GLib.timeout_add_seconds(10, self.tick)
         self.refresh()
 
@@ -941,15 +942,31 @@ class DateTime:
         except GLib.Error:
             return None
 
-    def call(self, method, args):
-        try:
-            self.bus.call_sync(self.BUS[0], self.BUS[1], self.BUS[2], method, args, None,
-                               0, 10000, None)
-            return True
-        except (GLib.Error, AttributeError) as exc:
+    def call(self, method, args, done):
+        """A timedated method, asked without waiting: polkit and timedated
+        may take seconds, and the window froze meanwhile (SH2-47). done(ok)
+        runs on the GTK thread with the answer, then the page reads its
+        state again."""
+        def failed(text):
             self.note.set_text("Не получилось: нет прав или нет службы времени.")
-            sys.stderr.write("haltia-settings: %s: %s\n" % (method, getattr(exc, "message", exc)))
-            return False
+            sys.stderr.write("haltia-settings: %s: %s\n" % (method, text))
+
+        def finish(bus, res, *_data):
+            try:
+                bus.call_finish(res)
+                ok = True
+            except GLib.Error as exc:
+                failed(exc.message)
+                ok = False
+            if ok:
+                self.note.set_text("")
+            done(ok)
+            self.refresh()
+        if not self.bus:
+            failed("no system bus")
+            return
+        self.bus.call(self.BUS[0], self.BUS[1], self.BUS[2], method, args, None,
+                      Gio.DBusCallFlags.NONE, 10000, None, finish)
 
     @staticmethod
     def zone_name(zone):
@@ -983,6 +1000,7 @@ class DateTime:
 
     def show_props(self, props):
         zone, ntp = props
+        self.zone = zone
         self.zone_box.sub.set_text(self.zone_name(zone))
         self.zone_box.sub.show()
         self.ntp.handler_block_by_func(self.on_ntp)
@@ -1015,13 +1033,11 @@ class DateTime:
         return chosen[0] if res == Gtk.ResponseType.OK and chosen else None
 
     def on_ntp(self, switch, _param):
-        if self.call("SetNTP", GLib.Variant("(bb)", (switch.get_active(), False))):
-            self.note.set_text("")
-        self.refresh()
+        self.call("SetNTP", GLib.Variant("(bb)", (switch.get_active(), False)), lambda _ok: None)
 
     def on_row(self, _lb, row):
         if row.kind == "zone":
-            zone = self.prop("Timezone")
+            zone = self.zone
             name = self.pick_zone(zone)
             if name is None:
                 return
@@ -1031,11 +1047,11 @@ class DateTime:
                     return
             else:
                 zone = dict(ZONES)[name]
-            if self.call("SetTimezone", GLib.Variant("(sb)", (zone, False))):
-                os.environ["TZ"] = zone
-                time.tzset()
-                self.note.set_text("")
-            self.refresh()
+            def zone_set(ok):
+                if ok:
+                    os.environ["TZ"] = zone
+                    time.tzset()
+            self.call("SetTimezone", GLib.Variant("(sb)", (zone, False)), zone_set)
         elif row.kind == "set":
             now = time.localtime()
             value = ask_text(self.app.win, "Дата и время: ДД.ММ.ГГГГ ЧЧ:ММ",
@@ -1047,9 +1063,8 @@ class DateTime:
             except ValueError:
                 say(self.app.win, "Не понял дату. Пример: 19.10.2026 15:30")
                 return
-            if self.call("SetTime", GLib.Variant("(xbb)", (int(t * 1000000), False, False))):
-                self.note.set_text("")
-            self.refresh()
+            self.call("SetTime", GLib.Variant("(xbb)", (int(t * 1000000), False, False)),
+                      lambda _ok: None)
 
 
 # --- the panel and the home screen ----------------------------------------------
