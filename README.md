@@ -51,7 +51,8 @@ CI по тегу `vX.Y.Z` родным компилятором в Alpine armv7
 (`tools/native-build.sh`). Вручную: `sh build.sh` (кросс-сборка в контейнере
 `b8000h-build:3.24`, результат в `$WORK/tools` и `$WORK/out`, `WORK` по
 умолчанию `/opt/b8000h`) и `sh install.sh [ROOT]`. Пути: команды — `/usr/bin/haltia-*`, свои части
-оболочки — `/usr/libexec/haltia/`, данные — `/usr/share/haltia`, настройки
+оболочки — `/usr/libexec/haltia/` (код Настроек — модулем в `/usr/lib/haltia-shell`,
+чтобы Python брал его скомпилированным), данные — `/usr/share/haltia`, настройки
 — `/etc/haltia`, `~/.config/haltia`, `$XDG_RUNTIME_DIR/haltia/`;
 `/usr/local` остаётся человеку. Как запускается сеанс и какой композитор — дело
 устройства (`phoc -C /usr/share/haltia/phoc.ini -E haltia-launcher`).

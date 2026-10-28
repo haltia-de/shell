@@ -14,6 +14,7 @@
 # in the device repository). Its paths:
 #   /usr/bin/haltia-*            what a person, a program or the device runs
 #   /usr/libexec/haltia/haltia-* the shell's own parts and root helpers
+#   /usr/lib/haltia-shell        Настройки' code as a module (bin/haltia-settings runs it)
 #   /usr/share/haltia            configuration, icons, the panel
 #   /etc/haltia                  touchguard.conf (and the device's files)
 # Until 3.0 the old names stay as symlinks: /usr/bin/b8k-* and
@@ -54,6 +55,24 @@ install -d -m 755 "$bin" "$lib" "$share" "$root/etc/haltia" "$root/etc/local.d"
 for f in "$here"/bin/*; do
 	install -m 755 "$f" "$bin/${f##*/}"
 done
+# Python never caches the script it is started by, and Настройки' code is a
+# big one: it goes in as a module of the package's own folder,
+# /usr/lib/haltia-shell (compiled there with the rest by the package build),
+# and /usr/bin/haltia-settings is a stub that runs it with the same sys.argv
+# (haltia-stop and others match `python3 /usr/bin/haltia-settings`). Only
+# Настройки: haltia-sleep restarts itself by its own path and others load
+# their peers by path as modules.
+rm -rf "$root/usr/lib/haltia-shell"
+install -D -m 644 "$here/bin/haltia-settings" "$root/usr/lib/haltia-shell/haltia_settings_main.py"
+cat >"$bin/haltia-settings" <<'EOF'
+#!/usr/bin/python3
+# The code is /usr/lib/haltia-shell/haltia_settings_main.py, run as a module so Python loads it compiled.
+import runpy
+import sys
+sys.path.insert(0, "/usr/lib/haltia-shell")
+runpy.run_module("haltia_settings_main", run_name="__main__", alter_sys=False)
+EOF
+chmod 755 "$bin/haltia-settings"
 for f in "$here"/libexec/*; do
 	install -m 755 "$f" "$lib/${f##*/}"
 done
