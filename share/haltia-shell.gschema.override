@@ -17,3 +17,11 @@ sidebar-width=300
 # gone).
 [org.gnome.desktop.interface]
 gtk-theme='Haltia'
+
+# No GTK animations: every frame is drawn by the CPU, and a press, a page
+# turn or a revealer cost 8 to 15 frames over about 200 ms instead of one
+# (haltia-de/haltia docs/research/2026-10-26-gtk3-performance.md, 2.2). GTK 3
+# on Wayland reads gtk-enable-animations from this key. It is only a default:
+# a value one set in dconf still wins, and should something start writing it
+# there, haltia-launcher would have to reset it as it does the chooser's keys.
+enable-animations=false

@@ -6,8 +6,30 @@
    the same programs simply look like Adwaita ones.
 
    The selectors stay off what waybar draws (the panel runs with this
-   theme too): headers, dialogs and haltia-kit's classes only. */
+   theme too): headers, dialogs and haltia-kit's classes, and the calm
+   body's buttons and rows only inside window:not(#waybar). */
 @import url("resource:///org/gtk/libgtk/theme/Adwaita/gtk-contained.css");
+
+/* --- a calm body ------------------------------------------------------- */
+/* Every frame here is drawn by the CPU (pixman), so a press must cost one
+   frame, not the 8 to 15 of Adwaita's 200 ms transition, and a button or a
+   row must not blur a shadow on every redraw (haltia-de/haltia
+   docs/research/2026-10-26-gtk3-performance.md, 2.2 and 2.3). The gschema
+   override turns GTK's animations off as well; this holds where one's own
+   dconf value turns them back on. Colours stay Adwaita's and the palette's:
+   a pressed or checked button still changes its background, and focus is
+   Adwaita's dashed outline, not a shadow, so it stays. Entries keep their
+   focus shadow, which is their focus ring.
+   window:not(#waybar) keeps this off the panel, which runs with this theme
+   too and draws its own marks with inset shadows. */
+window:not(#waybar) button,
+window:not(#waybar) row,
+window:not(#waybar) modelbutton {
+  transition: none;
+  box-shadow: none;
+  text-shadow: none;
+  -gtk-icon-shadow: none;
+}
 
 /* --- the header --------------------------------------------------------- */
 headerbar {
