@@ -8,7 +8,9 @@
 # needed; the dialog redraws while the slider moves, and that frame is
 # what makes the BLS take the new duty at once. The volume goes to the
 # PulseAudio default sink (pactl, at most 100 %, unmuted when moved), and
-# the panel's speaker is told (haltia-panel-signal 10).
+# the panel's speaker is told (haltia-panel-signal 10) once the slider rests.
+# Both go through a worker thread that applies only the newest value, so a
+# slow PulseAudio or logind never freezes the card (which holds the lock).
 # The dialog is a card on the overlay layer (gtk-layer-shell), drawn like
 # the questions of haltia-ask: always on top, so nothing has to raise it.
 import fcntl
@@ -16,6 +18,7 @@ import os
 import struct
 import subprocess
 import sys
+import threading
 
 import gi
 
@@ -136,12 +139,82 @@ def volume():
         return None
 
 
+def quiet_call(args, timeout=5):
+    """A command run to its end or for timeout seconds at most."""
+    try:
+        subprocess.run(args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                       timeout=timeout)
+    except (OSError, subprocess.SubprocessError) as exc:
+        sys.stderr.write("haltia-brightness: %s: %s\n" % (args[0], exc))
+
+
 def set_volume(level):
+    """The sink's volume, unmuted unless 0. Blocks: call it from a worker."""
     for args in (["set-sink-volume", "@DEFAULT_SINK@", "%d%%" % level],
                  ["set-sink-mute", "@DEFAULT_SINK@", "0" if level > 0 else "1"]):
-        subprocess.call(["pactl"] + args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    subprocess.call(["/usr/bin/haltia-panel-signal", "10"], stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL)
+        quiet_call(["pactl"] + args)
+
+
+def panel_volume():
+    """The panel's speaker shows the new volume (signal 10)."""
+    quiet_call(["/usr/bin/haltia-panel-signal", "10"])
+
+
+class Latest:
+    """Applies the newest of the values put to work(), one call at a time,
+    in a worker thread: the GTK thread never waits for pactl or logind, and
+    a drag never queues calls behind a slow one, as a value that was
+    overtaken while a call ran is skipped (SH2-17). after(), when given,
+    runs once in the same worker after the last value, when no newer one
+    came for settle seconds (or at once on close)."""
+
+    _NONE = object()
+
+    def __init__(self, work, after=None, settle=0.4):
+        self.work, self.after, self.settle = work, after, settle
+        self.cond = threading.Condition()
+        self.next = self._NONE
+        self.thread = None
+        self.closing = False
+
+    def put(self, value):
+        with self.cond:
+            self.next = value
+            if self.thread is None:
+                self.thread = threading.Thread(target=self._run, daemon=True)
+                self.thread.start()
+            else:
+                self.cond.notify()
+
+    def close(self, timeout=6):
+        """Applies what is still waiting, then returns, or after timeout
+        seconds at most (the process may end then)."""
+        with self.cond:
+            self.closing = True
+            self.cond.notify()
+            thread = self.thread
+        if thread is not None:
+            thread.join(timeout)
+
+    def _run(self):
+        owed = False  # after() is due once the values stop
+        while True:
+            with self.cond:
+                if self.next is self._NONE and owed and not self.closing:
+                    self.cond.wait(self.settle)
+                value, self.next = self.next, self._NONE
+                if value is self._NONE and not owed:
+                    self.thread = None
+                    return
+            try:
+                if value is self._NONE:
+                    owed = False
+                    self.after()
+                else:
+                    owed = self.after is not None
+                    self.work(value)
+            except Exception as exc:  # noqa: BLE001 - the next value may do
+                sys.stderr.write("haltia-brightness: %s\n" % exc)
 
 
 def save(level):
@@ -263,9 +336,10 @@ def main():
     scale = slider("Яркость", LOWEST, top, max(LOWEST, now)) if BACKLIGHT else None
     loud = slider("Громкость", 0, 100, sound) if sound is not None else None
     loud_pending = [None]
+    sink = Latest(set_volume, after=panel_volume)
 
     def apply_volume():
-        set_volume(int(loud.get_value()))
+        sink.put(int(loud.get_value()))
         loud_pending[0] = None
         return False
 
@@ -276,9 +350,20 @@ def main():
     if loud:
         loud.connect("value-changed", volume_changed)
 
+    def redraw():
+        # A frame after the new duty, for the BLS to latch it.
+        win.queue_draw()
+        return False
+
+    def set_light(level):
+        light.set(level)
+        save(level)
+        GLib.idle_add(redraw)
+
+    lamp = Latest(set_light)
+
     def apply():
-        light.set(scale.get_value())
-        save(int(scale.get_value()))
+        lamp.put(int(scale.get_value()))
         light.pending = None
         return False
 
@@ -299,9 +384,13 @@ def main():
     win.show_all()
     Gtk.main()
     if light.pending is not None:
+        GLib.source_remove(light.pending)
         apply()
     if loud_pending[0] is not None:
+        GLib.source_remove(loud_pending[0])
         apply_volume()
+    lamp.close()
+    sink.close()
     return 0
 
 
