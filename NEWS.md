@@ -1,5 +1,17 @@
 # Что нового · What's new
 
+## 2.13.1 (2026-10-28)
+
+### Русский
+
+- Защита от случайных нажатий работает и на экранах, которые не сообщают одноточечные оси (Tab P11): раньше на них не проходило ни одно касание
+- Установка оболочки больше не включает защиту от случайных нажатий сама, если устройство обходится без неё или её выключили
+
+### English
+
+- The guard against accidental touches works on screens that report no single-touch axes (Tab P11): before, no touch got through there
+- Installing the shell no longer turns the touch guard on by itself where the device does without it or it was turned off
+
 ## 2.13.0 (2026-10-28)
 
 ### Русский
