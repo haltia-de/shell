@@ -37,7 +37,7 @@ class SettingsStub(unittest.TestCase):
         self.assertTrue(os.access(stub, os.X_OK))
         with open(stub) as fh:
             text = fh.read()
-        self.assertTrue(text.startswith("#!/usr/bin/python3\n"))
+        self.assertTrue(text.startswith("#!/usr/bin/env python3\n"))
         self.assertIn('sys.path.insert(0, "/usr/lib/haltia-shell")\n', text)
         # The stub, pointed at a stand-in module in a folder of its own.
         lib = tempfile.mkdtemp()

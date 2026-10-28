@@ -65,7 +65,7 @@ done
 rm -rf "$root/usr/lib/haltia-shell"
 install -D -m 644 "$here/bin/haltia-settings" "$root/usr/lib/haltia-shell/haltia_settings_main.py"
 cat >"$bin/haltia-settings" <<'EOF'
-#!/usr/bin/python3
+#!/usr/bin/env python3
 # The code is /usr/lib/haltia-shell/haltia_settings_main.py, run as a module so Python loads it compiled.
 import runpy
 import sys
