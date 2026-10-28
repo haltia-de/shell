@@ -58,6 +58,13 @@ if [ -z "$known" ] && { [ "$mode" = install ] ||
 	{ [ -n "$old_pid" ] && kill -0 "$old_pid" 2>/dev/null; }; }; then
 	levels=default
 fi
+# A device whose screen needs no filter says touchguard=no in device.conf
+# (the Tab P11: the filter there passed no touch at all): it goes into no
+# runlevel and is not started.
+if [ "$(sed -n 's/^[[:space:]]*touchguard[[:space:]]*=[[:space:]]*//p' \
+	/etc/haltia/device.conf 2>/dev/null | tail -n 1)" = no ]; then
+	levels=
+fi
 for l in $levels; do
 	rc-update add haltia-touchguard "$l" >/dev/null 2>&1
 done

@@ -134,15 +134,23 @@ printf 'auth     sufficient pam_permit.so\naccount  sufficient pam_permit.so\nse
 # The touch filter, on from the first boot; settings in
 # /etc/haltia/touchguard.conf. A package leaves the runlevel to its
 # post-install and post-upgrade (haltia-upgrade), so that one who turned the
-# filter off keeps it off.
+# filter off keeps it off. Without a package the runlevel link is made only
+# by the first install (no service yet) and never where the device says
+# touchguard=no in /etc/haltia/device.conf (a screen that brings its own
+# answers, such as the Tab P11's): installing again must not turn on a
+# filter that someone or the device left off.
 if [ -x "$TOOLS/haltia-touchguard" ]; then
+	first_filter=
+	[ -e "$root/etc/init.d/haltia-touchguard" ] || first_filter=yes
 	install -m 755 "$TOOLS/haltia-touchguard" "$lib/haltia-touchguard"
 	install -D -m 755 "$here/etc/haltia-touchguard.initd" "$root/etc/init.d/haltia-touchguard"
 	[ -e "$root/etc/haltia/touchguard.conf" ] || [ -e "$root/etc/b8k/touchguard.conf" ] ||
 		install -m 644 "$here/etc/touchguard.conf" "$root/etc/haltia/touchguard.conf"
 	# The values as shipped, for haltia-touch-settings's «Как при установке».
 	install -m 644 "$here/etc/touchguard.conf" "$share/touchguard.conf"
-	if [ -z "$HALTIA_PACKAGE" ]; then
+	if [ -z "$HALTIA_PACKAGE" ] && [ -n "$first_filter" ] &&
+		[ "$(sed -n 's/^[[:space:]]*touchguard[[:space:]]*=[[:space:]]*//p' \
+			"$root/etc/haltia/device.conf" 2>/dev/null | tail -n 1)" != no ]; then
 		install -d -m 755 "$root/etc/runlevels/default"
 		ln -sf /etc/init.d/haltia-touchguard "$root/etc/runlevels/default/haltia-touchguard"
 	fi
