@@ -22,6 +22,10 @@ off and grabbed until a press of the power key, which this loop handles.
 With suspend=no in /etc/haltia/device.conf the system never sleeps: the
 lamp goes off and that is all.
 
+A lid switch (SW_LID, a folio cover's hall sensor) turns the lamp off
+when the cover closes and on when it opens; the system then sleeps or
+wakes the usual way. The device's logind is to leave the lid alone.
+
 With double_tap_wake=1 in /etc/haltia/device.conf a double tap on the
 dark screen turns the lamp on as the power key does, and so does KEY_WAKEUP
 from a device: the touch screen sends it for a double tap that woke the
@@ -57,6 +61,8 @@ import time
 
 EV_SYN = 0
 EV_KEY = 1
+EV_SW = 5
+SW_LID = 0
 SYN_REPORT = 0
 KEY_POWER = 116
 KEY_WAKEUP = 143
@@ -415,6 +421,37 @@ def find_power_key():
         if (input_name(node) == name) if name else has_key(node, KEY_POWER):
             return "/dev/input/" + node
     return ""
+
+
+def find_lid():
+    """The input device with a lid switch (SW_LID: a folio cover's hall
+    sensor), or ""."""
+    nodes = sorted((n for n in os.listdir("/sys/class/input") if n.startswith("event")),
+                   key=lambda n: int(n[5:]))
+    for node in nodes:
+        try:
+            with open("/sys/class/input/%s/device/capabilities/sw" % node) as fh:
+                if int(fh.read().split()[-1], 16) & (1 << SW_LID):
+                    return "/dev/input/" + node
+        except (OSError, ValueError, IndexError):
+            continue
+    return ""
+
+
+def lid_closed(fd):
+    """Read what the lid switch sent: True closed, False open, None when it
+    did not change."""
+    state = None
+    size = ctypes.sizeof(InputEvent)
+    try:
+        data = os.read(fd, size * 64)
+    except OSError:
+        return None
+    for i in range(0, len(data) - size + 1, size):
+        ev = InputEvent.from_buffer_copy(data, i)
+        if ev.type == EV_SW and ev.code == SW_LID:
+            state = bool(ev.value)
+    return state
 
 
 def can_freeze():
@@ -1042,6 +1079,14 @@ def listen():
         log("WAKE_SOCKET_FAIL %s" % exc.errno)
         waker = None
     woke_at = -WAKE_EVERY
+    lid = None
+    lid_path = find_lid()
+    if lid_path:
+        try:
+            lid = os.open(lid_path, os.O_RDONLY | os.O_NONBLOCK)
+            log("LID %s" % lid_path)
+        except OSError as exc:
+            log("LID_OPEN_FAIL %s %s" % (lid_path, exc.errno))
     version = file_id(SELF)
     activity = activity_nodes(path)
     seen_nodes = event_nodes()
@@ -1087,8 +1132,22 @@ def listen():
             # gesture there can turn the lamp on: otherwise every touch in
             # a bag woke this real-time loop for nothing.
             dark = lamp.touch if lamp.asleep and taps is not None else []
-            ready = select.select([power] + activity + dark + ([waker] if waker else []), [], [],
-                                  min(waits))[0]
+            ready = select.select([power] + activity + dark + ([waker] if waker else []) +
+                                  ([lid] if lid is not None else []), [], [], min(waits))[0]
+            if lid in ready:
+                ready.remove(lid)
+                # Closing the cover turns the lamp off as a press would (the
+                # system then sleeps the usual way); opening it, on.
+                closed = lid_closed(lid)
+                if closed is True and not lamp.asleep:
+                    log("LID_CLOSED")
+                    lamp.sleep()
+                elif closed is False and lamp.asleep:
+                    log("LID_OPENED")
+                    last_input = time.monotonic()
+                    lamp.wake()
+                if not ready:
+                    continue
             if waker in ready:
                 ready.remove(waker)
                 if wake_request(waker):

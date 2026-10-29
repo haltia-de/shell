@@ -81,5 +81,40 @@ class Filter(unittest.TestCase):
         self.assertIn("emit(EV_KEY, KEY_WAKEUP, ev->value)", self.src)
 
 
+
+class LidTest(unittest.TestCase):
+    def events(self, *values):
+        r, w = os.pipe()
+        for v in values:
+            ev = S.InputEvent()
+            ev.type, ev.code, ev.value = S.EV_SW, S.SW_LID, v
+            os.write(w, bytes(ev))
+        try:
+            return S.lid_closed(r)
+        finally:
+            os.close(r)
+            os.close(w)
+
+    def test_closed(self):
+        self.assertIs(self.events(1), True)
+
+    def test_opened(self):
+        self.assertIs(self.events(0), False)
+
+    def test_last_state_wins(self):
+        self.assertIs(self.events(1, 0), False)
+
+    def test_other_events_are_no_change(self):
+        r, w = os.pipe()
+        ev = S.InputEvent()
+        ev.type, ev.code, ev.value = S.EV_KEY, S.KEY_POWER, 1
+        os.write(w, bytes(ev))
+        try:
+            self.assertIsNone(S.lid_closed(r))
+        finally:
+            os.close(r)
+            os.close(w)
+
+
 if __name__ == "__main__":
     unittest.main()
